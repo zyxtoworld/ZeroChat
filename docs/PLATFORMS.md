@@ -6,7 +6,7 @@
 - UI：WinUI 3
 - 网络：Windows.Web.Http 或 C++ HTTP 客户端
 - 本地数据：SQLite，首版可用 LocalFolder JSON
-- 密钥：Windows Credential Locker
+- 密钥：Windows Credential Locker；同步前进入 AES-256-GCM 加密 vault
 - 打包：MSIX
 
 优先实现：
@@ -25,6 +25,7 @@
 - 本地数据：Room
 - 设置：DataStore
 - 密钥：Android Keystore + EncryptedSharedPreferences
+- 同步加密：PBKDF2-HMAC-SHA-256 + AES-256-GCM
 - 打包：APK/AAB
 
 优先实现：
@@ -41,6 +42,7 @@
 - 网络：URLSession
 - 本地数据：SwiftData 或 SQLite
 - 密钥：Keychain
+- 同步加密：PBKDF2-HMAC-SHA-256 + AES-256-GCM
 - 打包：Xcode Archive
 
 优先实现：
@@ -57,6 +59,7 @@
 - 网络：reqwest
 - 本地数据：SQLite
 - 密钥：Secret Service
+- 同步加密：PBKDF2-HMAC-SHA-256 + AES-256-GCM
 - 打包：Flatpak/AppImage
 
 优先实现：
@@ -72,6 +75,7 @@
 - UI：React
 - 本地数据：IndexedDB
 - 密钥：localStorage
+- 同步加密：Web Crypto API PBKDF2 + AES-GCM
 - 部署：Cloudflare Pages
 
 Web 是最容易试用和自部署的版本，但不是桌面/移动端主路线。

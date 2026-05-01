@@ -58,6 +58,7 @@ pub struct Conversation {
 pub struct SyncConfig {
     pub mode: String,
     pub auto_sync: bool,
+    pub encryption_enabled: bool,
     pub gist_id: Option<String>,
     pub gist_file: Option<String>,
     pub worker_endpoint: Option<String>,

@@ -60,6 +60,7 @@ data class Conversation(
 data class SyncConfig(
     val mode: String = "local",
     val autoSync: Boolean = false,
+    val encryptionEnabled: Boolean = true,
     val gistId: String? = null,
     val gistFile: String = "zerochat-sync.json",
     val workerEndpoint: String? = null,

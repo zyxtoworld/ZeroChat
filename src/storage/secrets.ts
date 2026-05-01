@@ -45,6 +45,21 @@ export function setWorkerToken(value: string): void {
   localStorage.removeItem(key)
 }
 
+export function getSyncPassphrase(): string {
+  return localStorage.getItem(`${SECRET_PREFIX}sync-passphrase`) ?? ''
+}
+
+export function setSyncPassphrase(value: string): void {
+  const key = `${SECRET_PREFIX}sync-passphrase`
+
+  if (value) {
+    localStorage.setItem(key, value)
+    return
+  }
+
+  localStorage.removeItem(key)
+}
+
 export function clearZeroChatSecrets(): void {
   for (let index = localStorage.length - 1; index >= 0; index -= 1) {
     const key = localStorage.key(index)

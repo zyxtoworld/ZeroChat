@@ -83,11 +83,13 @@ cargo build --release
 
 推荐分发：Flatpak，另提供 AppImage。
 
-## 同步
+## 加密同步
 
 共享数据格式见：
 
 - `shared/snapshot.schema.json`
+- `shared/sync-vault.schema.json`
+- `shared/encrypted-snapshot.schema.json`
 - `shared/examples/snapshot.v1.json`
 - `shared/sync-api.openapi.yaml`
 
@@ -95,15 +97,24 @@ cargo build --release
 
 - 聊天记录
 - 服务商名称、类型、Base URL、代理地址、默认模型
+- AI API Key
 - 主题、紧凑模式、当前对话
 - 同步方式、Gist ID、Gist 文件名、Worker 地址
 
 不会同步：
 
-- AI API Key
 - GitHub Token
-- Cloudflare Worker 同步密钥
+- Cloudflare Worker 同步访问密钥
 - 各平台系统凭据
+
+同步数据会先由 ZeroChat 在本机端到端加密，然后再上传。远端只保存 `encrypted-snapshot.v1` 密文。新设备需要输入同一个“同步加密密码/恢复码”才能解密恢复数据，不需要额外安装加密工具。
+
+当前加密方案：
+
+- AES-256-GCM
+- PBKDF2-HMAC-SHA-256
+- 600,000 次迭代
+- 每次同步生成新的 16 字节 salt 和 12 字节 IV
 
 ## Cloudflare Worker 同步
 
@@ -122,6 +133,7 @@ npx wrangler deploy
 - 同步方式选 `Cloudflare`
 - Worker 地址填你的 Worker URL
 - 同步密钥填 `SYNC_TOKEN`
+- 同步加密密码填你自己设置的恢复码
 
 如果某个 AI 厂商在浏览器或移动网络下直连失败，把同一个 Worker URL 填到服务商的“代理地址”。
 
@@ -130,8 +142,11 @@ npx wrangler deploy
 1. 创建 GitHub Fine-grained token，权限只给 Gist 读写。
 2. ZeroChat 设置里选择 `GitHub Gist`。
 3. 首次同步时 Gist ID 可以留空，应用会创建私有 Gist。
-4. 其他设备填同一个 Gist ID 和 token。
+4. 其他设备填同一个 Gist ID、token 和同步加密密码。
 
 ## 架构文档
 
-详细设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+详细设计见：
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [docs/SECURITY.md](docs/SECURITY.md)

@@ -35,9 +35,11 @@ import {
   clearZeroChatSecrets,
   getGithubToken,
   getProviderKey,
+  getSyncPassphrase,
   getWorkerToken,
   setGithubToken,
   setProviderKey,
+  setSyncPassphrase,
   setWorkerToken,
 } from './storage/secrets'
 import type {
@@ -107,6 +109,7 @@ function App() {
   const [providerKeys, setProviderKeys] = useState<Record<string, string>>({})
   const [githubTokenValue, setGithubTokenValue] = useState('')
   const [workerTokenValue, setWorkerTokenValue] = useState('')
+  const [syncPassphraseValue, setSyncPassphraseValue] = useState('')
   const [selectedProviderId, setSelectedProviderId] = useState('')
   const [selectedPresetId, setSelectedPresetId] = useState(providerPresets[0].id)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -142,6 +145,7 @@ function App() {
         )
         setGithubTokenValue(getGithubToken())
         setWorkerTokenValue(getWorkerToken())
+        setSyncPassphraseValue(getSyncPassphrase())
       })
       .catch((error: unknown) => {
         setLoadError(error instanceof Error ? error.message : String(error))
@@ -368,6 +372,14 @@ function App() {
     setProviderKey(providerId, value)
   }
 
+  function applySyncedProviderKeys(keys: Record<string, string>): void {
+    setProviderKeys(keys)
+
+    for (const [providerId, value] of Object.entries(keys)) {
+      setProviderKey(providerId, value)
+    }
+  }
+
   function changeActiveProvider(providerId: string): void {
     if (!activeConversation || !data) {
       return
@@ -412,9 +424,17 @@ function App() {
     setNotice('')
 
     try {
-      const result = await performSync(current)
+      const result = await performSync(current, {
+        encryptionPassphrase: syncPassphraseValue,
+        providerKeys,
+      })
       dataRef.current = result.data
       setData(result.data)
+
+      if (result.secrets?.providerKeys) {
+        applySyncedProviderKeys(result.secrets.providerKeys)
+      }
+
       setNotice(result.message)
     } catch (error: unknown) {
       setNotice(error instanceof Error ? error.message : String(error))
@@ -563,6 +583,7 @@ function App() {
               ...current.sync,
               mode: 'local',
               autoSync: false,
+              encryptionEnabled: true,
             }
           : current.sync,
         preferences: {
@@ -581,6 +602,7 @@ function App() {
         sync: {
           ...current.sync,
           mode,
+          encryptionEnabled: true,
         },
       }),
     )
@@ -654,6 +676,7 @@ function App() {
     setProviderKeys({})
     setGithubTokenValue('')
     setWorkerTokenValue('')
+    setSyncPassphraseValue('')
     setNotice('已重置本地数据')
   }
 
@@ -1069,6 +1092,22 @@ function App() {
                     Cloudflare
                   </button>
                 </div>
+
+                <label>
+                  同步加密密码
+                  <input
+                    type="password"
+                    value={syncPassphraseValue}
+                    onChange={(event) => {
+                      setSyncPassphraseValue(event.target.value)
+                      setSyncPassphrase(event.target.value)
+                    }}
+                    placeholder="用于端到端加密和解密同步数据"
+                  />
+                </label>
+                <p className="settings-note">
+                  聊天、设置和 AI API Key 会先在本机加密，再上传到 Gist 或 Cloudflare。
+                </p>
 
                 {data.sync.mode === 'gist' ? (
                   <>

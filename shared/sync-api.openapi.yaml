@@ -10,17 +10,17 @@ paths:
         - bearerToken: []
       responses:
         "200":
-          description: Snapshot found
+          description: Encrypted snapshot found
           content:
             application/json:
               schema:
-                $ref: "./snapshot.schema.json"
+                $ref: "./encrypted-snapshot.schema.json"
         "404":
           description: No snapshot exists yet
         "401":
           description: Missing or invalid sync token
     put:
-      summary: Replace the current snapshot
+      summary: Replace the current encrypted snapshot
       security:
         - bearerToken: []
       requestBody:
@@ -28,7 +28,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "./snapshot.schema.json"
+              $ref: "./encrypted-snapshot.schema.json"
       responses:
         "200":
           description: Snapshot saved

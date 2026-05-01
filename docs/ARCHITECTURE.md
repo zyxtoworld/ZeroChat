@@ -27,11 +27,26 @@ Web/PWA 仍然保留，因为浏览器和 Cloudflare Pages 是最省力的使用
 共享的不是 UI 代码，而是：
 
 - `shared/snapshot.schema.json`
+- `shared/sync-vault.schema.json`
+- `shared/encrypted-snapshot.schema.json`
+- `shared/encryption.md`
 - `shared/sync-api.openapi.yaml`
 - `shared/ai-provider-contract.md`
 - `cloudflare/sync-worker.js`
 
-所有端导入、导出、同步时必须兼容 snapshot v1。
+所有端本地可以使用自己的数据库，但同步时必须构造 `sync-vault.v1` 并加密成 `encrypted-snapshot.v1`。远端不能保存明文 snapshot。
+
+## 隐私和安全
+
+同步采用端到端加密：
+
+1. 用户在 ZeroChat 内设置同步加密密码。
+2. 客户端用 PBKDF2-HMAC-SHA-256 派生 AES-256-GCM 密钥。
+3. 聊天、服务商设置、普通设置和 AI API Key 组成 vault。
+4. vault 在本机加密后上传。
+5. Gist、Cloudflare Worker、KV 和服务器都只能看到密文。
+
+GitHub Token 和 Cloudflare Worker 同步访问密钥不进入 vault，因为新设备必须先用它们获取远端密文。
 
 ## 同步冲突策略
 
@@ -41,7 +56,7 @@ Web/PWA 仍然保留，因为浏览器和 Cloudflare Pages 是最省力的使用
 2. 同步时先读取远端。
 3. 如果远端 `updatedAt` 更新，采用远端 snapshot。
 4. 否则上传本地 snapshot。
-5. 密钥永远不进 snapshot，只留在本机。
+5. AI API Key 只进入加密 vault，不进入明文 snapshot。
 
 后续如果需要多人协作或频繁多端离线编辑，再把对话消息升级为按消息级别合并。
 

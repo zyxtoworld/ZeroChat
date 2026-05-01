@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zerochat.app/schemas/encrypted-snapshot.v1.json",
+  "title": "ZeroChat Encrypted Snapshot Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "version",
+    "encryptedAt",
+    "updatedAt",
+    "crypto",
+    "payload"
+  ],
+  "properties": {
+    "kind": {
+      "const": "zerochat.encryptedSnapshot"
+    },
+    "version": {
+      "const": 1
+    },
+    "encryptedAt": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "updatedAt": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "crypto": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cipher", "kdf", "iterations", "salt", "iv", "aad"],
+      "properties": {
+        "cipher": {
+          "const": "AES-256-GCM"
+        },
+        "kdf": {
+          "const": "PBKDF2-SHA256"
+        },
+        "iterations": {
+          "type": "integer",
+          "minimum": 600000
+        },
+        "salt": {
+          "type": "string",
+          "contentEncoding": "base64"
+        },
+        "iv": {
+          "type": "string",
+          "contentEncoding": "base64"
+        },
+        "aad": {
+          "type": "string",
+          "contentEncoding": "base64"
+        }
+      }
+    },
+    "payload": {
+      "type": "string",
+      "contentEncoding": "base64"
+    }
+  }
+}

@@ -71,7 +71,7 @@ Content-Type: application/json
 
 所有端都必须遵守：
 
-- AI API Key 只存在本设备安全存储，不写入 snapshot。
+- AI API Key 只存在本设备安全存储和端到端加密同步包中，不写入明文 snapshot。
 - GitHub Token 只存在本设备安全存储，不写入 snapshot。
 - Cloudflare Sync Token 只存在本设备安全存储，不写入 snapshot。
 - `baseUrl`、`proxyUrl`、模型名、服务商开关属于普通设置，可以同步。

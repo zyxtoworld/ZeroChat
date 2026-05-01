@@ -43,6 +43,7 @@
   "sync": {
     "mode": "cloudflare",
     "autoSync": true,
+    "encryptionEnabled": true,
     "gistFile": "zerochat-sync.json",
     "workerEndpoint": "https://zerochat-sync.example.workers.dev",
     "lastSyncAt": 1760000001000,

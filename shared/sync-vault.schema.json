@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zerochat.app/schemas/sync-vault.v1.json",
+  "title": "ZeroChat Sync Vault",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["data", "secrets"],
+  "properties": {
+    "data": {
+      "$ref": "./snapshot.schema.json"
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["providerKeys"],
+      "properties": {
+        "providerKeys": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

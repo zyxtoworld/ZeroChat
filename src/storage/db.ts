@@ -86,6 +86,7 @@ export function createDefaultData(): AppData {
     sync: {
       mode: 'local',
       autoSync: false,
+      encryptionEnabled: true,
       gistFile: 'zerochat-sync.json',
     },
     preferences: {

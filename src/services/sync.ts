@@ -1,13 +1,26 @@
 import { getGithubToken, getWorkerToken } from '../storage/secrets'
-import type { AppData, SyncConfig, SyncResult } from '../types'
+import type {
+  AppData,
+  ProviderSecrets,
+  SyncConfig,
+  SyncResult,
+  SyncVault,
+} from '../types'
+import { decryptVault, encryptVault, isEncryptedSnapshot } from './crypto'
 
 const DEFAULT_GIST_FILE = 'zerochat-sync.json'
+
+interface SyncContext {
+  encryptionPassphrase: string
+  providerKeys: Record<string, string>
+}
 
 function markSynced(data: AppData, message: string): AppData {
   return {
     ...data,
     sync: {
       ...data.sync,
+      encryptionEnabled: true,
       lastSyncAt: Date.now(),
       lastSyncStatus: message,
     },
@@ -18,36 +31,85 @@ function mergeSyncConfig(remote: SyncConfig, local: SyncConfig): SyncConfig {
   return {
     mode: remote.mode ?? local.mode,
     autoSync: remote.autoSync ?? local.autoSync,
+    encryptionEnabled: true,
     gistId: remote.gistId ?? local.gistId,
     gistFile: remote.gistFile ?? local.gistFile,
     workerEndpoint: remote.workerEndpoint ?? local.workerEndpoint,
     lastSyncAt: Date.now(),
-    lastSyncStatus: '已采用远端较新的数据',
+    lastSyncStatus: '已采用远端较新的加密数据',
   }
 }
 
-function acceptRemoteData(remote: AppData, local: AppData): AppData {
+function acceptRemoteVault(remote: SyncVault, local: AppData): SyncVault {
   return {
-    ...remote,
-    sync: mergeSyncConfig(remote.sync, local.sync),
+    data: {
+      ...remote.data,
+      sync: mergeSyncConfig(remote.data.sync, local.sync),
+    },
+    secrets: {
+      providerKeys: remote.secrets?.providerKeys ?? {},
+    },
   }
 }
 
-function parseRemoteData(content?: string): AppData | null {
+function parsePlainSnapshot(value: unknown): SyncVault | null {
+  const data = value as AppData
+
+  if (data?.version !== 1 || !Array.isArray(data.conversations)) {
+    return null
+  }
+
+  return {
+    data: {
+      ...data,
+      sync: {
+        ...data.sync,
+        encryptionEnabled: true,
+      },
+    },
+    secrets: {
+      providerKeys: {},
+    },
+  }
+}
+
+async function parseRemoteVault(
+  content: string | undefined,
+  passphrase: string,
+): Promise<SyncVault | null> {
   if (!content) {
     return null
   }
 
+  let parsed: unknown
+
   try {
-    const data = JSON.parse(content) as AppData
-    return data?.version === 1 ? data : null
+    parsed = JSON.parse(content)
   } catch {
     return null
   }
+
+  if (isEncryptedSnapshot(parsed)) {
+    return decryptVault(parsed, passphrase)
+  }
+
+  return parsePlainSnapshot(parsed)
 }
 
-function serializeSnapshot(data: AppData, message = '同步完成'): string {
-  return JSON.stringify(markSynced(data, message), null, 2)
+async function serializeVault(
+  data: AppData,
+  secrets: ProviderSecrets,
+  passphrase: string,
+): Promise<string> {
+  const envelope = await encryptVault(
+    {
+      data,
+      secrets,
+    },
+    passphrase,
+  )
+
+  return JSON.stringify(envelope, null, 2)
 }
 
 async function readError(response: Response): Promise<string> {
@@ -82,16 +144,22 @@ async function patchGist(
   }
 }
 
-async function syncWithGist(data: AppData): Promise<SyncResult> {
+async function syncWithGist(
+  data: AppData,
+  context: SyncContext,
+): Promise<SyncResult> {
   const token = getGithubToken()
   const fileName = data.sync.gistFile || DEFAULT_GIST_FILE
+  const secrets: ProviderSecrets = {
+    providerKeys: context.providerKeys,
+  }
 
   if (!token) {
     throw new Error('请先填写 GitHub Token')
   }
 
   let gistId = data.sync.gistId
-  let remote: AppData | null = null
+  let remote: SyncVault | null = null
 
   if (gistId) {
     const response = await fetch(`https://api.github.com/gists/${gistId}`, {
@@ -106,19 +174,24 @@ async function syncWithGist(data: AppData): Promise<SyncResult> {
     }
 
     const json = await response.json()
-    remote = parseRemoteData(json?.files?.[fileName]?.content)
+    remote = await parseRemoteVault(
+      json?.files?.[fileName]?.content,
+      context.encryptionPassphrase,
+    )
   }
 
-  if (remote && remote.updatedAt > data.updatedAt) {
-    const accepted = acceptRemoteData(remote, data)
+  if (remote && remote.data.updatedAt > data.updatedAt) {
+    const accepted = acceptRemoteVault(remote, data)
     return {
-      data: accepted,
+      data: accepted.data,
+      secrets: accepted.secrets,
       remoteAccepted: true,
-      message: accepted.sync.lastSyncStatus ?? '同步完成',
+      message: accepted.data.sync.lastSyncStatus ?? '同步完成',
     }
   }
 
   if (!gistId) {
+    const initial = markSynced(data, '同步完成')
     const response = await fetch('https://api.github.com/gists', {
       method: 'POST',
       headers: {
@@ -127,11 +200,15 @@ async function syncWithGist(data: AppData): Promise<SyncResult> {
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-        description: 'ZeroChat sync snapshot',
+        description: 'ZeroChat encrypted sync vault',
         public: false,
         files: {
           [fileName]: {
-            content: serializeSnapshot(data),
+            content: await serializeVault(
+              initial,
+              secrets,
+              context.encryptionPassphrase,
+            ),
           },
         },
       }),
@@ -154,6 +231,7 @@ async function syncWithGist(data: AppData): Promise<SyncResult> {
       ...data,
       sync: {
         ...data.sync,
+        encryptionEnabled: true,
         gistId,
         gistFile: fileName,
       },
@@ -161,25 +239,37 @@ async function syncWithGist(data: AppData): Promise<SyncResult> {
     '同步完成',
   )
 
-  await patchGist(gistId, token, fileName, JSON.stringify(synced, null, 2))
+  await patchGist(
+    gistId,
+    token,
+    fileName,
+    await serializeVault(synced, secrets, context.encryptionPassphrase),
+  )
 
   return {
     data: synced,
+    secrets,
     remoteAccepted: false,
     message: synced.sync.lastSyncStatus ?? '同步完成',
   }
 }
 
-async function syncWithCloudflare(data: AppData): Promise<SyncResult> {
+async function syncWithCloudflare(
+  data: AppData,
+  context: SyncContext,
+): Promise<SyncResult> {
   const token = getWorkerToken()
   const endpoint = data.sync.workerEndpoint?.replace(/\/+$/, '')
+  const secrets: ProviderSecrets = {
+    providerKeys: context.providerKeys,
+  }
 
   if (!endpoint) {
     throw new Error('请先填写 Cloudflare Worker 地址')
   }
 
   if (!token) {
-    throw new Error('请先填写同步密钥')
+    throw new Error('请先填写同步访问密钥')
   }
 
   const readResponse = await fetch(`${endpoint}/snapshot`, {
@@ -193,15 +283,16 @@ async function syncWithCloudflare(data: AppData): Promise<SyncResult> {
   }
 
   const remote = readResponse.ok
-    ? parseRemoteData(await readResponse.text())
+    ? await parseRemoteVault(await readResponse.text(), context.encryptionPassphrase)
     : null
 
-  if (remote && remote.updatedAt > data.updatedAt) {
-    const accepted = acceptRemoteData(remote, data)
+  if (remote && remote.data.updatedAt > data.updatedAt) {
+    const accepted = acceptRemoteVault(remote, data)
     return {
-      data: accepted,
+      data: accepted.data,
+      secrets: accepted.secrets,
       remoteAccepted: true,
-      message: accepted.sync.lastSyncStatus ?? '同步完成',
+      message: accepted.data.sync.lastSyncStatus ?? '同步完成',
     }
   }
 
@@ -212,7 +303,7 @@ async function syncWithCloudflare(data: AppData): Promise<SyncResult> {
       authorization: `Bearer ${token}`,
       'content-type': 'application/json',
     },
-    body: JSON.stringify(synced, null, 2),
+    body: await serializeVault(synced, secrets, context.encryptionPassphrase),
   })
 
   if (!writeResponse.ok) {
@@ -221,25 +312,36 @@ async function syncWithCloudflare(data: AppData): Promise<SyncResult> {
 
   return {
     data: synced,
+    secrets,
     remoteAccepted: false,
     message: synced.sync.lastSyncStatus ?? '同步完成',
   }
 }
 
-export async function performSync(data: AppData): Promise<SyncResult> {
+export async function performSync(
+  data: AppData,
+  context: SyncContext,
+): Promise<SyncResult> {
   if (data.sync.mode === 'local') {
     const local = markSynced(data, '当前使用本地模式')
 
     return {
       data: local,
+      secrets: {
+        providerKeys: context.providerKeys,
+      },
       remoteAccepted: false,
       message: local.sync.lastSyncStatus ?? '当前使用本地模式',
     }
   }
 
-  if (data.sync.mode === 'gist') {
-    return syncWithGist(data)
+  if (!context.encryptionPassphrase) {
+    throw new Error('请先填写同步加密密码')
   }
 
-  return syncWithCloudflare(data)
+  if (data.sync.mode === 'gist') {
+    return syncWithGist(data, context)
+  }
+
+  return syncWithCloudflare(data, context)
 }

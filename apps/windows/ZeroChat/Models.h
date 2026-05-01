@@ -57,6 +57,7 @@ namespace ZeroChat
     {
         std::wstring mode{ L"local" };
         bool autoSync{ false };
+        bool encryptionEnabled{ true };
         std::wstring gistId;
         std::wstring gistFile{ L"zerochat-sync.json" };
         std::wstring workerEndpoint;

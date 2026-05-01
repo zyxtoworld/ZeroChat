@@ -46,6 +46,7 @@ public struct Conversation: Codable, Identifiable, Sendable {
 public struct SyncConfig: Codable, Sendable {
     public var mode: String
     public var autoSync: Bool
+    public var encryptionEnabled: Bool
     public var gistId: String?
     public var gistFile: String?
     public var workerEndpoint: String?
