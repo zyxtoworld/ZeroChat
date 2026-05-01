@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "provider-openai-compatible",
+      "name": "OpenAI Compatible",
+      "kind": "openai-compatible",
+      "baseUrl": "https://api.example.com/v1",
+      "proxyUrl": "https://zerochat-sync.example.workers.dev",
+      "model": "example-chat-model",
+      "enabled": true,
+      "needsApiKey": true,
+      "createdAt": 1760000000000,
+      "updatedAt": 1760000000000
+    }
+  ],
+  "conversations": [
+    {
+      "id": "conversation-1",
+      "title": "新对话",
+      "providerId": "provider-openai-compatible",
+      "model": "example-chat-model",
+      "messages": [
+        {
+          "id": "message-1",
+          "role": "user",
+          "content": "你好",
+          "createdAt": 1760000000000,
+          "status": "done"
+        },
+        {
+          "id": "message-2",
+          "role": "assistant",
+          "content": "你好，有什么可以帮你？",
+          "createdAt": 1760000001000,
+          "status": "done"
+        }
+      ],
+      "createdAt": 1760000000000,
+      "updatedAt": 1760000001000
+    }
+  ],
+  "sync": {
+    "mode": "cloudflare",
+    "autoSync": true,
+    "gistFile": "zerochat-sync.json",
+    "workerEndpoint": "https://zerochat-sync.example.workers.dev",
+    "lastSyncAt": 1760000001000,
+    "lastSyncStatus": "同步完成"
+  },
+  "preferences": {
+    "firstRunDone": true,
+    "theme": "system",
+    "compactMode": false,
+    "activeConversationId": "conversation-1"
+  },
+  "updatedAt": 1760000001000
+}

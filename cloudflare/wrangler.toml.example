@@ -1,0 +1,11 @@
+name = "zerochat-sync"
+main = "sync-worker.js"
+compatibility_date = "2026-05-01"
+
+[vars]
+SYNC_TOKEN = "replace-with-a-long-random-token"
+ALLOWED_HOSTS = "api.openai.com,api.deepseek.com,openrouter.ai,api.siliconflow.cn,dashscope.aliyuncs.com,api.moonshot.cn,ark.cn-beijing.volces.com,api.anthropic.com"
+
+[[kv_namespaces]]
+binding = "ZEROCHAT_SYNC"
+id = "replace-with-your-kv-namespace-id"

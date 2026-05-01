@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zerochat.app/schemas/snapshot.v1.json",
+  "title": "ZeroChat Snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "providers",
+    "conversations",
+    "sync",
+    "preferences",
+    "updatedAt"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "providers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/provider"
+      }
+    },
+    "conversations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/conversation"
+      }
+    },
+    "sync": {
+      "$ref": "#/$defs/sync"
+    },
+    "preferences": {
+      "$ref": "#/$defs/preferences"
+    },
+    "updatedAt": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "$defs": {
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "baseUrl",
+        "model",
+        "enabled",
+        "needsApiKey",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": ["openai-compatible", "anthropic"]
+        },
+        "baseUrl": {
+          "type": "string",
+          "minLength": 1
+        },
+        "proxyUrl": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "needsApiKey": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "updatedAt": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "conversation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "providerId",
+        "model",
+        "messages",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string"
+        },
+        "providerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string"
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/message"
+          }
+        },
+        "createdAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "updatedAt": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role", "content", "createdAt"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "enum": ["system", "user", "assistant"]
+        },
+        "content": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "status": {
+          "enum": ["streaming", "done", "error"]
+        },
+        "error": {
+          "type": "string"
+        }
+      }
+    },
+    "sync": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "autoSync"],
+      "properties": {
+        "mode": {
+          "enum": ["local", "gist", "cloudflare"]
+        },
+        "autoSync": {
+          "type": "boolean"
+        },
+        "gistId": {
+          "type": "string"
+        },
+        "gistFile": {
+          "type": "string"
+        },
+        "workerEndpoint": {
+          "type": "string"
+        },
+        "lastSyncAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lastSyncStatus": {
+          "type": "string"
+        }
+      }
+    },
+    "preferences": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["firstRunDone", "theme", "compactMode"],
+      "properties": {
+        "firstRunDone": {
+          "type": "boolean"
+        },
+        "theme": {
+          "enum": ["system", "light", "dark"]
+        },
+        "compactMode": {
+          "type": "boolean"
+        },
+        "activeConversationId": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

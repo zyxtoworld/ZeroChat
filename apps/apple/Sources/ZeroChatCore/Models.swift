@@ -1,0 +1,70 @@
+import Foundation
+
+public enum ProviderKind: String, Codable, Sendable {
+    case openAICompatible = "openai-compatible"
+    case anthropic
+}
+
+public enum MessageRole: String, Codable, Sendable {
+    case system
+    case user
+    case assistant
+}
+
+public struct ProviderConfig: Codable, Identifiable, Sendable {
+    public var id: String
+    public var name: String
+    public var kind: ProviderKind
+    public var baseUrl: String
+    public var proxyUrl: String?
+    public var model: String
+    public var enabled: Bool
+    public var needsApiKey: Bool
+    public var createdAt: Int64
+    public var updatedAt: Int64
+}
+
+public struct ChatMessage: Codable, Identifiable, Sendable {
+    public var id: String
+    public var role: MessageRole
+    public var content: String
+    public var createdAt: Int64
+    public var status: String?
+    public var error: String?
+}
+
+public struct Conversation: Codable, Identifiable, Sendable {
+    public var id: String
+    public var title: String
+    public var providerId: String
+    public var model: String
+    public var messages: [ChatMessage]
+    public var createdAt: Int64
+    public var updatedAt: Int64
+}
+
+public struct SyncConfig: Codable, Sendable {
+    public var mode: String
+    public var autoSync: Bool
+    public var gistId: String?
+    public var gistFile: String?
+    public var workerEndpoint: String?
+    public var lastSyncAt: Int64?
+    public var lastSyncStatus: String?
+}
+
+public struct Preferences: Codable, Sendable {
+    public var firstRunDone: Bool
+    public var theme: String
+    public var compactMode: Bool
+    public var activeConversationId: String?
+}
+
+public struct AppSnapshot: Codable, Sendable {
+    public var version: Int
+    public var providers: [ProviderConfig]
+    public var conversations: [Conversation]
+    public var sync: SyncConfig
+    public var preferences: Preferences
+    public var updatedAt: Int64
+}

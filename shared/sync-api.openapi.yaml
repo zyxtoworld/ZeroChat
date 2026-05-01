@@ -1,0 +1,66 @@
+openapi: 3.1.0
+info:
+  title: ZeroChat Sync API
+  version: 1.0.0
+paths:
+  /snapshot:
+    get:
+      summary: Read the current snapshot
+      security:
+        - bearerToken: []
+      responses:
+        "200":
+          description: Snapshot found
+          content:
+            application/json:
+              schema:
+                $ref: "./snapshot.schema.json"
+        "404":
+          description: No snapshot exists yet
+        "401":
+          description: Missing or invalid sync token
+    put:
+      summary: Replace the current snapshot
+      security:
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./snapshot.schema.json"
+      responses:
+        "200":
+          description: Snapshot saved
+        "400":
+          description: Invalid JSON
+        "401":
+          description: Missing or invalid sync token
+        "413":
+          description: Snapshot too large
+  /proxy:
+    post:
+      summary: Optional AI provider proxy for clients blocked by CORS
+      parameters:
+        - name: x-zerochat-base-url
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: x-zerochat-provider-kind
+          in: header
+          required: true
+          schema:
+            enum: [openai-compatible, anthropic]
+      responses:
+        "200":
+          description: Provider response stream or JSON
+        "400":
+          description: Missing provider metadata
+        "403":
+          description: Provider host is not allowed
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
