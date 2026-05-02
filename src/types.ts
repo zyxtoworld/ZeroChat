@@ -1,4 +1,7 @@
-export type ProviderKind = 'openai-compatible' | 'anthropic'
+export type ProviderKind =
+  | 'openai-compatible'
+  | 'openai-responses'
+  | 'anthropic'
 
 export type MessageRole = 'system' | 'user' | 'assistant'
 
@@ -24,6 +27,7 @@ export interface ProviderPreset {
   baseUrl: string
   model: string
   needsApiKey: boolean
+  custom?: boolean
 }
 
 export interface ProviderConfig {

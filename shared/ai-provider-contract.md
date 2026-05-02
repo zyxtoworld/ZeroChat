@@ -4,11 +4,13 @@ ZeroChat 各端用相同的服务商字段：
 
 | 字段 | 说明 |
 | --- | --- |
-| `kind` | `openai-compatible` 或 `anthropic` |
+| `kind` | `openai-compatible`、`openai-responses` 或 `anthropic` |
 | `baseUrl` | 厂商接口根地址 |
 | `proxyUrl` | 可选。浏览器或移动网络受限时走自己的 Worker |
 | `model` | 用户填写的平台模型名 |
 | `needsApiKey` | 是否发送前要求 API Key |
+
+所有服务商都必须是远程 HTTPS 地址。客户端和 Worker 会拒绝 HTTP、localhost、内网、局域网和带用户名密码的 Base URL。ZeroChat 不内置本地 AI 服务商；需要接入第三方中转时，按中转方协议选择 OpenAI 兼容、OpenAI Responses 或 Anthropic 类型并填写它给出的远程 Base URL。
 
 ## 模型列表
 
@@ -73,6 +75,43 @@ POST {proxyUrl}/proxy
 Authorization: Bearer <api-key>
 X-ZeroChat-Base-Url: <baseUrl>
 X-ZeroChat-Provider-Kind: openai-compatible
+Content-Type: application/json
+```
+
+## OpenAI Responses 请求
+
+如果 `proxyUrl` 为空，客户端直接请求：
+
+```text
+POST {baseUrl}/responses
+Authorization: Bearer <api-key>
+Content-Type: application/json
+```
+
+请求体会设置 `store: false`，避免服务商把对话用于默认持久化：
+
+```json
+{
+  "model": "model-name",
+  "input": [
+    {
+      "role": "user",
+      "content": "你好"
+    }
+  ],
+  "stream": true,
+  "store": false,
+  "temperature": 0.7
+}
+```
+
+如果 `proxyUrl` 不为空，请求：
+
+```text
+POST {proxyUrl}/proxy
+Authorization: Bearer <api-key>
+X-ZeroChat-Base-Url: <baseUrl>
+X-ZeroChat-Provider-Kind: openai-responses
 Content-Type: application/json
 ```
 

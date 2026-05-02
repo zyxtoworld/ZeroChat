@@ -335,7 +335,11 @@ async function proxyAiRequest(request, env, corsHeaders) {
   const baseUrl = request.headers.get('x-zerochat-base-url')
   const action = request.headers.get('x-zerochat-proxy-action') || 'chat'
 
-  if (kind !== 'openai-compatible' && kind !== 'anthropic') {
+  if (
+    kind !== 'openai-compatible' &&
+    kind !== 'openai-responses' &&
+    kind !== 'anthropic'
+  ) {
     return new Response('Unsupported provider kind', {
       status: 400,
       headers: corsHeaders,
@@ -439,7 +443,12 @@ async function proxyAiRequest(request, env, corsHeaders) {
 function buildUpstreamUrl(baseUrl, kind, action = 'chat') {
   const url = new URL(baseUrl.trim())
 
-  if (url.protocol !== 'https:' || url.username || url.password) {
+  if (
+    url.protocol !== 'https:' ||
+    url.username ||
+    url.password ||
+    isDisallowedUpstreamHost(url.hostname)
+  ) {
     throw new Error('Unsafe upstream URL')
   }
 
@@ -453,6 +462,12 @@ function buildUpstreamUrl(baseUrl, kind, action = 'chat') {
       : normalized
   }
 
+  if (normalized.endsWith('/responses')) {
+    return action === 'models'
+      ? `${normalized.slice(0, -'/responses'.length)}/models`
+      : normalized
+  }
+
   if (normalized.endsWith('/messages')) {
     return action === 'models'
       ? `${normalized.slice(0, -'/messages'.length)}/models`
@@ -462,24 +477,78 @@ function buildUpstreamUrl(baseUrl, kind, action = 'chat') {
   if (normalized.endsWith('/models')) {
     return action === 'models'
       ? normalized
-      : kind === 'anthropic'
-        ? `${normalized.slice(0, -'/models'.length)}/messages`
-        : `${normalized.slice(0, -'/models'.length)}/chat/completions`
+      : buildChatEndpointFromRoot(
+          normalized.slice(0, -'/models'.length),
+          kind,
+        )
   }
 
   if (action === 'models') {
     return `${normalized}/models`
   }
 
+  return buildChatEndpointFromRoot(normalized, kind)
+}
+
+function buildChatEndpointFromRoot(root, kind) {
   if (kind === 'anthropic') {
-    return normalized.endsWith('/messages')
-      ? normalized
-      : `${normalized}/messages`
+    return root.endsWith('/messages') ? root : `${root}/messages`
   }
 
-  return normalized.endsWith('/chat/completions')
-    ? normalized
-    : `${normalized}/chat/completions`
+  if (kind === 'openai-responses') {
+    return root.endsWith('/responses') ? root : `${root}/responses`
+  }
+
+  return root.endsWith('/chat/completions')
+    ? root
+    : `${root}/chat/completions`
+}
+
+function isDisallowedUpstreamHost(hostname) {
+  const normalized = hostname
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '')
+
+  if (
+    normalized === 'localhost' ||
+    normalized.endsWith('.localhost') ||
+    normalized.endsWith('.local') ||
+    normalized.endsWith('.lan') ||
+    normalized.endsWith('.home.arpa')
+  ) {
+    return true
+  }
+
+  const ipv4 = normalized.split('.')
+
+  if (
+    ipv4.length === 4 &&
+    ipv4.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255)
+  ) {
+    const [first, second] = ipv4.map(Number)
+
+    return (
+      first === 0 ||
+      first === 10 ||
+      first === 127 ||
+      (first === 169 && second === 254) ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168) ||
+      (first === 100 && second >= 64 && second <= 127)
+    )
+  }
+
+  if (!normalized.includes(':')) {
+    return false
+  }
+
+  return (
+    normalized === '::1' ||
+    normalized.startsWith('fc') ||
+    normalized.startsWith('fd') ||
+    normalized.startsWith('fe80:')
+  )
 }
 
 function buildCorsHeaders(request, env) {

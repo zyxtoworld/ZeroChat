@@ -125,6 +125,12 @@ Web/PWA 本机存储也会加密：聊天、设置和本机密钥记录写入 In
 
 在聊天顶部或服务商设置里点击刷新按钮，可以从当前配置的第三方服务商获取模型列表。OpenAI 兼容服务商使用 `{Base URL}/models`，Anthropic 使用 `/models`；如果配置了 Worker 代理，会通过同一个 `/proxy` 走白名单和代理密钥校验。获取失败时仍可手动填写模型名。
 
+内置服务商只包含远程调用，不包含 Ollama、LM Studio 或其他本地模型服务。当前预置覆盖 OpenAI、Anthropic、Google Gemini、DeepSeek、xAI、OpenRouter、Mistral、Groq、Together、Fireworks、Cerebras、NVIDIA NIM、DeepInfra、Novita、SiliconFlow、ModelScope、阿里云百炼、Moonshot、智谱 GLM、百度千帆、腾讯混元、MiniMax、火山方舟，以及 Azure OpenAI 和 Cloudflare AI Gateway 的可编辑模板。
+
+第三方中转服务商不用等应用更新：选择“自定义 OpenAI 兼容中转”、“自定义 Responses 中转”或“自定义 Anthropic 中转”，把中转方给的 HTTPS Base URL、模型名和 API Key 填进去即可。客户端和 Worker 会拒绝 HTTP、localhost、内网、局域网和带用户名密码的地址。
+
+OpenAI Responses 类型会请求 `/responses`，并在请求体里设置 `store: false`。OpenAI 兼容类型会请求 `/chat/completions`。如果厂商没有开放 `/models` 或浏览器直连被 CORS 拦截，可以手动填写模型名，或通过自己的 Cloudflare Worker 代理访问。
+
 当前加密方案：
 
 - AES-256-GCM
@@ -140,7 +146,7 @@ Web/PWA 本机存储也会加密：聊天、设置和本机密钥记录写入 In
 4. 填写 KV namespace id 和 R2 bucket 名称。
 5. 设置一个足够长的 `SYNC_TOKEN`。
 6. 设置另一个足够长的 `PROXY_TOKEN`。
-7. 按需修改 `ALLOWED_HOSTS`，只保留你会使用的 AI API 域名。
+7. 按需修改 `ALLOWED_HOSTS`，只保留你会使用的 AI API 域名。自定义中转、Azure 资源域名和 Cloudflare AI Gateway 域名也要显式加入。
 8. 部署完成后可设置 `ALLOWED_ORIGINS`，只允许你的 ZeroChat 页面跨源访问 Worker。
 9. 部署：
 

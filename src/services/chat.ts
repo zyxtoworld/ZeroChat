@@ -1,4 +1,5 @@
 import type { ChatMessage, ProviderConfig } from '../types'
+import { assertSafeRemoteBaseUrl } from './providerSafety'
 
 interface StreamOptions {
   provider: ProviderConfig
@@ -17,39 +18,8 @@ interface ListModelsOptions {
   signal?: AbortSignal
 }
 
-function trimSlash(value: string): string {
-  return value.replace(/\/+$/, '')
-}
-
-function isLoopbackHost(hostname: string): boolean {
-  return (
-    hostname === 'localhost' ||
-    hostname === '127.0.0.1' ||
-    hostname === '::1' ||
-    hostname === '[::1]'
-  )
-}
-
 function safeBaseUrl(value: string, label: string): string {
-  let url: URL
-
-  try {
-    url = new URL(value.trim())
-  } catch {
-    throw new Error(`${label} 格式不正确`)
-  }
-
-  if (url.username || url.password) {
-    throw new Error(`${label} 不能包含用户名或密码`)
-  }
-
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
-    throw new Error(`${label} 必须使用 HTTPS，本机调试地址除外`)
-  }
-
-  url.hash = ''
-  url.search = ''
-  return trimSlash(url.toString())
+  return assertSafeRemoteBaseUrl(value, label)
 }
 
 function buildEndpoint(provider: ProviderConfig): string {
@@ -58,6 +28,10 @@ function buildEndpoint(provider: ProviderConfig): string {
   }
 
   const baseUrl = safeBaseUrl(provider.baseUrl, 'Base URL')
+
+  if (provider.kind === 'openai-responses') {
+    return baseUrl.endsWith('/responses') ? baseUrl : `${baseUrl}/responses`
+  }
 
   if (provider.kind === 'anthropic') {
     return baseUrl.endsWith('/messages') ? baseUrl : `${baseUrl}/messages`
@@ -81,6 +55,10 @@ function providerApiRoot(provider: ProviderConfig): string {
 
   if (baseUrl.endsWith('/chat/completions')) {
     return baseUrl.slice(0, -'/chat/completions'.length)
+  }
+
+  if (baseUrl.endsWith('/responses')) {
+    return baseUrl.slice(0, -'/responses'.length)
   }
 
   if (baseUrl.endsWith('/messages')) {
@@ -141,16 +119,6 @@ function connectionError(provider: ProviderConfig, target: string): Error {
   if (provider.proxyUrl?.trim()) {
     return new Error(
       `无法连接到${target}；请检查代理地址、代理访问密钥、Worker 白名单和网络。`,
-    )
-  }
-
-  const baseUrl = provider.baseUrl.toLowerCase()
-
-  if (baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1')) {
-    const localTarget = target.startsWith('AI') ? `本地 ${target}` : `本地${target}`
-
-    return new Error(
-      `无法连接到${localTarget}；请确认本地 AI 服务已启动，并且 Base URL 正确。`,
     )
   }
 
@@ -296,6 +264,111 @@ async function readAnthropicStream(
   }
 }
 
+function readResponsesText(value: unknown): string {
+  if (typeof value !== 'object' || value === null) {
+    return ''
+  }
+
+  const response = value as {
+    output_text?: unknown
+    output?: unknown
+  }
+
+  if (typeof response.output_text === 'string') {
+    return response.output_text
+  }
+
+  if (!Array.isArray(response.output)) {
+    return ''
+  }
+
+  return response.output
+    .flatMap((item) => {
+      if (typeof item !== 'object' || item === null) {
+        return []
+      }
+
+      const content = (item as { content?: unknown }).content
+      return Array.isArray(content) ? content : []
+    })
+    .map((part) => {
+      if (typeof part !== 'object' || part === null) {
+        return ''
+      }
+
+      const text = (part as { text?: unknown }).text
+      return typeof text === 'string' ? text : ''
+    })
+    .join('')
+}
+
+async function readResponsesStream(
+  response: Response,
+  onToken: (token: string) => void,
+): Promise<void> {
+  const contentType = response.headers.get('content-type') ?? ''
+
+  if (!response.body || contentType.includes('application/json')) {
+    onToken(readResponsesText(await response.json()))
+    return
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+
+    if (done) {
+      break
+    }
+
+    buffer += decoder.decode(value, { stream: true })
+    const parts = buffer.split('\n\n')
+    buffer = parts.pop() ?? ''
+
+    for (const part of parts) {
+      for (const line of part.split('\n')) {
+        const trimmed = line.trim()
+
+        if (!trimmed.startsWith('data:')) {
+          continue
+        }
+
+        const payload = trimmed.slice(5).trim()
+
+        if (payload === '[DONE]') {
+          return
+        }
+
+        let json: {
+          type?: unknown
+          delta?: unknown
+          error?: { message?: unknown }
+        }
+
+        try {
+          json = JSON.parse(payload)
+        } catch {
+          continue
+        }
+
+        if (typeof json.error?.message === 'string') {
+          throw new Error(json.error.message)
+        }
+
+        if (
+          json.type === 'response.output_text.delta' &&
+          typeof json.delta === 'string'
+        ) {
+          onToken(json.delta)
+        }
+      }
+    }
+  }
+}
+
 async function assertOk(response: Response): Promise<void> {
   if (response.ok) {
     return
@@ -420,6 +493,40 @@ export async function streamChat(options: StreamOptions): Promise<void> {
 
   if (!model.trim()) {
     throw new Error('请先填写模型名称')
+  }
+
+  if (provider.kind === 'openai-responses') {
+    const response = await fetchProviderEndpoint(
+      provider,
+      'AI 对话接口',
+      endpoint,
+      {
+        method: 'POST',
+        signal,
+        headers: {
+          'content-type': 'application/json',
+          ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+          ...(provider.proxyUrl?.trim()
+            ? { 'x-zerochat-proxy-token': proxyToken }
+            : {}),
+          ...proxyHeaders(provider),
+        },
+        body: JSON.stringify({
+          model: model.trim(),
+          input: recentMessages(messages).map((message) => ({
+            role: message.role,
+            content: message.content,
+          })),
+          stream: true,
+          store: false,
+          temperature: 0.7,
+        }),
+      },
+    )
+
+    await assertOk(response)
+    await readResponsesStream(response, onToken)
+    return
   }
 
   if (provider.kind === 'anthropic') {

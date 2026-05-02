@@ -25,6 +25,10 @@ import './App.css'
 import { providerFromPreset, providerPresets } from './data/presets'
 import { listProviderModels, streamChat } from './services/chat'
 import { decryptVault, encryptVault, isEncryptedSnapshot } from './services/crypto'
+import {
+  pruneProviderSecrets,
+  sanitizeRemoteOnlyAppData,
+} from './services/providerSafety'
 import { performSync, pullRemoteChanges } from './services/sync'
 import {
   clearAppData,
@@ -36,6 +40,7 @@ import {
 import {
   clearZeroChatSecrets,
   clearProviderSecrets,
+  clearProviderSecretsById,
   getSyncPassphrase,
   loadZeroChatSecrets,
   setGithubToken,
@@ -97,14 +102,38 @@ function preferredProviderId(data: AppData): string {
 }
 
 function presetIdForProvider(provider: ProviderConfig): string {
-  return (
-    providerPresets.find(
-      (preset) =>
-        preset.kind === provider.kind &&
-        preset.name === provider.name &&
-        preset.baseUrl === provider.baseUrl,
-    )?.id ?? providerPresets[0].id
+  const exact = providerPresets.find(
+    (preset) =>
+      preset.kind === provider.kind &&
+      preset.name === provider.name &&
+      preset.baseUrl === provider.baseUrl,
   )
+
+  if (exact) {
+    return exact.id
+  }
+
+  if (provider.kind === 'anthropic') {
+    return 'custom-anthropic-relay'
+  }
+
+  if (provider.kind === 'openai-responses') {
+    return 'custom-responses-relay'
+  }
+
+  return 'custom-openai-relay'
+}
+
+function providerKindLabel(kind: ProviderConfig['kind']): string {
+  if (kind === 'anthropic') {
+    return 'Anthropic'
+  }
+
+  if (kind === 'openai-responses') {
+    return 'OpenAI Responses'
+  }
+
+  return 'OpenAI 兼容'
 }
 
 function timeLabel(value?: number): string {
@@ -217,7 +246,16 @@ function App() {
 
     async function hydrate(): Promise<void> {
       const stored = await loadAppData()
-      const initial = stored ?? createDefaultData()
+      const sanitized = sanitizeRemoteOnlyAppData(stored ?? createDefaultData())
+      const initial = sanitized.data
+
+      if (sanitized.changed) {
+        await Promise.all([
+          saveAppData(initial),
+          clearProviderSecretsById(sanitized.removedProviderIds),
+        ])
+      }
+
       const secrets = await loadZeroChatSecrets(
         initial.providers.map((provider) => provider.id),
       )
@@ -435,6 +473,9 @@ function App() {
   const selectedProviderKey = selectedProvider
     ? providerKeys[selectedProvider.id] ?? ''
     : ''
+  const guideMissingBaseUrl = Boolean(
+    selectedProvider && !selectedProvider.baseUrl.trim(),
+  )
   const guideMissingModel = Boolean(
     selectedProvider && !selectedProvider.model.trim(),
   )
@@ -442,15 +483,20 @@ function App() {
     selectedProvider?.needsApiKey && !selectedProviderKey.trim(),
   )
   const guideCanFinish = Boolean(
-    selectedProvider && !guideMissingModel && !guideMissingKey,
+    selectedProvider &&
+      !guideMissingBaseUrl &&
+      !guideMissingModel &&
+      !guideMissingKey,
   )
-  const guideRequirement = guideMissingModel
-    ? selectedProvider?.needsApiKey
-      ? '填写默认模型和 API Key 后即可完成接入；只想先试用界面可以跳过。'
-      : '填写默认模型后即可完成接入；只想先试用界面可以跳过。'
-    : guideMissingKey
-      ? '填写 API Key 后即可完成接入；只想先试用界面可以跳过。'
-      : ''
+  const guideRequirement = guideMissingBaseUrl
+    ? '填写 HTTPS Base URL 后即可继续；自定义中转也必须是远程地址。'
+    : guideMissingModel
+      ? selectedProvider?.needsApiKey
+        ? '填写默认模型和 API Key 后即可完成接入；只想先试用界面可以跳过。'
+        : '填写默认模型后即可完成接入；只想先试用界面可以跳过。'
+      : guideMissingKey
+        ? '填写 API Key 后即可完成接入；只想先试用界面可以跳过。'
+        : ''
 
   function updateData(updater: (current: AppData) => AppData): AppData | null {
     const current = dataRef.current
@@ -599,6 +645,12 @@ function App() {
     const preset =
       providerPresets.find((item) => item.id === selectedPresetId) ??
       providerPresets[0]
+
+    if (preset.custom) {
+      addProviderFromSelectedPreset()
+      return
+    }
+
     const existing = dataRef.current?.providers.find(
       (provider) =>
         provider.kind === preset.kind &&
@@ -1003,6 +1055,14 @@ function App() {
       const result = options.pullOnly
         ? await pullRemoteChanges(current, syncContext)
         : await performSync(current, syncContext)
+      const sanitized = sanitizeRemoteOnlyAppData(result.data)
+      const resultData = sanitized.data
+      const resultSecrets = result.secrets
+        ? pruneProviderSecrets(
+            result.secrets,
+            resultData.providers.map((provider) => provider.id),
+          )
+        : undefined
       const latest = dataRef.current
       const changedWhileSyncing = Boolean(
         latest && latest.updatedAt !== current.updatedAt,
@@ -1012,24 +1072,32 @@ function App() {
         if (result.remoteAccepted) {
           setNotice('同步期间本机也有新改动，已保留本机数据，请再同步一次')
         } else if (!options.pullOnly && latest) {
-          const merged = mergeSyncIdentifiers(latest, result.data)
+          const merged = mergeSyncIdentifiers(latest, resultData)
           dataRef.current = merged
           setData(merged)
         }
       } else {
-        dataRef.current = result.data
-        setData(result.data)
+        dataRef.current = resultData
+        setData(resultData)
       }
 
-      if (!changedWhileSyncing && result.remoteAccepted && result.secrets) {
+      if (sanitized.removedProviderIds.length > 0) {
+        await clearProviderSecretsById(sanitized.removedProviderIds)
+      }
+
+      if (!changedWhileSyncing && result.remoteAccepted && resultSecrets) {
         await applySyncedSecrets(
-          result.secrets.providerKeys,
-          result.secrets.providerProxyTokens ?? {},
+          resultSecrets.providerKeys,
+          resultSecrets.providerProxyTokens ?? {},
         )
       }
 
       if (!changedWhileSyncing && (!options.silent || result.remoteAccepted)) {
-        setNotice(result.message)
+        setNotice(
+          sanitized.changed
+            ? `${result.message}；已移除本地或不安全的服务商配置`
+            : result.message,
+        )
       }
     } catch (error: unknown) {
       setNotice(error instanceof Error ? error.message : String(error))
@@ -1576,18 +1644,33 @@ function App() {
         throw new Error('文件格式不正确')
       }
 
-      const imported = {
+      const sanitizedImport = sanitizeRemoteOnlyAppData({
         ...vault.data,
         updatedAt: now(),
-      }
+      })
+      const imported = sanitizedImport.data
+      const importedSecrets = pruneProviderSecrets(
+        {
+          providerKeys: vault.secrets?.providerKeys ?? {},
+          providerProxyTokens: vault.secrets?.providerProxyTokens ?? {},
+        },
+        imported.providers.map((provider) => provider.id),
+      )
       dataRef.current = imported
       setData(imported)
       setSelectedProviderId(preferredProviderId(imported))
       await applySyncedSecrets(
-        vault.secrets?.providerKeys ?? {},
-        vault.secrets?.providerProxyTokens ?? {},
+        importedSecrets.providerKeys,
+        importedSecrets.providerProxyTokens,
       )
-      setNotice('已导入加密备份')
+      if (sanitizedImport.removedProviderIds.length > 0) {
+        await clearProviderSecretsById(sanitizedImport.removedProviderIds)
+      }
+      setNotice(
+        sanitizedImport.changed
+          ? '已导入加密备份；本地或不安全的服务商配置已移除'
+          : '已导入加密备份',
+      )
     } catch (error: unknown) {
       setNotice(error instanceof Error ? error.message : String(error))
     } finally {
@@ -2002,7 +2085,7 @@ function App() {
                       onClick={() => setSelectedProviderId(provider.id)}
                     >
                       <span>{provider.name}</span>
-                      <small>{provider.kind}</small>
+                      <small>{providerKindLabel(provider.kind)}</small>
                     </button>
                   ))}
                   <div className="add-provider">
@@ -2051,6 +2134,7 @@ function App() {
                       }
                     >
                       <option value="openai-compatible">OpenAI 兼容</option>
+                      <option value="openai-responses">OpenAI Responses</option>
                       <option value="anthropic">Anthropic</option>
                     </select>
                   </label>
@@ -2556,6 +2640,56 @@ function App() {
                 </button>
                 {selectedProvider ? (
                   <>
+                    <label>
+                      名称
+                      <input
+                        value={selectedProvider.name}
+                        onChange={(event) =>
+                          updateProvider(selectedProvider.id, {
+                            name: event.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                    <label>
+                      接口类型
+                      <select
+                        value={selectedProvider.kind}
+                        onChange={(event) =>
+                          updateProvider(selectedProvider.id, {
+                            kind: event.target.value as ProviderConfig['kind'],
+                          })
+                        }
+                      >
+                        <option value="openai-compatible">OpenAI 兼容</option>
+                        <option value="openai-responses">OpenAI Responses</option>
+                        <option value="anthropic">Anthropic</option>
+                      </select>
+                    </label>
+                    <label>
+                      Base URL
+                      <input
+                        value={selectedProvider.baseUrl}
+                        onChange={(event) =>
+                          updateProvider(selectedProvider.id, {
+                            baseUrl: event.target.value,
+                          })
+                        }
+                        placeholder="https://api.example.com/v1"
+                      />
+                    </label>
+                    <label className="inline-check">
+                      <input
+                        type="checkbox"
+                        checked={selectedProvider.needsApiKey}
+                        onChange={(event) =>
+                          updateProvider(selectedProvider.id, {
+                            needsApiKey: event.target.checked,
+                          })
+                        }
+                      />
+                      <span>发送前要求 API Key</span>
+                    </label>
                     <label>
                       默认模型
                       <div className="model-picker">

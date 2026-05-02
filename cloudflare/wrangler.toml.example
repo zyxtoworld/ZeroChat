@@ -5,7 +5,7 @@ compatibility_date = "2026-05-01"
 [vars]
 SYNC_TOKEN = "replace-with-a-long-random-token"
 PROXY_TOKEN = "replace-with-a-different-long-random-token"
-ALLOWED_HOSTS = "api.openai.com,api.deepseek.com,openrouter.ai,api.siliconflow.cn,dashscope.aliyuncs.com,api.moonshot.cn,ark.cn-beijing.volces.com,api.anthropic.com"
+ALLOWED_HOSTS = "api.openai.com,api.anthropic.com,generativelanguage.googleapis.com,api.deepseek.com,api.x.ai,openrouter.ai,api.mistral.ai,api.groq.com,api.together.xyz,api.fireworks.ai,api.cerebras.ai,integrate.api.nvidia.com,api.deepinfra.com,api.novita.ai,api.siliconflow.cn,api-inference.modelscope.cn,dashscope.aliyuncs.com,api.moonshot.cn,open.bigmodel.cn,qianfan.baidubce.com,api.hunyuan.cloud.tencent.com,api.minimax.io,ark.cn-beijing.volces.com,gateway.ai.cloudflare.com"
 # Optional. Set this after deployment to the exact origins you use, for example:
 # ALLOWED_ORIGINS = "https://zerochat.pages.dev,http://localhost:5173"
 

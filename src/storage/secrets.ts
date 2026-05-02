@@ -236,6 +236,25 @@ export async function clearProviderSecrets(): Promise<void> {
   clearLegacySecretsMatching(isProviderSecret)
 }
 
+export async function clearProviderSecretsById(
+  providerIds: string[],
+): Promise<void> {
+  const ids = new Set(providerIds)
+
+  if (ids.size === 0) {
+    return
+  }
+
+  const isTargetProviderSecret = (name: string) => {
+    const [kind, providerId] = name.split(':')
+
+    return (kind === 'provider' || kind === 'proxy') && ids.has(providerId)
+  }
+
+  await deleteSecretsMatching(isTargetProviderSecret)
+  clearLegacySecretsMatching(isTargetProviderSecret)
+}
+
 export async function clearZeroChatSecrets(): Promise<void> {
   await deleteSecretsMatching(() => true)
   clearLegacySecretsMatching(() => true)

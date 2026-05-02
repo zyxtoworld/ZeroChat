@@ -145,7 +145,7 @@ paths:
           in: header
           required: true
           schema:
-            enum: [openai-compatible, anthropic]
+            enum: [openai-compatible, openai-responses, anthropic]
         - name: x-zerochat-proxy-token
           in: header
           required: true
@@ -175,7 +175,7 @@ paths:
           in: header
           required: true
           schema:
-            enum: [openai-compatible, anthropic]
+            enum: [openai-compatible, openai-responses, anthropic]
         - name: x-zerochat-proxy-token
           in: header
           required: true

@@ -39,7 +39,7 @@ Web/PWA 会用 Web Crypto 生成本机 AES-GCM 密钥，并以不可导出的 `C
 
 同步加密密码只放在 `sessionStorage`，刷新页面后仍可使用，关闭标签页后需要重新输入。这样避免把恢复码长期明文保存在浏览器配置里。
 
-浏览器端无法完全防住同源 XSS，因为恶意脚本一旦在同一 Origin 执行，就能调用应用自己的解密流程。因此应用不使用 `dangerouslySetInnerHTML`，并且 Worker 和客户端会拒绝不安全的 HTTP 远程端点。
+浏览器端无法完全防住同源 XSS，因为恶意脚本一旦在同一 Origin 执行，就能调用应用自己的解密流程。因此应用不使用 `dangerouslySetInnerHTML`，并且 Worker 和客户端会拒绝不安全的 HTTP、localhost、内网、局域网和带凭据的 AI 端点。ZeroChat 不内置本地 AI 服务商。
 
 ## 危险操作提示
 
@@ -69,6 +69,7 @@ Web/PWA 对删除聊天记录、删除整个对话、删除服务商、导入覆
 - `/sync/head` 只保存增量 manifest 指针，并拒绝旧 head 覆盖新 head。
 - `/sync/object/<key>` 只接受 `zerochat.encryptedObject`，并校验 KDF、AAD、salt、iv、payload。
 - `/proxy` 必须提供 `PROXY_TOKEN`，并且上游地址必须是 HTTPS。
+- `/proxy` 会拒绝 localhost、内网、局域网和带用户名密码的上游地址，避免把代理变成内网请求通道。
 - `ALLOWED_HOSTS` 是必填白名单，只允许代理到明确列出的 AI API 域名。
 - `ALLOWED_ORIGINS` 可选；配置后浏览器跨源请求只允许来自指定页面。
 

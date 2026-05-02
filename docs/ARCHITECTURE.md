@@ -69,4 +69,4 @@ Web/PWA 的即时同步策略是：发送消息后立刻排队上传当前会话
 
 ## AI 请求策略
 
-原生端优先直连 AI 厂商接口。只有 Web 或特殊网络环境遇到 CORS/代理需求时，才填写 `proxyUrl` 走自己的 Cloudflare Worker。
+所有端只内置远程 AI 服务商，不提供本地 AI 服务商预设。原生端优先直连 AI 厂商接口或用户配置的第三方远程中转。只有 Web 或特殊网络环境遇到 CORS/代理需求时，才填写 `proxyUrl` 走自己的 Cloudflare Worker。客户端和 Worker 都会拒绝 HTTP、localhost、内网、局域网和带用户名密码的 AI Base URL。
