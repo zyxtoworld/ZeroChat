@@ -73,8 +73,8 @@
 
 - 语言：TypeScript
 - UI：React
-- 本地数据：IndexedDB
-- 密钥：localStorage
+- 本地数据：IndexedDB 加密记录
+- 密钥：Web Crypto 不可导出 AES-GCM 本机密钥；同步密码仅会话保存
 - 同步加密：Web Crypto API PBKDF2 + AES-GCM
 - 部署：Cloudflare Pages
 

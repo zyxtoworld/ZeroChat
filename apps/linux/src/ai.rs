@@ -1,5 +1,6 @@
 use crate::models::{ChatMessage, ProviderConfig, ProviderKind};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use reqwest::Url;
 use serde::Serialize;
 
 pub struct AiClient {
@@ -19,17 +20,37 @@ impl AiClient {
         api_key: &str,
         model: &str,
         messages: &[ChatMessage],
+        proxy_token: &str,
     ) -> Result<String> {
         let endpoint = match &provider.proxy_url {
-            Some(proxy) => format!("{}/proxy", proxy.trim_end_matches('/')),
+            Some(proxy) if !proxy.trim().is_empty() => {
+                format!("{}/proxy", safe_base_url(proxy, "代理地址")?)
+            }
             None => match provider.kind {
                 ProviderKind::Anthropic => {
-                    format!("{}/messages", provider.base_url.trim_end_matches('/'))
+                    format!(
+                        "{}/messages",
+                        safe_base_url(&provider.base_url, "Base URL")?
+                    )
                 }
                 ProviderKind::OpenaiCompatible => {
                     format!(
                         "{}/chat/completions",
-                        provider.base_url.trim_end_matches('/')
+                        safe_base_url(&provider.base_url, "Base URL")?
+                    )
+                }
+            },
+            Some(_) => match provider.kind {
+                ProviderKind::Anthropic => {
+                    format!(
+                        "{}/messages",
+                        safe_base_url(&provider.base_url, "Base URL")?
+                    )
+                }
+                ProviderKind::OpenaiCompatible => {
+                    format!(
+                        "{}/chat/completions",
+                        safe_base_url(&provider.base_url, "Base URL")?
                     )
                 }
             },
@@ -54,9 +75,17 @@ impl AiClient {
 
         let mut request = self.http.post(endpoint).json(&body);
 
-        if let Some(_) = provider.proxy_url {
+        if matches!(&provider.proxy_url, Some(proxy) if !proxy.trim().is_empty()) {
+            if proxy_token.trim().is_empty() {
+                bail!("代理访问密钥为空");
+            }
+
             request = request
-                .header("x-zerochat-base-url", &provider.base_url)
+                .header("x-zerochat-proxy-token", proxy_token.trim())
+                .header(
+                    "x-zerochat-base-url",
+                    safe_base_url(&provider.base_url, "Base URL")?,
+                )
                 .header(
                     "x-zerochat-provider-kind",
                     match provider.kind {
@@ -78,6 +107,28 @@ impl AiClient {
             .await
             .context("读取 AI 响应失败")?)
     }
+}
+
+fn safe_base_url(value: &str, label: &str) -> Result<String> {
+    let endpoint = value.trim().trim_end_matches('/');
+    let url = Url::parse(endpoint)?;
+    let host = url.host_str().unwrap_or_default();
+    let is_loopback = matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]");
+    let is_safe_scheme = url.scheme() == "https" || (url.scheme() == "http" && is_loopback);
+
+    if !url.username().is_empty() || url.password().is_some() {
+        bail!("{label} 不能包含用户名或密码");
+    }
+
+    if url.query().is_some() || url.fragment().is_some() {
+        bail!("{label} 不能包含 query 或 fragment");
+    }
+
+    if !is_safe_scheme {
+        bail!("{label} 必须使用 HTTPS，本机调试地址除外");
+    }
+
+    Ok(endpoint.to_owned())
 }
 
 #[derive(Serialize)]

@@ -20,10 +20,19 @@ ZeroChat 的同步安全目标是：远端同步服务可以保存和传输数�
 
 - AES-256-GCM：认证加密，同时提供机密性和完整性校验。
 - PBKDF2-HMAC-SHA-256：从用户同步密码派生 256 bit AES key。
-- 600,000 次迭代：作为默认成本，后续可按设备性能调优。
+- 600,000 次迭代：当前协议固定值；客户端会拒绝过低或异常过高的迭代次数。
 - 16 字节 salt：每次加密随机生成。
 - 12 字节 IV：每次加密随机生成，避免 GCM IV 重用。
 - 128 bit tag：拒绝被篡改的密文。
+- AAD 绑定 `updatedAt`，客户端和 Worker 都会拒绝 AAD 不匹配的快照。
+
+## 本机落盘加密
+
+Web/PWA 会用 Web Crypto 生成本机 AES-GCM 密钥，并以不可导出的 `CryptoKey` 形式保存到 IndexedDB。聊天数据、设置和本机密钥记录写入浏览器存储前都会加密；旧版明文 `localStorage` 密钥会在读取时迁移为加密记录并删除。
+
+同步加密密码只放在 `sessionStorage`，刷新页面后仍可使用，关闭标签页后需要重新输入。这样避免把恢复码长期明文保存在浏览器配置里。
+
+浏览器端无法完全防住同源 XSS，因为恶意脚本一旦在同一 Origin 执行，就能调用应用自己的解密流程。因此应用不使用 `dangerouslySetInnerHTML`，并且 Worker 和客户端会拒绝不安全的 HTTP 远程端点。
 
 ## 不同步的内容
 
@@ -36,11 +45,19 @@ ZeroChat 的同步安全目标是：远端同步服务可以保存和传输数�
 
 ## 平台密钥存储
 
-- Web/PWA：当前使用浏览器本地存储，后续可增加“不保存同步密码”的高安全模式。
+- Web/PWA：IndexedDB 加密记录 + 不可导出 Web Crypto 本机密钥；同步密码仅会话保存。
 - Windows：Windows Credential Locker。
 - Android：Android Keystore + EncryptedSharedPreferences。
 - iOS/macOS：Keychain。
 - Linux：Secret Service。
+
+## Worker 安全边界
+
+- `/snapshot` 只接受 `encrypted-snapshot.v1`，拒绝明文 snapshot。
+- `/snapshot` 会拒绝旧 `updatedAt` 覆盖较新的已存快照。
+- `/proxy` 必须提供 `PROXY_TOKEN`，并且上游地址必须是 HTTPS。
+- `ALLOWED_HOSTS` 是必填白名单，只允许代理到明确列出的 AI API 域名。
+- `ALLOWED_ORIGINS` 可选；配置后浏览器跨源请求只允许来自指定页面。
 
 ## 恢复码要求
 

@@ -34,6 +34,14 @@ ZeroChat 同步数据使用端到端加密。Gist、Cloudflare Worker、Cloudfla
 - Tag：128 bit
 - AAD：`zerochat:vault:v1:<updatedAt>`
 
+客户端必须验证：
+
+- `kind` 是 `zerochat.encryptedSnapshot`，`version` 是 `1`。
+- `iterations` 是 `600000`，或者在明确协议升级后按新版本处理。
+- `salt` 解码后是 16 字节，`iv` 解码后是 12 字节。
+- `aad` 解码后必须等于 `zerochat:vault:v1:<updatedAt>`。
+- 解密后的 `vault.data.updatedAt` 必须等于信封的 `updatedAt`。
+
 ## 远端格式
 
 远端保存 `encrypted-snapshot.v1`：

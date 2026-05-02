@@ -1,64 +1,208 @@
+import {
+  decryptLocalString,
+  encryptLocalString,
+  isLocalEncryptedRecord,
+  type LocalEncryptedRecord,
+} from './localCrypto'
+
 const SECRET_PREFIX = 'zerochat:secret:'
 const SYNC_PASSPHRASE_KEY = `${SECRET_PREFIX}sync-passphrase`
+const SECRET_DB_NAME = 'zerochat-secrets'
+const SECRET_DB_VERSION = 1
+const SECRET_STORE = 'records'
 
-export function getProviderKey(providerId: string): string {
-  return localStorage.getItem(`${SECRET_PREFIX}provider:${providerId}`) ?? ''
+export interface StoredSecrets {
+  providerKeys: Record<string, string>
+  providerProxyTokens: Record<string, string>
+  githubToken: string
+  workerToken: string
 }
 
-export function setProviderKey(providerId: string, value: string): void {
-  const key = `${SECRET_PREFIX}provider:${providerId}`
+function secretRecordKey(name: string): string {
+  return `secret:${name}`
+}
 
-  if (value.trim()) {
-    localStorage.setItem(key, value.trim())
+function legacyRecordKey(name: string): string {
+  return `${SECRET_PREFIX}${name}`
+}
+
+function providerKeyName(providerId: string): string {
+  return `provider:${providerId}`
+}
+
+function providerProxyTokenName(providerId: string): string {
+  return `proxy:${providerId}`
+}
+
+function openSecretDatabase(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(SECRET_DB_NAME, SECRET_DB_VERSION)
+
+    request.onupgradeneeded = () => {
+      const db = request.result
+
+      if (!db.objectStoreNames.contains(SECRET_STORE)) {
+        db.createObjectStore(SECRET_STORE)
+      }
+    }
+
+    request.onerror = () => reject(request.error)
+    request.onsuccess = () => resolve(request.result)
+  })
+}
+
+function secretTransaction<T>(
+  mode: IDBTransactionMode,
+  run: (store: IDBObjectStore) => IDBRequest<T>,
+): Promise<T> {
+  return openSecretDatabase().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(SECRET_STORE, mode)
+        const store = tx.objectStore(SECRET_STORE)
+        const request = run(store)
+
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => resolve(request.result)
+        tx.oncomplete = () => db.close()
+        tx.onerror = () => {
+          db.close()
+          reject(tx.error)
+        }
+      }),
+  )
+}
+
+async function getSecret(name: string): Promise<string> {
+  const record = await secretTransaction<LocalEncryptedRecord | undefined>(
+    'readonly',
+    (store) => store.get(secretRecordKey(name)),
+  )
+
+  if (record) {
+    if (!isLocalEncryptedRecord(record)) {
+      throw new Error('本机密钥存储格式不正确')
+    }
+
+    return decryptLocalString(name, record)
+  }
+
+  const legacy = localStorage.getItem(legacyRecordKey(name))
+
+  if (!legacy) {
+    return ''
+  }
+
+  await setSecret(name, legacy)
+  localStorage.removeItem(legacyRecordKey(name))
+  return legacy
+}
+
+async function setSecret(name: string, value: string): Promise<void> {
+  const key = secretRecordKey(name)
+  const trimmed = value.trim()
+
+  if (!trimmed) {
+    await secretTransaction('readwrite', (store) => store.delete(key))
+    localStorage.removeItem(legacyRecordKey(name))
     return
   }
 
-  localStorage.removeItem(key)
+  const encrypted = await encryptLocalString(name, trimmed)
+  await secretTransaction('readwrite', (store) => store.put(encrypted, key))
+  localStorage.removeItem(legacyRecordKey(name))
 }
 
-export function getProviderProxyToken(providerId: string): string {
-  return localStorage.getItem(`${SECRET_PREFIX}proxy:${providerId}`) ?? ''
+async function deleteSecretsMatching(
+  predicate: (name: string) => boolean,
+): Promise<void> {
+  const keys = await secretTransaction<IDBValidKey[]>('readonly', (store) =>
+    store.getAllKeys(),
+  )
+
+  await Promise.all(
+    keys
+      .filter((key): key is string => typeof key === 'string')
+      .filter((key) => {
+        if (!key.startsWith('secret:')) {
+          return false
+        }
+
+        return predicate(key.slice('secret:'.length))
+      })
+      .map((key) =>
+        secretTransaction('readwrite', (store) => store.delete(key)),
+      ),
+  )
 }
 
-export function setProviderProxyToken(providerId: string, value: string): void {
-  const key = `${SECRET_PREFIX}proxy:${providerId}`
+function clearLegacySecretsMatching(predicate: (name: string) => boolean): void {
+  for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+    const key = localStorage.key(index)
 
-  if (value.trim()) {
-    localStorage.setItem(key, value.trim())
-    return
+    if (!key?.startsWith(SECRET_PREFIX)) {
+      continue
+    }
+
+    const name = key.slice(SECRET_PREFIX.length)
+
+    if (predicate(name)) {
+      localStorage.removeItem(key)
+    }
   }
-
-  localStorage.removeItem(key)
 }
 
-export function getGithubToken(): string {
-  return localStorage.getItem(`${SECRET_PREFIX}github-token`) ?? ''
-}
+export async function loadZeroChatSecrets(
+  providerIds: string[],
+): Promise<StoredSecrets> {
+  const providerKeys: Record<string, string> = {}
+  const providerProxyTokens: Record<string, string> = {}
 
-export function setGithubToken(value: string): void {
-  const key = `${SECRET_PREFIX}github-token`
+  await Promise.all(
+    providerIds.map(async (providerId) => {
+      const [apiKey, proxyToken] = await Promise.all([
+        getSecret(providerKeyName(providerId)),
+        getSecret(providerProxyTokenName(providerId)),
+      ])
 
-  if (value.trim()) {
-    localStorage.setItem(key, value.trim())
-    return
+      providerKeys[providerId] = apiKey
+      providerProxyTokens[providerId] = proxyToken
+    }),
+  )
+
+  const [githubToken, workerToken] = await Promise.all([
+    getSecret('github-token'),
+    getSecret('worker-token'),
+  ])
+
+  return {
+    providerKeys,
+    providerProxyTokens,
+    githubToken,
+    workerToken,
   }
-
-  localStorage.removeItem(key)
 }
 
-export function getWorkerToken(): string {
-  return localStorage.getItem(`${SECRET_PREFIX}worker-token`) ?? ''
+export function setProviderKey(
+  providerId: string,
+  value: string,
+): Promise<void> {
+  return setSecret(providerKeyName(providerId), value)
 }
 
-export function setWorkerToken(value: string): void {
-  const key = `${SECRET_PREFIX}worker-token`
+export function setProviderProxyToken(
+  providerId: string,
+  value: string,
+): Promise<void> {
+  return setSecret(providerProxyTokenName(providerId), value)
+}
 
-  if (value.trim()) {
-    localStorage.setItem(key, value.trim())
-    return
-  }
+export function setGithubToken(value: string): Promise<void> {
+  return setSecret('github-token', value)
+}
 
-  localStorage.removeItem(key)
+export function setWorkerToken(value: string): Promise<void> {
+  return setSecret('worker-token', value)
 }
 
 export function getSyncPassphrase(): string {
@@ -84,27 +228,16 @@ export function setSyncPassphrase(value: string): void {
   localStorage.removeItem(SYNC_PASSPHRASE_KEY)
 }
 
-export function clearProviderSecrets(): void {
-  for (let index = localStorage.length - 1; index >= 0; index -= 1) {
-    const key = localStorage.key(index)
+export async function clearProviderSecrets(): Promise<void> {
+  const isProviderSecret = (name: string) =>
+    name.startsWith('provider:') || name.startsWith('proxy:')
 
-    if (
-      key?.startsWith(`${SECRET_PREFIX}provider:`) ||
-      key?.startsWith(`${SECRET_PREFIX}proxy:`)
-    ) {
-      localStorage.removeItem(key)
-    }
-  }
+  await deleteSecretsMatching(isProviderSecret)
+  clearLegacySecretsMatching(isProviderSecret)
 }
 
-export function clearZeroChatSecrets(): void {
-  for (let index = localStorage.length - 1; index >= 0; index -= 1) {
-    const key = localStorage.key(index)
-
-    if (key?.startsWith(SECRET_PREFIX)) {
-      localStorage.removeItem(key)
-    }
-  }
-
+export async function clearZeroChatSecrets(): Promise<void> {
+  await deleteSecretsMatching(() => true)
+  clearLegacySecretsMatching(() => true)
   sessionStorage.removeItem(SYNC_PASSPHRASE_KEY)
 }

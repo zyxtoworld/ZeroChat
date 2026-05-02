@@ -11,7 +11,8 @@ public actor AiClient {
         provider: ProviderConfig,
         apiKey: String,
         model: String,
-        messages: [ChatMessage]
+        messages: [ChatMessage],
+        proxyToken: String = ""
     ) async throws -> String {
         let endpoint = try endpoint(for: provider)
         var request = URLRequest(url: endpoint)
@@ -25,8 +26,12 @@ public actor AiClient {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
 
-        if provider.proxyUrl != nil {
-            request.setValue(provider.baseUrl, forHTTPHeaderField: "x-zerochat-base-url")
+        if let proxyUrl = provider.proxyUrl, !proxyUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if proxyToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw AiError.missingProxyToken
+            }
+            request.setValue(proxyToken, forHTTPHeaderField: "x-zerochat-proxy-token")
+            request.setValue(try safeBaseURL(provider.baseUrl, label: "Base URL"), forHTTPHeaderField: "x-zerochat-base-url")
             request.setValue(provider.kind.rawValue, forHTTPHeaderField: "x-zerochat-provider-kind")
         }
 
@@ -42,18 +47,47 @@ public actor AiClient {
     }
 
     private func endpoint(for provider: ProviderConfig) throws -> URL {
-        if let proxyUrl = provider.proxyUrl {
-            guard let url = URL(string: proxyUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/proxy") else {
+        if let proxyUrl = provider.proxyUrl, !proxyUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard let url = URL(string: try safeBaseURL(proxyUrl, label: "Proxy URL") + "/proxy") else {
                 throw AiError.invalidURL
             }
             return url
         }
 
         let suffix = provider.kind == .anthropic ? "/messages" : "/chat/completions"
-        guard let url = URL(string: provider.baseUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + suffix) else {
+        guard let url = URL(string: try safeBaseURL(provider.baseUrl, label: "Base URL") + suffix) else {
             throw AiError.invalidURL
         }
         return url
+    }
+
+    private func safeBaseURL(_ value: String, label: String) throws -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: trimmed), let scheme = components.scheme else {
+            throw AiError.invalidURL
+        }
+
+        let host = components.host ?? ""
+        let isLoopback = host == "localhost" || host == "127.0.0.1" || host == "::1"
+        guard scheme == "https" || (scheme == "http" && isLoopback) else {
+            throw AiError.unsafeURL(label)
+        }
+        guard components.user == nil, components.password == nil else {
+            throw AiError.unsafeURL(label)
+        }
+
+        components.query = nil
+        components.fragment = nil
+
+        guard var base = components.url?.absoluteString else {
+            throw AiError.invalidURL
+        }
+
+        while base.hasSuffix("/") {
+            base.removeLast()
+        }
+
+        return base
     }
 }
 
@@ -71,4 +105,6 @@ private struct OpenAIMessage: Encodable {
 
 public enum AiError: Error {
     case invalidURL
+    case missingProxyToken
+    case unsafeURL(String)
 }

@@ -1,10 +1,16 @@
 import { providerFromPreset, providerPresets } from '../data/presets'
 import type { AppData, Conversation } from '../types'
+import {
+  decryptLocalString,
+  encryptLocalString,
+  isLocalEncryptedRecord,
+} from './localCrypto'
 
 const DB_NAME = 'zerochat'
 const DB_VERSION = 1
 const STORE_NAME = 'documents'
 const APP_KEY = 'app'
+const APP_DATA_NAMESPACE = 'app-data'
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -46,11 +52,31 @@ function transaction<T>(
 }
 
 export async function loadAppData(): Promise<AppData | null> {
-  return (await transaction('readonly', (store) => store.get(APP_KEY))) ?? null
+  const stored =
+    (await transaction<unknown | undefined>('readonly', (store) =>
+      store.get(APP_KEY),
+    )) ?? null
+
+  if (!stored) {
+    return null
+  }
+
+  if (isLocalEncryptedRecord(stored)) {
+    return JSON.parse(await decryptLocalString(APP_DATA_NAMESPACE, stored)) as AppData
+  }
+
+  const data = stored as AppData
+  await saveAppData(data)
+  return data
 }
 
 export async function saveAppData(data: AppData): Promise<void> {
-  await transaction('readwrite', (store) => store.put(data, APP_KEY))
+  const encrypted = await encryptLocalString(
+    APP_DATA_NAMESPACE,
+    JSON.stringify(data),
+  )
+
+  await transaction('readwrite', (store) => store.put(encrypted, APP_KEY))
 }
 
 export async function clearAppData(): Promise<void> {

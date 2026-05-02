@@ -110,6 +110,8 @@ cargo build --release
 
 同步数据会先由 ZeroChat 在本机端到端加密，然后再上传。远端只保存 `encrypted-snapshot.v1` 密文。新设备需要输入同一个“同步加密密码/恢复码”才能解密恢复数据，不需要额外安装加密工具。
 
+Web/PWA 本机存储也会加密：聊天、设置和本机密钥记录写入 IndexedDB 前会用 Web Crypto AES-GCM 加密；同步加密密码只在当前浏览器会话保存，关闭标签页后需要重新输入。
+
 当前加密方案：
 
 - AES-256-GCM
@@ -125,7 +127,8 @@ cargo build --release
 4. 设置一个足够长的 `SYNC_TOKEN`。
 5. 设置另一个足够长的 `PROXY_TOKEN`。
 6. 按需修改 `ALLOWED_HOSTS`，只保留你会使用的 AI API 域名。
-7. 部署：
+7. 部署完成后可设置 `ALLOWED_ORIGINS`，只允许你的 ZeroChat 页面跨源访问 Worker。
+8. 部署：
 
 ```bash
 npx wrangler deploy

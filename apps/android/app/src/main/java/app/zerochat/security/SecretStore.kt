@@ -21,18 +21,43 @@ class SecretStore(context: Context) {
         preferences.getString("provider:$providerId", null).orEmpty()
 
     fun setProviderKey(providerId: String, value: String) {
-        preferences.edit().putString("provider:$providerId", value).apply()
+        val key = "provider:$providerId"
+        if (value.isBlank()) {
+            preferences.edit().remove(key).apply()
+        } else {
+            preferences.edit().putString(key, value.trim()).apply()
+        }
+    }
+
+    fun providerProxyToken(providerId: String): String =
+        preferences.getString("proxy:$providerId", null).orEmpty()
+
+    fun setProviderProxyToken(providerId: String, value: String) {
+        val key = "proxy:$providerId"
+        if (value.isBlank()) {
+            preferences.edit().remove(key).apply()
+        } else {
+            preferences.edit().putString(key, value.trim()).apply()
+        }
     }
 
     fun syncToken(): String = preferences.getString("sync-token", null).orEmpty()
 
     fun setSyncToken(value: String) {
-        preferences.edit().putString("sync-token", value).apply()
+        if (value.isBlank()) {
+            preferences.edit().remove("sync-token").apply()
+        } else {
+            preferences.edit().putString("sync-token", value.trim()).apply()
+        }
     }
 
     fun githubToken(): String = preferences.getString("github-token", null).orEmpty()
 
     fun setGithubToken(value: String) {
-        preferences.edit().putString("github-token", value).apply()
+        if (value.isBlank()) {
+            preferences.edit().remove("github-token").apply()
+        } else {
+            preferences.edit().putString("github-token", value.trim()).apply()
+        }
     }
 }

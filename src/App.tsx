@@ -35,11 +35,8 @@ import {
 import {
   clearZeroChatSecrets,
   clearProviderSecrets,
-  getGithubToken,
-  getProviderKey,
-  getProviderProxyToken,
   getSyncPassphrase,
-  getWorkerToken,
+  loadZeroChatSecrets,
   setGithubToken,
   setProviderKey,
   setProviderProxyToken,
@@ -131,38 +128,31 @@ function App() {
   useEffect(() => {
     let mounted = true
 
-    loadAppData()
-      .then((stored) => {
-        if (!mounted) {
-          return
-        }
+    async function hydrate(): Promise<void> {
+      const stored = await loadAppData()
+      const initial = stored ?? createDefaultData()
+      const secrets = await loadZeroChatSecrets(
+        initial.providers.map((provider) => provider.id),
+      )
 
-        const initial = stored ?? createDefaultData()
+      if (mounted) {
         setData(initial)
         setSelectedProviderId(initial.providers[0]?.id ?? '')
-        setProviderKeys(
-          Object.fromEntries(
-            initial.providers.map((provider) => [
-              provider.id,
-              getProviderKey(provider.id),
-            ]),
-          ),
-        )
-        setProviderProxyTokens(
-          Object.fromEntries(
-            initial.providers.map((provider) => [
-              provider.id,
-              getProviderProxyToken(provider.id),
-            ]),
-          ),
-        )
-        setGithubTokenValue(getGithubToken())
-        setWorkerTokenValue(getWorkerToken())
+        setProviderKeys(secrets.providerKeys)
+        setProviderProxyTokens(secrets.providerProxyTokens)
+        setGithubTokenValue(secrets.githubToken)
+        setWorkerTokenValue(secrets.workerToken)
         setSyncPassphraseValue(getSyncPassphrase())
-      })
-      .catch((error: unknown) => {
-        setLoadError(error instanceof Error ? error.message : String(error))
-      })
+      }
+    }
+
+    hydrate().catch((error: unknown) => {
+      if (!mounted) {
+        return
+      }
+
+      setLoadError(error instanceof Error ? error.message : String(error))
+    })
 
     return () => {
       mounted = false
@@ -247,6 +237,12 @@ function App() {
       const next = updater(current)
       dataRef.current = next
       return next
+    })
+  }
+
+  function reportSecretWrite(promise: Promise<void>): void {
+    void promise.catch((error: unknown) => {
+      setNotice(error instanceof Error ? error.message : String(error))
     })
   }
 
@@ -382,7 +378,7 @@ function App() {
       ...current,
       [providerId]: value,
     }))
-    setProviderKey(providerId, value)
+    reportSecretWrite(setProviderKey(providerId, value))
     updateData((current) => bump(current))
   }
 
@@ -391,25 +387,26 @@ function App() {
       ...current,
       [providerId]: value,
     }))
-    setProviderProxyToken(providerId, value)
+    reportSecretWrite(setProviderProxyToken(providerId, value))
     updateData((current) => bump(current))
   }
 
-  function applySyncedSecrets(
+  async function applySyncedSecrets(
     keys: Record<string, string>,
     proxyTokens: Record<string, string>,
-  ): void {
-    clearProviderSecrets()
+  ): Promise<void> {
+    await clearProviderSecrets()
     setProviderKeys(keys)
     setProviderProxyTokens(proxyTokens)
 
-    for (const [providerId, value] of Object.entries(keys)) {
-      setProviderKey(providerId, value)
-    }
-
-    for (const [providerId, value] of Object.entries(proxyTokens)) {
-      setProviderProxyToken(providerId, value)
-    }
+    await Promise.all([
+      ...Object.entries(keys).map(([providerId, value]) =>
+        setProviderKey(providerId, value),
+      ),
+      ...Object.entries(proxyTokens).map(([providerId, value]) =>
+        setProviderProxyToken(providerId, value),
+      ),
+    ])
   }
 
   function changeActiveProvider(providerId: string): void {
@@ -458,14 +455,16 @@ function App() {
     try {
       const result = await performSync(current, {
         encryptionPassphrase: syncPassphraseValue,
+        githubToken: githubTokenValue,
         providerKeys,
         providerProxyTokens,
+        workerToken: workerTokenValue,
       })
       dataRef.current = result.data
       setData(result.data)
 
       if (result.secrets?.providerKeys) {
-        applySyncedSecrets(
+        await applySyncedSecrets(
           result.secrets.providerKeys,
           result.secrets.providerProxyTokens ?? {},
         )
@@ -721,7 +720,7 @@ function App() {
         updatedAt: now(),
       })
       setSelectedProviderId(vault.data.providers[0]?.id ?? '')
-      applySyncedSecrets(
+      await applySyncedSecrets(
         vault.secrets?.providerKeys ?? {},
         vault.secrets?.providerProxyTokens ?? {},
       )
@@ -739,7 +738,7 @@ function App() {
     }
 
     await clearAppData()
-    clearZeroChatSecrets()
+    await clearZeroChatSecrets()
     const fresh = createDefaultData()
     setData(fresh)
     setSelectedProviderId(fresh.providers[0].id)
@@ -1238,7 +1237,7 @@ function App() {
                         value={githubTokenValue}
                         onChange={(event) => {
                           setGithubTokenValue(event.target.value)
-                          setGithubToken(event.target.value)
+                          reportSecretWrite(setGithubToken(event.target.value))
                         }}
                         placeholder="Fine-grained token"
                       />
@@ -1274,7 +1273,7 @@ function App() {
                         value={workerTokenValue}
                         onChange={(event) => {
                           setWorkerTokenValue(event.target.value)
-                          setWorkerToken(event.target.value)
+                          reportSecretWrite(setWorkerToken(event.target.value))
                         }}
                       />
                     </label>

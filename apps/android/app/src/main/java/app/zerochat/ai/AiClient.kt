@@ -14,6 +14,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import java.net.URI
 
 class AiClient {
     private val client = HttpClient(Android)
@@ -24,11 +25,15 @@ class AiClient {
         apiKey: String,
         model: String,
         messages: List<ChatMessage>,
+        proxyToken: String = "",
     ): String {
-        val endpoint = provider.proxyUrl?.trimEnd('/')?.let { "$it/proxy" }
+        val usesProxy = provider.proxyUrl?.isNotBlank() == true
+        val endpoint = provider.proxyUrl?.takeIf { it.isNotBlank() }?.let {
+            "${safeBaseUrl(it, "代理地址")}/proxy"
+        }
             ?: when (provider.kind) {
-                ProviderKind.Anthropic -> "${provider.baseUrl.trimEnd('/')}/messages"
-                ProviderKind.OpenAICompatible -> "${provider.baseUrl.trimEnd('/')}/chat/completions"
+                ProviderKind.Anthropic -> "${safeBaseUrl(provider.baseUrl, "Base URL")}/messages"
+                ProviderKind.OpenAICompatible -> "${safeBaseUrl(provider.baseUrl, "Base URL")}/chat/completions"
             }
 
         val response = client.post(endpoint) {
@@ -39,8 +44,10 @@ class AiClient {
                     ProviderKind.OpenAICompatible -> bearerAuth(apiKey)
                 }
             }
-            provider.proxyUrl?.let {
-                header("x-zerochat-base-url", provider.baseUrl)
+            if (usesProxy) {
+                require(proxyToken.isNotBlank()) { "代理访问密钥为空" }
+                header("x-zerochat-proxy-token", proxyToken.trim())
+                header("x-zerochat-base-url", safeBaseUrl(provider.baseUrl, "Base URL"))
                 header(
                     "x-zerochat-provider-kind",
                     if (provider.kind == ProviderKind.Anthropic) "anthropic" else "openai-compatible",
@@ -54,6 +61,20 @@ class AiClient {
         }
 
         return response.bodyAsText()
+    }
+
+    private fun safeBaseUrl(value: String, label: String): String {
+        val trimmed = value.trim().trimEnd('/')
+        val uri = URI(trimmed)
+        val host = uri.host.orEmpty()
+        val isLoopback = host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
+        val isSafeScheme = uri.scheme == "https" || (uri.scheme == "http" && isLoopback)
+
+        require(uri.userInfo == null) { "$label 不能包含用户名或密码" }
+        require(uri.query == null && uri.fragment == null) { "$label 不能包含 query 或 fragment" }
+        require(isSafeScheme) { "$label 必须使用 HTTPS，本机调试地址除外" }
+
+        return trimmed
     }
 }
 

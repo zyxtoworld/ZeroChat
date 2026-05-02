@@ -6,7 +6,7 @@ ZeroChat 采用“各平台原生 UI + 共享数据协议”的结构。
 
 | 平台 | 语言 | UI / 系统框架 | 本地数据 | 密钥存储 |
 | --- | --- | --- | --- | --- |
-| Web/PWA | TypeScript | React | IndexedDB | localStorage |
+| Web/PWA | TypeScript | React | IndexedDB 加密记录 | Web Crypto 不可导出密钥 |
 | Windows | C++ | WinUI 3 / C++/WinRT | SQLite 或 LocalFolder JSON | Windows Credential Locker |
 | Android | Kotlin | Jetpack Compose | Room | Android Keystore + EncryptedSharedPreferences |
 | iOS | Swift | SwiftUI | SwiftData 或 SQLite | Keychain |
@@ -47,6 +47,7 @@ Web/PWA 仍然保留，因为浏览器和 Cloudflare Pages 是最省力的使用
 5. Gist、Cloudflare Worker、KV 和服务器都只能看到密文。
 
 GitHub Token 和 Cloudflare Worker 同步访问密钥不进入 vault，因为新设备必须先用它们获取远端密文。
+Web/PWA 本机落盘数据也会用浏览器内的不可导出 AES-GCM 密钥加密，降低浏览器配置文件或 IndexedDB 被直接读取时的泄露风险。
 
 ## 同步冲突策略
 
@@ -55,8 +56,10 @@ GitHub Token 和 Cloudflare Worker 同步访问密钥不进入 vault，因为新
 1. 本地和远端都带 `updatedAt`。
 2. 同步时先读取远端。
 3. 如果远端 `updatedAt` 更新，采用远端 snapshot。
-4. 否则上传本地 snapshot。
-5. AI API Key 只进入加密 vault，不进入明文 snapshot。
+4. 新设备没有本地用户内容时，即使本机默认数据时间较新，也优先采用远端，避免首次同步覆盖云端。
+5. 否则上传本地 snapshot。
+6. Worker 会拒绝旧快照覆盖较新的已存快照。
+7. AI API Key 只进入加密 vault，不进入明文 snapshot。
 
 后续如果需要多人协作或频繁多端离线编辑，再把对话消息升级为按消息级别合并。
 

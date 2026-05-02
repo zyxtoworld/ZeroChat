@@ -1,6 +1,11 @@
 use crate::models::AppSnapshot;
 use anyhow::Result;
-use std::{fs, path::PathBuf};
+use std::{
+    fs::{self, OpenOptions},
+    io::Write,
+    os::unix::fs::OpenOptionsExt,
+    path::PathBuf,
+};
 
 pub struct SnapshotStore {
     file: PathBuf,
@@ -33,7 +38,13 @@ impl SnapshotStore {
 
     pub fn save(&self, snapshot: &AppSnapshot) -> Result<()> {
         let text = serde_json::to_string_pretty(snapshot)?;
-        fs::write(&self.file, text)?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&self.file)?;
+        file.write_all(text.as_bytes())?;
         Ok(())
     }
 }

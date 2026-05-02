@@ -14,12 +14,43 @@ function trimSlash(value: string): string {
   return value.replace(/\/+$/, '')
 }
 
-function buildEndpoint(provider: ProviderConfig): string {
-  if (provider.proxyUrl?.trim()) {
-    return `${trimSlash(provider.proxyUrl.trim())}/proxy`
+function isLoopbackHost(hostname: string): boolean {
+  return (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1' ||
+    hostname === '[::1]'
+  )
+}
+
+function safeBaseUrl(value: string, label: string): string {
+  let url: URL
+
+  try {
+    url = new URL(value.trim())
+  } catch {
+    throw new Error(`${label} 格式不正确`)
   }
 
-  const baseUrl = trimSlash(provider.baseUrl.trim())
+  if (url.username || url.password) {
+    throw new Error(`${label} 不能包含用户名或密码`)
+  }
+
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
+    throw new Error(`${label} 必须使用 HTTPS，本机调试地址除外`)
+  }
+
+  url.hash = ''
+  url.search = ''
+  return trimSlash(url.toString())
+}
+
+function buildEndpoint(provider: ProviderConfig): string {
+  if (provider.proxyUrl?.trim()) {
+    return `${safeBaseUrl(provider.proxyUrl, '代理地址')}/proxy`
+  }
+
+  const baseUrl = safeBaseUrl(provider.baseUrl, 'Base URL')
 
   if (provider.kind === 'anthropic') {
     return baseUrl.endsWith('/messages') ? baseUrl : `${baseUrl}/messages`
@@ -36,7 +67,7 @@ function proxyHeaders(provider: ProviderConfig): Record<string, string> {
   }
 
   return {
-    'x-zerochat-base-url': provider.baseUrl.trim(),
+    'x-zerochat-base-url': safeBaseUrl(provider.baseUrl, 'Base URL'),
     'x-zerochat-provider-kind': provider.kind,
   }
 }

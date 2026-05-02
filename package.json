@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "check:security": "node scripts/worker-security-check.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },

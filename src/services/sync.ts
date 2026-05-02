@@ -1,4 +1,3 @@
-import { getGithubToken, getWorkerToken } from '../storage/secrets'
 import type {
   AppData,
   ProviderSecrets,
@@ -12,8 +11,10 @@ const DEFAULT_GIST_FILE = 'zerochat-sync.json'
 
 interface SyncContext {
   encryptionPassphrase: string
+  githubToken: string
   providerKeys: Record<string, string>
   providerProxyTokens: Record<string, string>
+  workerToken: string
 }
 
 function markSynced(data: AppData, message: string): AppData {
@@ -37,7 +38,7 @@ function mergeSyncConfig(remote: SyncConfig, local: SyncConfig): SyncConfig {
     gistFile: remote.gistFile ?? local.gistFile,
     workerEndpoint: remote.workerEndpoint ?? local.workerEndpoint,
     lastSyncAt: Date.now(),
-    lastSyncStatus: '已采用远端较新的加密数据',
+    lastSyncStatus: '已采用远端加密数据',
   }
 }
 
@@ -52,6 +53,28 @@ function acceptRemoteVault(remote: SyncVault, local: AppData): SyncVault {
       providerProxyTokens: remote.secrets?.providerProxyTokens ?? {},
     },
   }
+}
+
+function hasLocalUserContent(data: AppData): boolean {
+  return (
+    data.conversations.some((conversation) => conversation.messages.length > 0) ||
+    data.providers.length > 1 ||
+    data.providers.some((provider) => provider.updatedAt !== provider.createdAt) ||
+    data.preferences.theme !== 'system' ||
+    data.preferences.compactMode
+  )
+}
+
+function shouldAcceptRemoteVault(remote: SyncVault, local: AppData): boolean {
+  if (remote.data.updatedAt > local.updatedAt) {
+    return true
+  }
+
+  return !local.sync.lastSyncAt && !hasLocalUserContent(local)
+}
+
+function isPlainRecord(value: unknown): value is Record<string, string> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 async function parseRemoteVault(
@@ -71,7 +94,19 @@ async function parseRemoteVault(
   }
 
   if (isEncryptedSnapshot(parsed)) {
-    return decryptVault(parsed, passphrase)
+    const vault = await decryptVault(parsed, passphrase)
+
+    if (
+      vault.data?.version !== 1 ||
+      !Array.isArray(vault.data.providers) ||
+      !Array.isArray(vault.data.conversations) ||
+      !isPlainRecord(vault.secrets?.providerKeys) ||
+      !isPlainRecord(vault.secrets?.providerProxyTokens)
+    ) {
+      throw new Error('远端加密数据格式不正确')
+    }
+
+    return vault
   }
 
   throw new Error('远端同步数据不是加密快照，已拒绝导入')
@@ -96,6 +131,43 @@ async function serializeVault(
 async function readError(response: Response): Promise<string> {
   const text = await response.text()
   return text || `HTTP ${response.status}`
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  return (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1' ||
+    hostname === '[::1]'
+  )
+}
+
+function normalizeWorkerEndpoint(value: string | undefined): string {
+  const trimmed = value?.trim().replace(/\/+$/, '') ?? ''
+
+  if (!trimmed) {
+    throw new Error('请先填写 Cloudflare Worker 地址')
+  }
+
+  let url: URL
+
+  try {
+    url = new URL(trimmed)
+  } catch {
+    throw new Error('Cloudflare Worker 地址格式不正确')
+  }
+
+  if (url.username || url.password) {
+    throw new Error('Cloudflare Worker 地址不能包含用户名或密码')
+  }
+
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
+    throw new Error('Cloudflare Worker 地址必须使用 HTTPS，本机调试地址除外')
+  }
+
+  url.hash = ''
+  url.search = ''
+  return url.toString().replace(/\/+$/, '')
 }
 
 async function patchGist(
@@ -129,7 +201,7 @@ async function syncWithGist(
   data: AppData,
   context: SyncContext,
 ): Promise<SyncResult> {
-  const token = getGithubToken()
+  const token = context.githubToken.trim()
   const fileName = data.sync.gistFile || DEFAULT_GIST_FILE
   const secrets: ProviderSecrets = {
     providerKeys: context.providerKeys,
@@ -162,7 +234,7 @@ async function syncWithGist(
     )
   }
 
-  if (remote && remote.data.updatedAt > data.updatedAt) {
+  if (remote && shouldAcceptRemoteVault(remote, data)) {
     const accepted = acceptRemoteVault(remote, data)
     return {
       data: accepted.data,
@@ -240,15 +312,11 @@ async function syncWithCloudflare(
   data: AppData,
   context: SyncContext,
 ): Promise<SyncResult> {
-  const token = getWorkerToken()
-  const endpoint = data.sync.workerEndpoint?.replace(/\/+$/, '')
+  const token = context.workerToken.trim()
+  const endpoint = normalizeWorkerEndpoint(data.sync.workerEndpoint)
   const secrets: ProviderSecrets = {
     providerKeys: context.providerKeys,
     providerProxyTokens: context.providerProxyTokens,
-  }
-
-  if (!endpoint) {
-    throw new Error('请先填写 Cloudflare Worker 地址')
   }
 
   if (!token) {
@@ -269,7 +337,7 @@ async function syncWithCloudflare(
     ? await parseRemoteVault(await readResponse.text(), context.encryptionPassphrase)
     : null
 
-  if (remote && remote.data.updatedAt > data.updatedAt) {
+  if (remote && shouldAcceptRemoteVault(remote, data)) {
     const accepted = acceptRemoteVault(remote, data)
     return {
       data: accepted.data,

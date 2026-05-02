@@ -21,11 +21,11 @@
     },
     "encryptedAt": {
       "type": "integer",
-      "minimum": 0
+      "minimum": 1
     },
     "updatedAt": {
       "type": "integer",
-      "minimum": 0
+      "minimum": 1
     },
     "crypto": {
       "type": "object",
@@ -39,15 +39,18 @@
           "const": "PBKDF2-SHA256"
         },
         "iterations": {
-          "type": "integer",
-          "minimum": 600000
+          "const": 600000
         },
         "salt": {
           "type": "string",
+          "minLength": 24,
+          "maxLength": 24,
           "contentEncoding": "base64"
         },
         "iv": {
           "type": "string",
+          "minLength": 16,
+          "maxLength": 16,
           "contentEncoding": "base64"
         },
         "aad": {

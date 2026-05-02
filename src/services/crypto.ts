@@ -6,6 +6,7 @@ const decoder = new TextDecoder()
 export const VAULT_KDF = 'PBKDF2-SHA256'
 export const VAULT_CIPHER = 'AES-256-GCM'
 export const VAULT_KDF_ITERATIONS = 600_000
+export const VAULT_KDF_MAX_ITERATIONS = 2_000_000
 
 const SALT_BYTES = 16
 const IV_BYTES = 12
@@ -46,6 +47,98 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 
 function aadFor(updatedAt: number): Uint8Array {
   return encoder.encode(`zerochat:vault:v1:${updatedAt}`)
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) {
+    return false
+  }
+
+  let diff = 0
+
+  for (let index = 0; index < left.byteLength; index += 1) {
+    diff |= left[index] ^ right[index]
+  }
+
+  return diff === 0
+}
+
+function assertSafeTimestamp(value: number, field: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${field} 不正确`)
+  }
+}
+
+function decodeFixedBase64(
+  value: string,
+  size: number,
+  field: string,
+): Uint8Array {
+  let bytes: Uint8Array
+
+  try {
+    bytes = base64ToBytes(value)
+  } catch {
+    throw new Error(`${field} 不是有效的 base64`)
+  }
+
+  if (bytes.byteLength !== size) {
+    throw new Error(`${field} 长度不正确`)
+  }
+
+  return bytes
+}
+
+function decodeBase64(value: string, field: string): Uint8Array {
+  try {
+    return base64ToBytes(value)
+  } catch {
+    throw new Error(`${field} 不是有效的 base64`)
+  }
+}
+
+function assertEnvelopeCrypto(envelope: EncryptedSnapshotEnvelope): {
+  salt: Uint8Array
+  iv: Uint8Array
+  aad: Uint8Array
+  payload: Uint8Array
+} {
+  assertSafeTimestamp(envelope.encryptedAt, 'encryptedAt')
+  assertSafeTimestamp(envelope.updatedAt, 'updatedAt')
+
+  if (envelope.crypto.cipher !== VAULT_CIPHER || envelope.crypto.kdf !== VAULT_KDF) {
+    throw new Error('不支持的加密快照格式')
+  }
+
+  if (
+    !Number.isSafeInteger(envelope.crypto.iterations) ||
+    envelope.crypto.iterations < VAULT_KDF_ITERATIONS ||
+    envelope.crypto.iterations > VAULT_KDF_MAX_ITERATIONS
+  ) {
+    throw new Error('加密快照的 KDF 迭代次数不安全')
+  }
+
+  const salt = decodeFixedBase64(envelope.crypto.salt, SALT_BYTES, 'salt')
+  const iv = decodeFixedBase64(envelope.crypto.iv, IV_BYTES, 'iv')
+  const aad = decodeBase64(envelope.crypto.aad, 'aad')
+  const expectedAad = aadFor(envelope.updatedAt)
+
+  if (!bytesEqual(aad, expectedAad)) {
+    throw new Error('加密快照认证信息不匹配')
+  }
+
+  const payload = decodeBase64(envelope.payload, 'payload')
+
+  if (payload.byteLength <= 16) {
+    throw new Error('加密快照内容为空或已损坏')
+  }
+
+  return {
+    salt,
+    iv,
+    aad: expectedAad,
+    payload,
+  }
 }
 
 async function deriveVaultKey(
@@ -138,14 +231,7 @@ export async function decryptVault(
   passphrase: string,
 ): Promise<SyncVault> {
   assertUsablePassphrase(passphrase)
-
-  if (envelope.crypto.cipher !== VAULT_CIPHER || envelope.crypto.kdf !== VAULT_KDF) {
-    throw new Error('不支持的加密快照格式')
-  }
-
-  const salt = base64ToBytes(envelope.crypto.salt)
-  const iv = base64ToBytes(envelope.crypto.iv)
-  const aad = base64ToBytes(envelope.crypto.aad)
+  const { salt, iv, aad, payload } = assertEnvelopeCrypto(envelope)
   const key = await deriveVaultKey(
     passphrase,
     salt,
@@ -161,10 +247,16 @@ export async function decryptVault(
         tagLength: 128,
       },
       key,
-      toArrayBuffer(base64ToBytes(envelope.payload)),
+      toArrayBuffer(payload),
     )
 
-    return JSON.parse(decoder.decode(decrypted)) as SyncVault
+    const vault = JSON.parse(decoder.decode(decrypted)) as SyncVault
+
+    if (vault.data?.updatedAt !== envelope.updatedAt) {
+      throw new Error('加密快照时间戳不匹配')
+    }
+
+    return vault
   } catch {
     throw new Error('解密失败：同步加密密码不正确，或远端数据已损坏')
   }

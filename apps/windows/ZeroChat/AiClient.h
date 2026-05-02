@@ -14,6 +14,7 @@ namespace ZeroChat
         winrt::Windows::Foundation::IAsyncAction StreamChatAsync(
             ProviderConfig provider,
             std::wstring const& apiKey,
+            std::wstring const& proxyToken,
             std::wstring const& model,
             std::vector<ChatMessage> messages,
             TokenHandler onToken);
