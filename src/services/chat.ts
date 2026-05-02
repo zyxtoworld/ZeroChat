@@ -137,6 +137,41 @@ function modelListHeaders(
   }
 }
 
+function connectionError(provider: ProviderConfig, target: string): Error {
+  if (provider.proxyUrl?.trim()) {
+    return new Error(
+      `无法连接到${target}；请检查代理地址、代理访问密钥、Worker 白名单和网络。`,
+    )
+  }
+
+  const baseUrl = provider.baseUrl.toLowerCase()
+
+  if (baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1')) {
+    const localTarget = target.startsWith('AI') ? `本地 ${target}` : `本地${target}`
+
+    return new Error(
+      `无法连接到${localTarget}；请确认本地 AI 服务已启动，并且 Base URL 正确。`,
+    )
+  }
+
+  return new Error(
+    `无法连接到${target}；请检查 Base URL、API 网络权限和当前网络。浏览器直连受限时，可以配置 Worker 代理。`,
+  )
+}
+
+async function fetchProviderEndpoint(
+  provider: ProviderConfig,
+  target: string,
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  try {
+    return await fetch(url, init)
+  } catch {
+    throw connectionError(provider, target)
+  }
+}
+
 function recentMessages(messages: ChatMessage[]): ChatMessage[] {
   return messages
     .filter((message) => message.role !== 'system' || message.content.trim())
@@ -349,11 +384,16 @@ export async function listProviderModels(
     throw new Error('请先填写这个服务商的代理访问密钥')
   }
 
-  const response = await fetch(buildModelsEndpoint(provider), {
-    method: 'GET',
-    signal,
-    headers: modelListHeaders(provider, apiKey, proxyToken),
-  })
+  const response = await fetchProviderEndpoint(
+    provider,
+    '模型列表接口',
+    buildModelsEndpoint(provider),
+    {
+      method: 'GET',
+      signal,
+      headers: modelListHeaders(provider, apiKey, proxyToken),
+    },
+  )
 
   await assertOk(response)
 
@@ -384,14 +424,53 @@ export async function streamChat(options: StreamOptions): Promise<void> {
 
   if (provider.kind === 'anthropic') {
     const systemMessage = messages.find((message) => message.role === 'system')
-    const response = await fetch(endpoint, {
+    const response = await fetchProviderEndpoint(
+      provider,
+      'AI 对话接口',
+      endpoint,
+      {
+        method: 'POST',
+        signal,
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+          ...(provider.proxyUrl?.trim()
+            ? { 'x-zerochat-proxy-token': proxyToken }
+            : {}),
+          ...proxyHeaders(provider),
+        },
+        body: JSON.stringify({
+          model: model.trim(),
+          max_tokens: 4096,
+          stream: true,
+          system: systemMessage?.content,
+          messages: recentMessages(messages)
+            .filter((message) => message.role !== 'system')
+            .map((message) => ({
+              role: message.role === 'assistant' ? 'assistant' : 'user',
+              content: message.content,
+            })),
+        }),
+      },
+    )
+
+    await assertOk(response)
+    await readAnthropicStream(response, onToken)
+    return
+  }
+
+  const response = await fetchProviderEndpoint(
+    provider,
+    'AI 对话接口',
+    endpoint,
+    {
       method: 'POST',
       signal,
       headers: {
         'content-type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
+        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
         ...(provider.proxyUrl?.trim()
           ? { 'x-zerochat-proxy-token': proxyToken }
           : {}),
@@ -399,44 +478,15 @@ export async function streamChat(options: StreamOptions): Promise<void> {
       },
       body: JSON.stringify({
         model: model.trim(),
-        max_tokens: 4096,
+        messages: recentMessages(messages).map((message) => ({
+          role: message.role,
+          content: message.content,
+        })),
         stream: true,
-        system: systemMessage?.content,
-        messages: recentMessages(messages)
-          .filter((message) => message.role !== 'system')
-          .map((message) => ({
-            role: message.role === 'assistant' ? 'assistant' : 'user',
-            content: message.content,
-          })),
+        temperature: 0.7,
       }),
-    })
-
-    await assertOk(response)
-    await readAnthropicStream(response, onToken)
-    return
-  }
-
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    signal,
-    headers: {
-      'content-type': 'application/json',
-      ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
-      ...(provider.proxyUrl?.trim()
-        ? { 'x-zerochat-proxy-token': proxyToken }
-        : {}),
-      ...proxyHeaders(provider),
     },
-    body: JSON.stringify({
-      model: model.trim(),
-      messages: recentMessages(messages).map((message) => ({
-        role: message.role,
-        content: message.content,
-      })),
-      stream: true,
-      temperature: 0.7,
-    }),
-  })
+  )
 
   await assertOk(response)
   await readOpenAIStream(response, onToken)

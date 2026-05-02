@@ -723,6 +723,18 @@ textarea:focus {
   margin-top: 16px;
 }
 
+.guide-requirement {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--field);
+}
+
+.modal-notice {
+  margin: 14px 0 0;
+}
+
 .empty-state {
   min-height: 100svh;
   display: grid;

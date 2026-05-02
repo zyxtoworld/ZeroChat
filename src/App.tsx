@@ -86,6 +86,27 @@ function cleanTitle(text: string): string {
   return title.length > 28 ? `${title.slice(0, 28)}...` : title || '新对话'
 }
 
+function preferredProviderId(data: AppData): string {
+  const active =
+    data.conversations.find(
+      (conversation) =>
+        conversation.id === data.preferences.activeConversationId,
+    ) ?? data.conversations[0]
+
+  return active?.providerId ?? data.providers[0]?.id ?? ''
+}
+
+function presetIdForProvider(provider: ProviderConfig): string {
+  return (
+    providerPresets.find(
+      (preset) =>
+        preset.kind === provider.kind &&
+        preset.name === provider.name &&
+        preset.baseUrl === provider.baseUrl,
+    )?.id ?? providerPresets[0].id
+  )
+}
+
 function timeLabel(value?: number): string {
   if (!value) {
     return '尚未同步'
@@ -210,7 +231,7 @@ function App() {
         syncPassphraseRef.current = syncPassphrase
         dataRef.current = initial
         setData(initial)
-        setSelectedProviderId(initial.providers[0]?.id ?? '')
+        setSelectedProviderId(preferredProviderId(initial))
         setProviderKeys(secrets.providerKeys)
         setProviderProxyTokens(secrets.providerProxyTokens)
         setGithubTokenValue(secrets.githubToken)
@@ -411,6 +432,25 @@ function App() {
   const selectedProviderModels = selectedProvider
     ? providerModels[selectedProvider.id] ?? []
     : []
+  const selectedProviderKey = selectedProvider
+    ? providerKeys[selectedProvider.id] ?? ''
+    : ''
+  const guideMissingModel = Boolean(
+    selectedProvider && !selectedProvider.model.trim(),
+  )
+  const guideMissingKey = Boolean(
+    selectedProvider?.needsApiKey && !selectedProviderKey.trim(),
+  )
+  const guideCanFinish = Boolean(
+    selectedProvider && !guideMissingModel && !guideMissingKey,
+  )
+  const guideRequirement = guideMissingModel
+    ? selectedProvider?.needsApiKey
+      ? '填写默认模型和 API Key 后即可完成接入；只想先试用界面可以跳过。'
+      : '填写默认模型后即可完成接入；只想先试用界面可以跳过。'
+    : guideMissingKey
+      ? '填写 API Key 后即可完成接入；只想先试用界面可以跳过。'
+      : ''
 
   function updateData(updater: (current: AppData) => AppData): AppData | null {
     const current = dataRef.current
@@ -553,6 +593,30 @@ function App() {
       }),
     )
     setSelectedProviderId(provider.id)
+  }
+
+  function usePresetInGuide(): void {
+    const preset =
+      providerPresets.find((item) => item.id === selectedPresetId) ??
+      providerPresets[0]
+    const existing = dataRef.current?.providers.find(
+      (provider) =>
+        provider.kind === preset.kind &&
+        provider.name === preset.name &&
+        provider.baseUrl === preset.baseUrl,
+    )
+
+    if (existing) {
+      setSelectedProviderId(existing.id)
+
+      if (!existing.model.trim() && preset.model) {
+        updateProvider(existing.id, { model: preset.model })
+      }
+
+      return
+    }
+
+    addProviderFromSelectedPreset()
   }
 
   async function removeProvider(providerId: string): Promise<void> {
@@ -888,6 +952,7 @@ function App() {
         model: provider.model,
       })),
     )
+    setSelectedProviderId(providerId)
   }
 
   function updateConversationModel(model: string): void {
@@ -1104,7 +1169,7 @@ function App() {
       if (failed) {
         scheduleAutoSync(failed, 0, { allowStreaming: true })
       }
-      setNotice(message)
+      setNotice('')
     } finally {
       abortRef.current = null
       setSending(false)
@@ -1331,7 +1396,7 @@ function App() {
       if (failed) {
         scheduleAutoSync(failed, 0, { allowStreaming: true })
       }
-      setNotice(message)
+      setNotice('')
     } finally {
       abortRef.current = null
       setSending(false)
@@ -1346,24 +1411,68 @@ function App() {
   }
 
   function finishGuide(localOnly = false): void {
+    if (!localOnly && !guideCanFinish) {
+      setNotice(
+        guideRequirement ||
+          '请先完成模型配置；只想先试用界面可以选择跳过。',
+      )
+      return
+    }
+
+    const providerForGuide = localOnly ? null : selectedProvider
+
     updateData((current) =>
-      bump({
-        ...current,
-        sync: localOnly
-          ? {
-              ...current.sync,
-              mode: 'local',
-              autoSync: false,
-              encryptionEnabled: true,
-            }
-          : current.sync,
-        preferences: {
-          ...current.preferences,
-          firstRunDone: true,
+      bump(
+        {
+          ...current,
+          conversations:
+            providerForGuide && current.preferences.activeConversationId
+              ? current.conversations.map((conversation) =>
+                  conversation.id === current.preferences.activeConversationId
+                    ? {
+                        ...conversation,
+                        providerId: providerForGuide.id,
+                        model: providerForGuide.model.trim(),
+                        updatedAt: now(),
+                      }
+                    : conversation,
+                )
+              : current.conversations,
+          sync: localOnly
+            ? {
+                ...current.sync,
+                mode: 'local',
+                autoSync: false,
+                encryptionEnabled: true,
+              }
+            : current.sync,
+          preferences: {
+            ...current.preferences,
+            firstRunDone: true,
+          },
         },
-      }),
+      ),
     )
+    setNotice('')
     setGuideOpen(false)
+  }
+
+  function openSettings(): void {
+    if (activeProvider) {
+      setSelectedProviderId(activeProvider.id)
+    }
+
+    setSettingsOpen(true)
+  }
+
+  function openGuide(): void {
+    if (activeProvider) {
+      setSelectedProviderId(activeProvider.id)
+      setSelectedPresetId(presetIdForProvider(activeProvider))
+    }
+
+    setNotice('')
+    setGuideOpen(true)
   }
 
   function changeSyncMode(mode: SyncMode): void {
@@ -1373,6 +1482,7 @@ function App() {
         sync: {
           ...current.sync,
           mode,
+          autoSync: mode === 'local' ? false : current.sync.autoSync,
           encryptionEnabled: true,
         },
       }),
@@ -1472,7 +1582,7 @@ function App() {
       }
       dataRef.current = imported
       setData(imported)
-      setSelectedProviderId(vault.data.providers[0]?.id ?? '')
+      setSelectedProviderId(preferredProviderId(imported))
       await applySyncedSecrets(
         vault.secrets?.providerKeys ?? {},
         vault.secrets?.providerProxyTokens ?? {},
@@ -1510,7 +1620,7 @@ function App() {
     fresh.preferences.dismissedDangerWarnings = dismissedDangerWarnings
     dataRef.current = fresh
     setData(fresh)
-    setSelectedProviderId(fresh.providers[0].id)
+    setSelectedProviderId(preferredProviderId(fresh))
     setProviderKeys({})
     setProviderProxyTokens({})
     setGithubTokenValue('')
@@ -1541,6 +1651,29 @@ function App() {
       </main>
     )
   }
+
+  const welcomeHint = activeConversation.model.trim()
+    ? activeProvider.needsApiKey
+      ? '确认 API Key 已填写后即可发送。'
+      : '输入消息即可发送。'
+    : activeProvider.needsApiKey
+      ? '获取或填写模型名称，并在设置里填写 API Key 后即可发送。'
+      : '获取或填写模型名称后即可发送。'
+  const syncRequirement =
+    data.sync.mode === 'local'
+      ? '本地模式不会上传数据；需要跨设备时选择 Gist 或 Cloudflare。'
+      : !syncPassphraseValue.trim()
+        ? '请先填写同步加密密码。'
+        : data.sync.mode === 'gist' && !githubTokenValue.trim()
+          ? '请先填写 GitHub Token。'
+          : data.sync.mode === 'cloudflare' &&
+              !data.sync.workerEndpoint?.trim()
+            ? '请先填写 Worker 地址。'
+            : data.sync.mode === 'cloudflare' && !workerTokenValue.trim()
+              ? '请先填写同步密钥。'
+              : ''
+  const remoteSyncReady = data.sync.mode !== 'local' && !syncRequirement
+  const manualSyncReady = data.sync.mode === 'local' || remoteSyncReady
 
   return (
     <div className="app-shell">
@@ -1603,7 +1736,7 @@ function App() {
           <button
             className="ghost-button"
             type="button"
-            onClick={() => setSettingsOpen(true)}
+            onClick={openSettings}
           >
             <Settings size={16} />
             设置
@@ -1704,12 +1837,14 @@ function App() {
             <div className="welcome-panel">
               <Bot size={28} />
               <h2>开始对话</h2>
-              <p>选择服务商、获取或填写模型名称和 API Key 后即可发送。</p>
+              <p>{welcomeHint}</p>
             </div>
           ) : (
             activeConversation.messages.map((message) => {
               const isEditing = editingMessageId === message.id
               const isStreaming = message.status === 'streaming'
+              const showErrorInMeta =
+                Boolean(message.error) && message.error !== message.content
 
               return (
                 <article className={assistantMessageClass(message)} key={message.id}>
@@ -1720,7 +1855,10 @@ function App() {
                     <div className="message-meta">
                       <strong>{message.role === 'user' ? '你' : 'AI'}</strong>
                       {isStreaming ? <span>生成中</span> : null}
-                      {message.error ? <span>{message.error}</span> : null}
+                      {showErrorInMeta ? <span>{message.error}</span> : null}
+                      {!showErrorInMeta && message.status === 'error' ? (
+                        <span>生成失败</span>
+                      ) : null}
                       {!isStreaming ? (
                         <div className="message-actions">
                           <button
@@ -1815,7 +1953,7 @@ function App() {
             <div className="modal-header">
               <div>
                 <h2>设置</h2>
-                <p>密钥只保存在当前设备。</p>
+                <p>AI Key 会端到端加密同步；同步访问密钥只留在本机。</p>
               </div>
               <button
                 className="icon-button"
@@ -2112,6 +2250,11 @@ function App() {
                 <p className="settings-note">
                   聊天、设置和 AI API Key 会先在本机加密，再上传到 Gist 或 Cloudflare。
                 </p>
+                {syncRequirement ? (
+                  <p className="settings-note guide-requirement">
+                    {syncRequirement}
+                  </p>
+                ) : null}
 
                 {data.sync.mode === 'gist' ? (
                   <>
@@ -2206,6 +2349,7 @@ function App() {
                   <input
                     type="checkbox"
                     checked={data.sync.autoSync}
+                    disabled={!remoteSyncReady}
                     onChange={(event) =>
                       updateData((current) =>
                         bump({
@@ -2225,7 +2369,7 @@ function App() {
                   className="primary-button"
                   type="button"
                   onClick={() => runSync()}
-                  disabled={syncing}
+                  disabled={syncing || !manualSyncReady}
                 >
                   <RefreshCw size={16} className={syncing ? 'spin' : ''} />
                   立即同步
@@ -2289,7 +2433,7 @@ function App() {
                 <button
                   className="ghost-button"
                   type="button"
-                  onClick={() => setGuideOpen(true)}
+                  onClick={openGuide}
                 >
                   <RotateCcw size={16} />
                   打开配置引导
@@ -2405,7 +2549,7 @@ function App() {
                 <button
                   className="ghost-button"
                   type="button"
-                  onClick={addProviderFromSelectedPreset}
+                  onClick={usePresetInGuide}
                 >
                   <Check size={16} />
                   使用这个预设
@@ -2523,11 +2667,22 @@ function App() {
               </div>
             </div>
 
+            {guideRequirement ? (
+              <p className="settings-note guide-requirement">{guideRequirement}</p>
+            ) : null}
+
+            {notice ? <div className="notice modal-notice">{notice}</div> : null}
+
             <div className="modal-actions">
               <button className="ghost-button" type="button" onClick={() => finishGuide(true)}>
                 跳过，先本地使用
               </button>
-              <button className="primary-button" type="button" onClick={() => finishGuide()}>
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => finishGuide()}
+                disabled={!guideCanFinish}
+              >
                 <Check size={16} />
                 完成
               </button>
