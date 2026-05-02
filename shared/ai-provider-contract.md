@@ -8,7 +8,7 @@ ZeroChat 各端用相同的服务商字段：
 | `baseUrl` | 厂商接口根地址 |
 | `proxyUrl` | 可选。浏览器或移动网络受限时走自己的 Worker |
 | `model` | 用户填写的平台模型名 |
-| `needsApiKey` | 是否发送前要求 API Key |
+| `needsApiKey` | 是否需要用户填写服务商密钥 |
 
 所有服务商都必须是远程 HTTPS 地址。客户端和 Worker 会拒绝 HTTP、localhost、内网、局域网和带用户名密码的 Base URL。ZeroChat 不内置本地 AI 服务商；需要接入第三方中转时，按中转方协议选择 OpenAI 兼容、OpenAI Responses 或 Anthropic 类型并填写它给出的远程 Base URL。
 

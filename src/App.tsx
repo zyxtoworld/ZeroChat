@@ -514,10 +514,10 @@ function App() {
     ? '填写 HTTPS Base URL 后即可继续；自定义中转也必须是远程地址。'
     : guideMissingModel
       ? selectedProvider?.needsApiKey
-        ? '填写默认模型和 API Key 后即可完成接入；只想先试用界面可以跳过。'
-        : '填写默认模型后即可完成接入；只想先试用界面可以跳过。'
+        ? '填写默认模型和服务商密钥后即可使用；只想先看界面可以跳过。'
+        : '填写默认模型后即可使用；只想先看界面可以跳过。'
       : guideMissingKey
-        ? '填写 API Key 后即可完成接入；只想先试用界面可以跳过。'
+        ? '填写服务商密钥后即可使用；只想先看界面可以跳过。'
         : ''
 
   function updateData(updater: (current: AppData) => AppData): AppData | null {
@@ -724,11 +724,11 @@ function App() {
     const confirmed = await requestDangerConfirmation({
       id: 'delete-provider',
       title: '删除服务商配置',
-      body: `将删除「${target.name}」的服务商配置和本机 API Key。`,
+      body: `将删除「${target.name}」的服务商配置和本机服务商密钥。`,
       details: [
-        '如果已开启即时自动同步，云端加密数据里对应的服务商配置和 API Key 也会被删除。',
+        '如果已开启即时自动同步，云端加密数据里对应的服务商配置和密钥也会被删除。',
         `使用这个服务商的对话会改用「${fallback.name}」。`,
-        '删除后需要重新添加服务商并输入 API Key 才能恢复发送能力。',
+        '删除后需要重新添加服务商并输入密钥才能恢复发送能力。',
       ],
       confirmLabel: '删除服务商',
     })
@@ -1648,7 +1648,7 @@ function App() {
       const confirmed = await requestDangerConfirmation({
         id: 'import-backup-overwrite',
         title: '导入会覆盖当前数据',
-        body: '导入加密备份会替换当前本机聊天记录、服务商配置、设置和已同步的 API Key。',
+        body: '导入加密备份会替换当前本机聊天记录、服务商配置、设置和已同步的服务商密钥。',
         details: [
           '如果导入后的数据开启了即时自动同步，之后同步时可能会把云端也改成导入的版本。',
           '当前未导出的本机改动可能无法恢复。',
@@ -1715,7 +1715,7 @@ function App() {
     const confirmed = await requestDangerConfirmation({
       id: 'reset-local-data',
       title: '重置本机数据',
-      body: '将清空本机聊天记录、配置、AI API Key、GitHub Token、Worker 同步密钥和同步加密密码。',
+      body: '将清空本机聊天记录、配置、服务商密钥、GitHub Token、Worker 同步密钥和同步加密密码。',
       details: [
         '这个操作不会主动删除云端同步库里的密文。',
         '如果没有加密备份或同步加密密码，旧数据可能无法在本机恢复。',
@@ -1770,10 +1770,10 @@ function App() {
 
   const welcomeHint = activeModel.trim()
     ? activeProvider.needsApiKey
-      ? '确认 API Key 已填写后即可发送。'
+      ? '确认服务商密钥已填写后即可发送。'
       : '输入消息即可发送。'
     : activeProvider.needsApiKey
-      ? '填写 API Key，并获取或填写模型名称后即可发送。'
+      ? '填写服务商密钥，并获取或填写模型名称后即可发送。'
       : '获取或填写模型名称后即可发送。'
   const syncRequirement =
     data.sync.mode === 'local'
@@ -2069,7 +2069,7 @@ function App() {
             <div className="modal-header">
               <div>
                 <h2>设置</h2>
-                <p>AI Key 会端到端加密同步；同步访问密钥只留在本机。</p>
+                <p>服务商密钥会端到端加密同步；同步访问密钥只留在本机。</p>
               </div>
               <button
                 className="icon-button"
@@ -2207,7 +2207,7 @@ function App() {
                     />
                   </label>
                   <label>
-                    API Key
+                    服务商密钥
                     <div className="input-icon">
                       <KeyRound size={16} />
                       <input
@@ -2305,8 +2305,11 @@ function App() {
                         })
                       }
                     />
-                    发送时要求 API Key
+                    需要服务商密钥
                   </label>
+                  <p className="settings-note">
+                    官方服务商通常需要开启；如果你的中转服务已经代管密钥，可以关闭。
+                  </p>
                   <button
                     className="danger-button"
                     type="button"
@@ -2362,7 +2365,7 @@ function App() {
                   />
                 </label>
                 <p className="settings-note">
-                  聊天、设置和 AI API Key 会先在本机加密，再上传到 Gist 或 Cloudflare。
+                  聊天、设置和服务商密钥会先在本机加密，再上传到 Gist 或 Cloudflare。
                 </p>
                 {syncRequirement ? (
                   <p className="settings-note guide-requirement">
@@ -2710,10 +2713,10 @@ function App() {
                           })
                         }
                       />
-                      <span>发送前要求 API Key</span>
+                      <span>需要服务商密钥</span>
                     </label>
                     <label>
-                      API Key
+                      服务商密钥
                       <input
                         type="password"
                         value={providerKeys[selectedProvider.id] ?? ''}
