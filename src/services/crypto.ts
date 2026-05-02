@@ -1,4 +1,8 @@
-import type { EncryptedSnapshotEnvelope, SyncVault } from '../types'
+import type {
+  EncryptedObjectEnvelope,
+  EncryptedSnapshotEnvelope,
+  SyncVault,
+} from '../types'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -47,6 +51,10 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 
 function aadFor(updatedAt: number): Uint8Array {
   return encoder.encode(`zerochat:vault:v1:${updatedAt}`)
+}
+
+function objectAadFor(objectType: string, updatedAt: number): Uint8Array {
+  return encoder.encode(`zerochat:object:v1:${objectType}:${updatedAt}`)
 }
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
@@ -141,6 +149,133 @@ function assertEnvelopeCrypto(envelope: EncryptedSnapshotEnvelope): {
   }
 }
 
+function assertObjectEnvelopeCrypto(
+  envelope: EncryptedObjectEnvelope,
+  expectedObjectType: string,
+): {
+  salt: Uint8Array
+  iv: Uint8Array
+  aad: Uint8Array
+  payload: Uint8Array
+} {
+  assertSafeTimestamp(envelope.encryptedAt, 'encryptedAt')
+  assertSafeTimestamp(envelope.updatedAt, 'updatedAt')
+
+  if (envelope.objectType !== expectedObjectType) {
+    throw new Error('加密对象类型不匹配')
+  }
+
+  if (envelope.crypto.cipher !== VAULT_CIPHER || envelope.crypto.kdf !== VAULT_KDF) {
+    throw new Error('不支持的加密对象格式')
+  }
+
+  if (
+    !Number.isSafeInteger(envelope.crypto.iterations) ||
+    envelope.crypto.iterations < VAULT_KDF_ITERATIONS ||
+    envelope.crypto.iterations > VAULT_KDF_MAX_ITERATIONS
+  ) {
+    throw new Error('加密对象的 KDF 迭代次数不安全')
+  }
+
+  if (
+    envelope.crypto.compression !== 'gzip' &&
+    envelope.crypto.compression !== 'none'
+  ) {
+    throw new Error('不支持的加密对象压缩格式')
+  }
+
+  const salt = decodeFixedBase64(envelope.crypto.salt, SALT_BYTES, 'salt')
+  const iv = decodeFixedBase64(envelope.crypto.iv, IV_BYTES, 'iv')
+  const aad = decodeBase64(envelope.crypto.aad, 'aad')
+  const expectedAad = objectAadFor(envelope.objectType, envelope.updatedAt)
+
+  if (!bytesEqual(aad, expectedAad)) {
+    throw new Error('加密对象认证信息不匹配')
+  }
+
+  const payload = decodeBase64(envelope.payload, 'payload')
+
+  if (payload.byteLength <= 16) {
+    throw new Error('加密对象内容为空或已损坏')
+  }
+
+  return {
+    salt,
+    iv,
+    aad: expectedAad,
+    payload,
+  }
+}
+
+async function transformBytes(
+  bytes: Uint8Array,
+  format: 'gzip',
+  mode: 'compress' | 'decompress',
+): Promise<Uint8Array> {
+  const stream =
+    mode === 'compress'
+      ? new Blob([toArrayBuffer(bytes)])
+          .stream()
+          .pipeThrough(new CompressionStream(format))
+      : new Blob([toArrayBuffer(bytes)])
+          .stream()
+          .pipeThrough(new DecompressionStream(format))
+  const buffer = await new Response(stream).arrayBuffer()
+
+  return new Uint8Array(buffer)
+}
+
+async function compressJsonPayload(bytes: Uint8Array): Promise<{
+  compression: 'gzip' | 'none'
+  bytes: Uint8Array
+}> {
+  if (
+    typeof CompressionStream === 'undefined' ||
+    typeof DecompressionStream === 'undefined'
+  ) {
+    return {
+      compression: 'none',
+      bytes,
+    }
+  }
+
+  try {
+    const compressed = await transformBytes(bytes, 'gzip', 'compress')
+
+    if (compressed.byteLength >= bytes.byteLength) {
+      return {
+        compression: 'none',
+        bytes,
+      }
+    }
+
+    return {
+      compression: 'gzip',
+      bytes: compressed,
+    }
+  } catch {
+    return {
+      compression: 'none',
+      bytes,
+    }
+  }
+}
+
+async function decompressJsonPayload(
+  bytes: Uint8Array,
+  compression: 'gzip' | 'none',
+): Promise<Uint8Array> {
+  if (compression === 'none') {
+    return bytes
+  }
+
+  if (typeof DecompressionStream === 'undefined') {
+    throw new Error('当前浏览器不支持解压远端增量同步数据')
+  }
+
+  return transformBytes(bytes, 'gzip', 'decompress')
+}
+
 async function deriveVaultKey(
   passphrase: string,
   salt: Uint8Array,
@@ -177,6 +312,16 @@ export function isEncryptedSnapshot(value: unknown): value is EncryptedSnapshotE
     value !== null &&
     (value as EncryptedSnapshotEnvelope).kind === 'zerochat.encryptedSnapshot' &&
     (value as EncryptedSnapshotEnvelope).version === 1
+  )
+}
+
+export function isEncryptedObject(value: unknown): value is EncryptedObjectEnvelope {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as EncryptedObjectEnvelope).kind === 'zerochat.encryptedObject' &&
+    (value as EncryptedObjectEnvelope).version === 1 &&
+    typeof (value as EncryptedObjectEnvelope).objectType === 'string'
   )
 }
 
@@ -226,6 +371,51 @@ export async function encryptVault(
   }
 }
 
+export async function encryptObject<T>(
+  value: T,
+  passphrase: string,
+  objectType: string,
+  updatedAt: number,
+): Promise<EncryptedObjectEnvelope> {
+  assertUsablePassphrase(passphrase)
+  assertSafeTimestamp(updatedAt, 'updatedAt')
+
+  const salt = randomBytes(SALT_BYTES)
+  const iv = randomBytes(IV_BYTES)
+  const aad = objectAadFor(objectType, updatedAt)
+  const key = await deriveVaultKey(passphrase, salt, VAULT_KDF_ITERATIONS)
+  const encoded = encoder.encode(JSON.stringify(value))
+  const payload = await compressJsonPayload(encoded)
+  const encrypted = await crypto.subtle.encrypt(
+    {
+      name: 'AES-GCM',
+      iv: toArrayBuffer(iv),
+      additionalData: toArrayBuffer(aad),
+      tagLength: 128,
+    },
+    key,
+    toArrayBuffer(payload.bytes),
+  )
+
+  return {
+    kind: 'zerochat.encryptedObject',
+    version: 1,
+    objectType,
+    encryptedAt: Date.now(),
+    updatedAt,
+    crypto: {
+      cipher: VAULT_CIPHER,
+      kdf: VAULT_KDF,
+      iterations: VAULT_KDF_ITERATIONS,
+      salt: bytesToBase64(salt),
+      iv: bytesToBase64(iv),
+      aad: bytesToBase64(aad),
+      compression: payload.compression,
+    },
+    payload: bytesToBase64(new Uint8Array(encrypted)),
+  }
+}
+
 export async function decryptVault(
   envelope: EncryptedSnapshotEnvelope,
   passphrase: string,
@@ -259,5 +449,43 @@ export async function decryptVault(
     return vault
   } catch {
     throw new Error('解密失败：同步加密密码不正确，或远端数据已损坏')
+  }
+}
+
+export async function decryptObject<T>(
+  envelope: EncryptedObjectEnvelope,
+  passphrase: string,
+  expectedObjectType: string,
+): Promise<T> {
+  assertUsablePassphrase(passphrase)
+  const { salt, iv, aad, payload } = assertObjectEnvelopeCrypto(
+    envelope,
+    expectedObjectType,
+  )
+  const key = await deriveVaultKey(
+    passphrase,
+    salt,
+    envelope.crypto.iterations,
+  )
+
+  try {
+    const decrypted = await crypto.subtle.decrypt(
+      {
+        name: 'AES-GCM',
+        iv: toArrayBuffer(iv),
+        additionalData: toArrayBuffer(aad),
+        tagLength: 128,
+      },
+      key,
+      toArrayBuffer(payload),
+    )
+    const decompressed = await decompressJsonPayload(
+      new Uint8Array(decrypted),
+      envelope.crypto.compression,
+    )
+
+    return JSON.parse(decoder.decode(decompressed)) as T
+  } catch {
+    throw new Error('解密失败：同步加密密码不正确，或远端增量数据已损坏')
   }
 }

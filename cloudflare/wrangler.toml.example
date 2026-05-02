@@ -12,3 +12,7 @@ ALLOWED_HOSTS = "api.openai.com,api.deepseek.com,openrouter.ai,api.siliconflow.c
 [[kv_namespaces]]
 binding = "ZEROCHAT_SYNC"
 id = "replace-with-your-kv-namespace-id"
+
+[[r2_buckets]]
+binding = "ZEROCHAT_BLOBS"
+bucket_name = "zerochat-blobs"

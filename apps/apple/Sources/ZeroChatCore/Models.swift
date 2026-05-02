@@ -87,3 +87,30 @@ public struct EnvelopeCrypto: Codable, Sendable {
     public var iv: String
     public var aad: String
 }
+
+public struct EncryptedObjectEnvelope: Codable, Sendable {
+    public var kind: String
+    public var version: Int
+    public var objectType: String
+    public var encryptedAt: Int64
+    public var updatedAt: Int64
+    public var crypto: ObjectEnvelopeCrypto
+    public var payload: String
+}
+
+public struct ObjectEnvelopeCrypto: Codable, Sendable {
+    public var cipher: String
+    public var kdf: String
+    public var iterations: Int
+    public var salt: String
+    public var iv: String
+    public var aad: String
+    public var compression: String
+}
+
+public struct IncrementalSyncHead: Codable, Sendable {
+    public var kind: String
+    public var version: Int
+    public var manifestKey: String
+    public var updatedAt: Int64
+}

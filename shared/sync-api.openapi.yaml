@@ -38,6 +38,100 @@ paths:
           description: Missing or invalid sync token
         "413":
           description: Snapshot too large
+    delete:
+      summary: Delete the legacy encrypted snapshot after incremental migration
+      security:
+        - bearerToken: []
+      responses:
+        "200":
+          description: Snapshot deleted
+        "401":
+          description: Missing or invalid sync token
+  /sync/head:
+    get:
+      summary: Read the current incremental sync head
+      security:
+        - bearerToken: []
+      responses:
+        "200":
+          description: Incremental head found
+        "404":
+          description: No incremental head exists yet
+        "501":
+          description: R2 binding is not configured
+    put:
+      summary: Replace the current incremental sync head
+      security:
+        - bearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, version, manifestKey, updatedAt]
+              properties:
+                kind:
+                  const: zerochat.incrementalHead
+                version:
+                  const: 1
+                manifestKey:
+                  type: string
+                updatedAt:
+                  type: integer
+      responses:
+        "200":
+          description: Head saved
+        "409":
+          description: Refused to move head backwards
+        "501":
+          description: R2 binding is not configured
+  /sync/object/{key}:
+    get:
+      summary: Read an encrypted incremental object from R2
+      security:
+        - bearerToken: []
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Encrypted object found
+        "404":
+          description: Object not found
+    put:
+      summary: Save an encrypted incremental object to R2
+      security:
+        - bearerToken: []
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Object saved
+        "400":
+          description: Invalid encrypted object
+        "413":
+          description: Object too large
+    delete:
+      summary: Delete an obsolete encrypted incremental object
+      security:
+        - bearerToken: []
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Object deleted
   /proxy:
     post:
       summary: Optional AI provider proxy for clients blocked by CORS

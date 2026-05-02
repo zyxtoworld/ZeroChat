@@ -14,7 +14,14 @@ ZeroChat 的同步安全目标是：远端同步服务可以保存和传输数�
 
 然后用用户设置的“同步加密密码/恢复码”在本机加密成 `encrypted-snapshot.v1`。
 
-远端只保存密文。Cloudflare Worker、KV、GitHub Gist 和静态托管服务都不应该看到明文。
+远端只保存密文。Cloudflare Worker、KV、R2、GitHub Gist 和静态托管服务都不应该看到明文。
+
+Cloudflare 推荐使用增量同步：
+
+- KV 保存 `incremental-head`，里面只有最新 manifest 对象名和 `updatedAt`。
+- R2 保存 `zerochat.encryptedObject` 格式的加密 manifest 和加密消息分块。
+- manifest 解密后才知道每个会话有哪些 chunk，Worker 和 R2 只能看到随机对象名。
+- 客户端会复用未变化分块，并在新 head 写入成功后清理旧 manifest 和旧 chunk。
 
 ## 算法选择
 
@@ -55,6 +62,8 @@ Web/PWA 会用 Web Crypto 生成本机 AES-GCM 密钥，并以不可导出的 `C
 
 - `/snapshot` 只接受 `encrypted-snapshot.v1`，拒绝明文 snapshot。
 - `/snapshot` 会拒绝旧 `updatedAt` 覆盖较新的已存快照。
+- `/sync/head` 只保存增量 manifest 指针，并拒绝旧 head 覆盖新 head。
+- `/sync/object/<key>` 只接受 `zerochat.encryptedObject`，并校验 KDF、AAD、salt、iv、payload。
 - `/proxy` 必须提供 `PROXY_TOKEN`，并且上游地址必须是 HTTPS。
 - `ALLOWED_HOSTS` 是必填白名单，只允许代理到明确列出的 AI API 域名。
 - `ALLOWED_ORIGINS` 可选；配置后浏览器跨源请求只允许来自指定页面。

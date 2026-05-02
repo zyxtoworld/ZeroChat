@@ -64,6 +64,34 @@ ZeroChat 同步数据使用端到端加密。Gist、Cloudflare Worker、Cloudfla
 }
 ```
 
+## Cloudflare 增量同步
+
+Cloudflare 推荐使用增量对象，不再每次上传完整 snapshot。
+
+KV 只保存当前 head：
+
+```json
+{
+  "kind": "zerochat.incrementalHead",
+  "version": 1,
+  "manifestKey": "manifest-<uuid>.json",
+  "updatedAt": 1760000001000
+}
+```
+
+R2 保存两类 `zerochat.encryptedObject`：
+
+- `manifest-<uuid>.json`：加密 manifest，包含普通设置、服务商配置、密钥、会话元数据和 chunk 引用。
+- `chunk-<uuid>.json`：加密消息分块，当前 Web/PWA 每 60 条消息一个 chunk。
+
+增量对象使用：
+
+- AAD：`zerochat:object:v1:<objectType>:<updatedAt>`
+- 压缩：优先 `gzip`，浏览器不支持时退回 `none`
+- KDF、salt、iv、cipher、tag 与完整快照一致
+
+客户端同步时会先解密远端 manifest，按 chunk fingerprint 复用未变化分块，只上传新增或改变过的分块。新 head 写入成功后，客户端会请求 Worker 删除旧 manifest 和不再引用的旧 chunk，节省 R2 免费空间。
+
 ## 用户体验
 
 用户只需要在 ZeroChat 里设置一个“同步加密密码/恢复码”。程序负责：

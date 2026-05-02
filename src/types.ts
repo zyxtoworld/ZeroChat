@@ -88,6 +88,31 @@ export interface EncryptedSnapshotEnvelope {
   payload: string
 }
 
+export interface EncryptedObjectEnvelope {
+  kind: 'zerochat.encryptedObject'
+  version: 1
+  objectType: string
+  encryptedAt: number
+  updatedAt: number
+  crypto: {
+    cipher: SnapshotCipher
+    kdf: SnapshotKdf
+    iterations: number
+    salt: string
+    iv: string
+    aad: string
+    compression: 'gzip' | 'none'
+  }
+  payload: string
+}
+
+export interface IncrementalSyncHead {
+  kind: 'zerochat.incrementalHead'
+  version: 1
+  manifestKey: string
+  updatedAt: number
+}
+
 export interface Preferences {
   firstRunDone: boolean
   theme: ThemeMode

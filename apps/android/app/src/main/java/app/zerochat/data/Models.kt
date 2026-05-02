@@ -105,3 +105,33 @@ data class EnvelopeCrypto(
     val iv: String,
     val aad: String,
 )
+
+@Serializable
+data class EncryptedObjectEnvelope(
+    val kind: String = "zerochat.encryptedObject",
+    val version: Int = 1,
+    val objectType: String,
+    val encryptedAt: Long,
+    val updatedAt: Long,
+    val crypto: ObjectEnvelopeCrypto,
+    val payload: String,
+)
+
+@Serializable
+data class ObjectEnvelopeCrypto(
+    val cipher: String = "AES-256-GCM",
+    val kdf: String = "PBKDF2-SHA256",
+    val iterations: Int,
+    val salt: String,
+    val iv: String,
+    val aad: String,
+    val compression: String = "none",
+)
+
+@Serializable
+data class IncrementalSyncHead(
+    val kind: String = "zerochat.incrementalHead",
+    val version: Int = 1,
+    val manifestKey: String,
+    val updatedAt: Long,
+)

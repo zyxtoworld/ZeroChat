@@ -106,3 +106,35 @@ pub struct EnvelopeCrypto {
     pub iv: String,
     pub aad: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptedObjectEnvelope {
+    pub kind: String,
+    pub version: i32,
+    pub object_type: String,
+    pub encrypted_at: i64,
+    pub updated_at: i64,
+    pub crypto: ObjectEnvelopeCrypto,
+    pub payload: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObjectEnvelopeCrypto {
+    pub cipher: String,
+    pub kdf: String,
+    pub iterations: i32,
+    pub salt: String,
+    pub iv: String,
+    pub aad: String,
+    pub compression: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IncrementalSyncHead {
+    pub kind: String,
+    pub version: i32,
+    pub manifest_key: String,
+    pub updated_at: i64,
+}

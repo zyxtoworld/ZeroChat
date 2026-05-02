@@ -1,9 +1,12 @@
 const SNAPSHOT_KEY = 'snapshot'
+const INCREMENTAL_HEAD_KEY = 'incremental-head'
 const MAX_SNAPSHOT_BYTES = 900000
+const MAX_INCREMENTAL_OBJECT_BYTES = 5000000
 const MAX_PROXY_CONTENT_LENGTH = 2000000
 const VAULT_KDF_ITERATIONS = 600000
 const VAULT_CIPHER = 'AES-256-GCM'
 const VAULT_KDF = 'PBKDF2-SHA256'
+const OBJECT_KEY_PATTERN = /^(manifest|chunk)-[0-9a-f-]+\.json$/i
 
 const textEncoder = new TextEncoder()
 
@@ -19,6 +22,14 @@ export default {
 
     if (url.pathname === '/proxy') {
       return proxyAiRequest(request, env, corsHeaders)
+    }
+
+    if (url.pathname === '/sync/head') {
+      return handleIncrementalHead(request, env, corsHeaders)
+    }
+
+    if (url.pathname.startsWith('/sync/object/')) {
+      return handleIncrementalObject(request, env, corsHeaders, url)
     }
 
     if (url.pathname !== '/snapshot') {
@@ -42,6 +53,11 @@ export default {
 
     if (request.method === 'PUT') {
       return putSnapshot(request, env, corsHeaders)
+    }
+
+    if (request.method === 'DELETE') {
+      await env.ZEROCHAT_SYNC.delete(SNAPSHOT_KEY)
+      return new Response('OK', { headers: corsHeaders })
     }
 
     return new Response('Method not allowed', {
@@ -112,6 +128,187 @@ async function putSnapshot(request, env, corsHeaders) {
   await env.ZEROCHAT_SYNC.put(SNAPSHOT_KEY, snapshot)
 
   return new Response('OK', { headers: corsHeaders })
+}
+
+async function handleIncrementalHead(request, env, corsHeaders) {
+  if (!hasValidBearerToken(request, env.SYNC_TOKEN)) {
+    return new Response('Unauthorized', { status: 401, headers: corsHeaders })
+  }
+
+  if (!env.ZEROCHAT_BLOBS) {
+    return new Response('R2 binding ZEROCHAT_BLOBS is required', {
+      status: 501,
+      headers: corsHeaders,
+    })
+  }
+
+  if (request.method === 'GET') {
+    const head = await env.ZEROCHAT_SYNC.get(INCREMENTAL_HEAD_KEY)
+
+    return new Response(head ?? '', {
+      status: head ? 200 : 404,
+      headers: {
+        ...corsHeaders,
+        'content-type': 'application/json; charset=utf-8',
+      },
+    })
+  }
+
+  if (request.method === 'PUT') {
+    const text = await request.text()
+    let head
+
+    try {
+      head = JSON.parse(text)
+    } catch {
+      return new Response('Invalid JSON', {
+        status: 400,
+        headers: corsHeaders,
+      })
+    }
+
+    const validation = validateIncrementalHead(head)
+
+    if (!validation.ok) {
+      return new Response(validation.message, {
+        status: 400,
+        headers: corsHeaders,
+      })
+    }
+
+    const currentText = await env.ZEROCHAT_SYNC.get(INCREMENTAL_HEAD_KEY)
+
+    if (currentText) {
+      try {
+        const current = JSON.parse(currentText)
+        const currentValidation = validateIncrementalHead(current)
+
+        if (currentValidation.ok && head.updatedAt < current.updatedAt) {
+          return new Response('Refusing to move head backwards', {
+            status: 409,
+            headers: corsHeaders,
+          })
+        }
+      } catch {
+        return new Response('Stored incremental head is invalid', {
+          status: 500,
+          headers: corsHeaders,
+        })
+      }
+    }
+
+    await env.ZEROCHAT_SYNC.put(INCREMENTAL_HEAD_KEY, JSON.stringify(head))
+    return new Response('OK', { headers: corsHeaders })
+  }
+
+  return new Response('Method not allowed', {
+    status: 405,
+    headers: corsHeaders,
+  })
+}
+
+async function handleIncrementalObject(request, env, corsHeaders, url) {
+  if (!hasValidBearerToken(request, env.SYNC_TOKEN)) {
+    return new Response('Unauthorized', { status: 401, headers: corsHeaders })
+  }
+
+  if (!env.ZEROCHAT_BLOBS) {
+    return new Response('R2 binding ZEROCHAT_BLOBS is required', {
+      status: 501,
+      headers: corsHeaders,
+    })
+  }
+
+  let key
+
+  try {
+    key = decodeURIComponent(url.pathname.slice('/sync/object/'.length))
+  } catch {
+    return new Response('Invalid object key', {
+      status: 400,
+      headers: corsHeaders,
+    })
+  }
+
+  if (!isSafeObjectKey(key)) {
+    return new Response('Invalid object key', {
+      status: 400,
+      headers: corsHeaders,
+    })
+  }
+
+  if (request.method === 'GET') {
+    const object = await env.ZEROCHAT_BLOBS.get(key)
+
+    if (!object) {
+      return new Response('Not found', { status: 404, headers: corsHeaders })
+    }
+
+    return new Response(object.body, {
+      headers: {
+        ...corsHeaders,
+        'content-type':
+          object.httpMetadata?.contentType ||
+          'application/json; charset=utf-8',
+      },
+    })
+  }
+
+  if (request.method === 'PUT') {
+    if (contentLength(request) > MAX_INCREMENTAL_OBJECT_BYTES) {
+      return new Response('Object too large', {
+        status: 413,
+        headers: corsHeaders,
+      })
+    }
+
+    const text = await request.text()
+
+    if (textEncoder.encode(text).byteLength > MAX_INCREMENTAL_OBJECT_BYTES) {
+      return new Response('Object too large', {
+        status: 413,
+        headers: corsHeaders,
+      })
+    }
+
+    let parsed
+
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      return new Response('Invalid JSON', {
+        status: 400,
+        headers: corsHeaders,
+      })
+    }
+
+    const validation = validateEncryptedObjectEnvelope(parsed)
+
+    if (!validation.ok) {
+      return new Response(validation.message, {
+        status: 400,
+        headers: corsHeaders,
+      })
+    }
+
+    await env.ZEROCHAT_BLOBS.put(key, text, {
+      httpMetadata: {
+        contentType: 'application/json; charset=utf-8',
+      },
+    })
+
+    return new Response('OK', { headers: corsHeaders })
+  }
+
+  if (request.method === 'DELETE') {
+    await env.ZEROCHAT_BLOBS.delete(key)
+    return new Response('OK', { headers: corsHeaders })
+  }
+
+  return new Response('Method not allowed', {
+    status: 405,
+    headers: corsHeaders,
+  })
 }
 
 async function proxyAiRequest(request, env, corsHeaders) {
@@ -306,6 +503,29 @@ function splitList(value) {
     .filter(Boolean)
 }
 
+function isSafeObjectKey(value) {
+  return typeof value === 'string' && OBJECT_KEY_PATTERN.test(value)
+}
+
+function validateIncrementalHead(value) {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    value.kind !== 'zerochat.incrementalHead' ||
+    value.version !== 1 ||
+    !isSafeObjectKey(value.manifestKey) ||
+    !isSafeTimestamp(value.updatedAt)
+  ) {
+    return { ok: false, message: 'Invalid incremental head' }
+  }
+
+  if (!value.manifestKey.startsWith('manifest-')) {
+    return { ok: false, message: 'Incremental head must point to a manifest' }
+  }
+
+  return { ok: true }
+}
+
 function validateEncryptedEnvelope(value) {
   if (
     typeof value !== 'object' ||
@@ -350,6 +570,62 @@ function validateEncryptedEnvelope(value) {
 
   if (!payload || payload.byteLength <= 16) {
     return { ok: false, message: 'Invalid snapshot payload' }
+  }
+
+  return { ok: true }
+}
+
+function validateEncryptedObjectEnvelope(value) {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    value.kind !== 'zerochat.encryptedObject' ||
+    value.version !== 1 ||
+    typeof value.objectType !== 'string' ||
+    value.objectType.length < 1 ||
+    value.objectType.length > 128
+  ) {
+    return { ok: false, message: 'Encrypted object required' }
+  }
+
+  if (!isSafeTimestamp(value.encryptedAt) || !isSafeTimestamp(value.updatedAt)) {
+    return { ok: false, message: 'Invalid object timestamp' }
+  }
+
+  if (
+    typeof value.crypto !== 'object' ||
+    value.crypto === null ||
+    value.crypto.cipher !== VAULT_CIPHER ||
+    value.crypto.kdf !== VAULT_KDF ||
+    value.crypto.iterations !== VAULT_KDF_ITERATIONS ||
+    (value.crypto.compression !== 'gzip' &&
+      value.crypto.compression !== 'none')
+  ) {
+    return { ok: false, message: 'Unsupported object crypto' }
+  }
+
+  const salt = base64Bytes(value.crypto.salt)
+  const iv = base64Bytes(value.crypto.iv)
+  const aad = base64Bytes(value.crypto.aad)
+  const payload = base64Bytes(value.payload)
+  const expectedAad = textEncoder.encode(
+    `zerochat:object:v1:${value.objectType}:${value.updatedAt}`,
+  )
+
+  if (!salt || salt.byteLength !== 16) {
+    return { ok: false, message: 'Invalid object salt' }
+  }
+
+  if (!iv || iv.byteLength !== 12) {
+    return { ok: false, message: 'Invalid object iv' }
+  }
+
+  if (!aad || !bytesEqual(aad, expectedAad)) {
+    return { ok: false, message: 'Invalid object aad' }
+  }
+
+  if (!payload || payload.byteLength <= 16) {
+    return { ok: false, message: 'Invalid object payload' }
   }
 
   return { ok: true }

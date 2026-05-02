@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zerochat.app/schemas/encrypted-object.v1.json",
+  "title": "ZeroChat Encrypted Incremental Object",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "version",
+    "objectType",
+    "encryptedAt",
+    "updatedAt",
+    "crypto",
+    "payload"
+  ],
+  "properties": {
+    "kind": {
+      "const": "zerochat.encryptedObject"
+    },
+    "version": {
+      "const": 1
+    },
+    "objectType": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "encryptedAt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "updatedAt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "crypto": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cipher",
+        "kdf",
+        "iterations",
+        "salt",
+        "iv",
+        "aad",
+        "compression"
+      ],
+      "properties": {
+        "cipher": {
+          "const": "AES-256-GCM"
+        },
+        "kdf": {
+          "const": "PBKDF2-SHA256"
+        },
+        "iterations": {
+          "const": 600000
+        },
+        "salt": {
+          "type": "string",
+          "minLength": 24,
+          "maxLength": 24,
+          "contentEncoding": "base64"
+        },
+        "iv": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 16,
+          "contentEncoding": "base64"
+        },
+        "aad": {
+          "type": "string",
+          "contentEncoding": "base64"
+        },
+        "compression": {
+          "enum": ["gzip", "none"]
+        }
+      }
+    },
+    "payload": {
+      "type": "string",
+      "contentEncoding": "base64"
+    }
+  }
+}

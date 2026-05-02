@@ -13,7 +13,7 @@ ZeroChat 是一个原生优先的轻量 AI 聊天工具。目标是浏览器、W
 | Android | Kotlin | Jetpack Compose | `apps/android/` |
 | iOS/macOS | Swift | SwiftUI | `apps/apple/` |
 | Linux | Rust | GTK4 / libadwaita | `apps/linux/` |
-| 同步后端 | JavaScript | Cloudflare Worker + KV | `cloudflare/` |
+| 同步后端 | JavaScript | Cloudflare Worker + KV + R2 | `cloudflare/` |
 
 Web/PWA 仍然保留，因为它部署最省力，也适合 Cloudflare Pages。桌面和手机 App 不再依赖 Web 壳作为主路线。
 
@@ -90,6 +90,7 @@ cargo build --release
 - `shared/snapshot.schema.json`
 - `shared/sync-vault.schema.json`
 - `shared/encrypted-snapshot.schema.json`
+- `shared/encrypted-object.schema.json`
 - `shared/examples/snapshot.v1.json`
 - `shared/sync-api.openapi.yaml`
 
@@ -108,7 +109,11 @@ cargo build --release
 - Cloudflare Worker 同步访问密钥
 - 各平台系统凭据
 
-同步数据会先由 ZeroChat 在本机端到端加密，然后再上传。远端只保存 `encrypted-snapshot.v1` 密文。新设备需要输入同一个“同步加密密码/恢复码”才能解密恢复数据，不需要额外安装加密工具。
+同步数据会先由 ZeroChat 在本机端到端加密，然后再上传。远端只保存密文。新设备需要输入同一个“同步加密密码/恢复码”才能解密恢复数据，不需要额外安装加密工具。
+
+Cloudflare 同步优先使用增量模式：KV 只保存最新 manifest 指针，R2 保存加密后的 manifest 和聊天分块。每 60 条消息一个分块，没变化的分块会复用，旧分块会在新同步成功后清理。这样历史聊天越多时，也只需要上传新增或改动过的分块。
+
+如果 Worker 没有绑定 R2，应用会退回旧的单文件加密快照模式，适合早期试用和很小的数据量。
 
 Web/PWA 本机存储也会加密：聊天、设置和本机密钥记录写入 IndexedDB 前会用 Web Crypto AES-GCM 加密；同步加密密码只在当前浏览器会话保存，关闭标签页后需要重新输入。
 
@@ -122,13 +127,14 @@ Web/PWA 本机存储也会加密：聊天、设置和本机密钥记录写入 In
 ## Cloudflare Worker 同步
 
 1. 在 Cloudflare 创建 KV namespace。
-2. 复制 `cloudflare/wrangler.toml.example` 为 `cloudflare/wrangler.toml`。
-3. 填写 KV namespace id。
-4. 设置一个足够长的 `SYNC_TOKEN`。
-5. 设置另一个足够长的 `PROXY_TOKEN`。
-6. 按需修改 `ALLOWED_HOSTS`，只保留你会使用的 AI API 域名。
-7. 部署完成后可设置 `ALLOWED_ORIGINS`，只允许你的 ZeroChat 页面跨源访问 Worker。
-8. 部署：
+2. 在 Cloudflare 创建 R2 bucket，例如 `zerochat-blobs`。
+3. 复制 `cloudflare/wrangler.toml.example` 为 `cloudflare/wrangler.toml`。
+4. 填写 KV namespace id 和 R2 bucket 名称。
+5. 设置一个足够长的 `SYNC_TOKEN`。
+6. 设置另一个足够长的 `PROXY_TOKEN`。
+7. 按需修改 `ALLOWED_HOSTS`，只保留你会使用的 AI API 域名。
+8. 部署完成后可设置 `ALLOWED_ORIGINS`，只允许你的 ZeroChat 页面跨源访问 Worker。
+9. 部署：
 
 ```bash
 npx wrangler deploy

@@ -29,12 +29,13 @@ Web/PWA 仍然保留，因为浏览器和 Cloudflare Pages 是最省力的使用
 - `shared/snapshot.schema.json`
 - `shared/sync-vault.schema.json`
 - `shared/encrypted-snapshot.schema.json`
+- `shared/encrypted-object.schema.json`
 - `shared/encryption.md`
 - `shared/sync-api.openapi.yaml`
 - `shared/ai-provider-contract.md`
 - `cloudflare/sync-worker.js`
 
-所有端本地可以使用自己的数据库，但同步时必须构造 `sync-vault.v1` 并加密成 `encrypted-snapshot.v1`。远端不能保存明文 snapshot。
+所有端本地可以使用自己的数据库。Gist 同步和 Cloudflare 兜底模式使用完整 `sync-vault.v1`，加密成 `encrypted-snapshot.v1`。Cloudflare 推荐模式使用增量同步：KV 保存最新 manifest 指针，R2 保存加密 manifest 和加密消息分块。远端不能保存明文 snapshot、manifest 或 chunk。
 
 ## 隐私和安全
 
@@ -55,13 +56,14 @@ Web/PWA 本机落盘数据也会用浏览器内的不可导出 AES-GCM 密钥加
 
 1. 本地和远端都带 `updatedAt`。
 2. 同步时先读取远端。
-3. 如果远端 `updatedAt` 更新，采用远端 snapshot。
+3. 如果远端 `updatedAt` 更新，采用远端数据。
 4. 新设备没有本地用户内容时，即使本机默认数据时间较新，也优先采用远端，避免首次同步覆盖云端。
-5. 否则上传本地 snapshot。
-6. Worker 会拒绝旧快照覆盖较新的已存快照。
-7. AI API Key 只进入加密 vault，不进入明文 snapshot。
+5. 否则上传本地数据。
+6. Cloudflare 增量同步只上传新增或改变过的 60 条消息分块，并复用远端未变化分块。
+7. Worker 会拒绝旧快照或旧 head 覆盖较新的已存数据。
+8. AI API Key 只进入加密 vault 或加密 manifest，不进入明文远端数据。
 
-后续如果需要多人协作或频繁多端离线编辑，再把对话消息升级为按消息级别合并。
+如果后续需要多人协作或频繁多端离线编辑，再把对话消息升级为按消息级别合并。个人使用优先保证同步速度、空间节省和可恢复性。
 
 ## AI 请求策略
 

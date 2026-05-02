@@ -102,4 +102,34 @@ namespace ZeroChat
         EnvelopeCrypto crypto;
         std::wstring payload;
     };
+
+    struct ObjectEnvelopeCrypto
+    {
+        std::wstring cipher{ L"AES-256-GCM" };
+        std::wstring kdf{ L"PBKDF2-SHA256" };
+        int iterations{ 600000 };
+        std::wstring salt;
+        std::wstring iv;
+        std::wstring aad;
+        std::wstring compression{ L"none" };
+    };
+
+    struct EncryptedObjectEnvelope
+    {
+        std::wstring kind{ L"zerochat.encryptedObject" };
+        int version{ 1 };
+        std::wstring objectType;
+        int64_t encryptedAt{ 0 };
+        int64_t updatedAt{ 0 };
+        ObjectEnvelopeCrypto crypto;
+        std::wstring payload;
+    };
+
+    struct IncrementalSyncHead
+    {
+        std::wstring kind{ L"zerochat.incrementalHead" };
+        int version{ 1 };
+        std::wstring manifestKey;
+        int64_t updatedAt{ 0 };
+    };
 }

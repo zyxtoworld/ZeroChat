@@ -24,8 +24,29 @@ function envelope(updatedAt) {
   }
 }
 
+function objectEnvelope(objectType, updatedAt) {
+  return {
+    kind: 'zerochat.encryptedObject',
+    version: 1,
+    objectType,
+    encryptedAt: updatedAt + 1,
+    updatedAt,
+    crypto: {
+      cipher: 'AES-256-GCM',
+      kdf: 'PBKDF2-SHA256',
+      iterations: 600000,
+      salt: base64(new Uint8Array(16)),
+      iv: base64(new Uint8Array(12)),
+      aad: base64(encoder.encode(`zerochat:object:v1:${objectType}:${updatedAt}`)),
+      compression: 'none',
+    },
+    payload: base64(new Uint8Array(17).fill(1)),
+  }
+}
+
 function createEnv() {
   const store = new Map()
+  const blobs = new Map()
 
   return {
     SYNC_TOKEN: 'sync-token',
@@ -37,6 +58,31 @@ function createEnv() {
       },
       async put(key, value) {
         store.set(key, value)
+      },
+      async delete(key) {
+        store.delete(key)
+      },
+    },
+    ZEROCHAT_BLOBS: {
+      async get(key) {
+        const value = blobs.get(key)
+
+        if (!value) {
+          return null
+        }
+
+        return {
+          body: value,
+          httpMetadata: {
+            contentType: 'application/json; charset=utf-8',
+          },
+        }
+      },
+      async put(key, value) {
+        blobs.set(key, value)
+      },
+      async delete(key) {
+        blobs.delete(key)
       },
     },
   }
@@ -112,6 +158,70 @@ await expectStatus(
   }),
   400,
   'proxy must reject insecure upstream URLs',
+)
+
+await expectStatus(
+  await call(env, '/sync/object/chunk-00000000-0000-4000-8000-000000000000.json', {
+    method: 'PUT',
+    headers: {
+      authorization: 'Bearer sync-token',
+    },
+    body: JSON.stringify(objectEnvelope('conversationChunk:test:0', 3000)),
+  }),
+  200,
+  'valid encrypted incremental object should be stored',
+)
+
+await expectStatus(
+  await call(env, '/sync/object/chunk-00000000-0000-4000-8000-000000000001.json', {
+    method: 'PUT',
+    headers: {
+      authorization: 'Bearer sync-token',
+    },
+    body: JSON.stringify({
+      ...objectEnvelope('conversationChunk:test:1', 3000),
+      crypto: {
+        ...objectEnvelope('conversationChunk:test:1', 3000).crypto,
+        aad: base64(encoder.encode('wrong')),
+      },
+    }),
+  }),
+  400,
+  'incremental objects with mismatched aad must be rejected',
+)
+
+await expectStatus(
+  await call(env, '/sync/head', {
+    method: 'PUT',
+    headers: {
+      authorization: 'Bearer sync-token',
+    },
+    body: JSON.stringify({
+      kind: 'zerochat.incrementalHead',
+      version: 1,
+      manifestKey: 'manifest-00000000-0000-4000-8000-000000000000.json',
+      updatedAt: 3000,
+    }),
+  }),
+  200,
+  'valid incremental head should be stored',
+)
+
+await expectStatus(
+  await call(env, '/sync/head', {
+    method: 'PUT',
+    headers: {
+      authorization: 'Bearer sync-token',
+    },
+    body: JSON.stringify({
+      kind: 'zerochat.incrementalHead',
+      version: 1,
+      manifestKey: 'manifest-00000000-0000-4000-8000-000000000000.json',
+      updatedAt: 2000,
+    }),
+  }),
+  409,
+  'incremental head must not move backwards',
 )
 
 console.log('Worker security checks passed')
