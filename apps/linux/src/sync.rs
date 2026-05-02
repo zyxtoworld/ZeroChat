@@ -1,5 +1,5 @@
-use crate::models::AppSnapshot;
-use anyhow::{Context, Result};
+use crate::models::EncryptedSnapshotEnvelope;
+use anyhow::Result;
 
 pub struct SyncClient {
     http: reqwest::Client,
@@ -12,20 +12,20 @@ impl SyncClient {
         }
     }
 
-    pub async fn sync_cloudflare(&self, snapshot: AppSnapshot, token: &str) -> Result<AppSnapshot> {
-        let endpoint = snapshot
-            .sync
-            .worker_endpoint
-            .as_ref()
-            .context("Cloudflare Worker 地址为空")?
-            .trim_end_matches('/')
-            .to_owned()
-            + "/snapshot";
+    pub async fn sync_cloudflare(
+        &self,
+        envelope: EncryptedSnapshotEnvelope,
+        worker_endpoint: &str,
+        token: &str,
+    ) -> Result<EncryptedSnapshotEnvelope> {
+        let endpoint = worker_endpoint.trim_end_matches('/').to_owned() + "/snapshot";
 
         let read = self.http.get(&endpoint).bearer_auth(token).send().await?;
         if read.status().is_success() {
-            let remote = read.json::<AppSnapshot>().await?;
-            if remote.updated_at > snapshot.updated_at {
+            let remote = read.json::<EncryptedSnapshotEnvelope>().await?;
+            if remote.kind == "zerochat.encryptedSnapshot"
+                && remote.updated_at > envelope.updated_at
+            {
                 return Ok(remote);
             }
         }
@@ -33,11 +33,11 @@ impl SyncClient {
         self.http
             .put(&endpoint)
             .bearer_auth(token)
-            .json(&snapshot)
+            .json(&envelope)
             .send()
             .await?
             .error_for_status()?;
 
-        Ok(snapshot)
+        Ok(envelope)
     }
 }

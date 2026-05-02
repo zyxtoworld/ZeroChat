@@ -98,6 +98,7 @@ cargo build --release
 - 聊天记录
 - 服务商名称、类型、Base URL、代理地址、默认模型
 - AI API Key
+- Worker 代理访问密钥
 - 主题、紧凑模式、当前对话
 - 同步方式、Gist ID、Gist 文件名、Worker 地址
 
@@ -122,7 +123,9 @@ cargo build --release
 2. 复制 `cloudflare/wrangler.toml.example` 为 `cloudflare/wrangler.toml`。
 3. 填写 KV namespace id。
 4. 设置一个足够长的 `SYNC_TOKEN`。
-5. 部署：
+5. 设置另一个足够长的 `PROXY_TOKEN`。
+6. 按需修改 `ALLOWED_HOSTS`，只保留你会使用的 AI API 域名。
+7. 部署：
 
 ```bash
 npx wrangler deploy
@@ -134,8 +137,13 @@ npx wrangler deploy
 - Worker 地址填你的 Worker URL
 - 同步密钥填 `SYNC_TOKEN`
 - 同步加密密码填你自己设置的恢复码
+- 如果把 Worker 当 AI 代理，在服务商设置里填代理地址和 `PROXY_TOKEN`
 
 如果某个 AI 厂商在浏览器或移动网络下直连失败，把同一个 Worker URL 填到服务商的“代理地址”。
+
+## 备份导入导出
+
+应用内导出默认生成加密备份，不导出明文聊天记录。导入也只接受 `encrypted-snapshot.v1` 加密备份。
 
 ## GitHub Gist 同步
 

@@ -4,8 +4,10 @@ export default {
       'access-control-allow-origin': '*',
       'access-control-allow-methods': 'GET, POST, PUT, OPTIONS',
       'access-control-allow-headers':
-        'authorization, content-type, x-api-key, anthropic-version, anthropic-dangerous-direct-browser-access, x-zerochat-base-url, x-zerochat-provider-kind',
+        'authorization, content-type, x-api-key, x-zerochat-proxy-token, anthropic-version, anthropic-dangerous-direct-browser-access, x-zerochat-base-url, x-zerochat-provider-kind',
       'access-control-max-age': '86400',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
     }
 
     if (request.method === 'OPTIONS') {
@@ -50,7 +52,17 @@ export default {
       }
 
       try {
-        JSON.parse(snapshot)
+        const parsed = JSON.parse(snapshot)
+
+        if (
+          parsed?.kind !== 'zerochat.encryptedSnapshot' ||
+          parsed?.version !== 1
+        ) {
+          return new Response('Encrypted snapshot required', {
+            status: 400,
+            headers: corsHeaders,
+          })
+        }
       } catch {
         return new Response('Invalid JSON', {
           status: 400,
@@ -81,6 +93,18 @@ async function proxyAiRequest(request, env, corsHeaders) {
   const kind =
     request.headers.get('x-zerochat-provider-kind') || 'openai-compatible'
   const baseUrl = request.headers.get('x-zerochat-base-url')
+  const proxyToken = request.headers.get('x-zerochat-proxy-token')
+
+  if (!env.PROXY_TOKEN || proxyToken !== env.PROXY_TOKEN) {
+    return new Response('Unauthorized', { status: 401, headers: corsHeaders })
+  }
+
+  if (kind !== 'openai-compatible' && kind !== 'anthropic') {
+    return new Response('Unsupported provider kind', {
+      status: 400,
+      headers: corsHeaders,
+    })
+  }
 
   if (!baseUrl) {
     return new Response('Missing x-zerochat-base-url', {
@@ -89,16 +113,37 @@ async function proxyAiRequest(request, env, corsHeaders) {
     })
   }
 
-  const upstreamUrl = buildUpstreamUrl(baseUrl, kind)
+  let upstreamUrl
+  try {
+    upstreamUrl = buildUpstreamUrl(baseUrl, kind)
+  } catch {
+    return new Response('Invalid upstream URL', {
+      status: 400,
+      headers: corsHeaders,
+    })
+  }
+  const upstream = new URL(upstreamUrl)
+
+  if (upstream.protocol !== 'https:') {
+    return new Response('HTTPS upstream required', {
+      status: 400,
+      headers: corsHeaders,
+    })
+  }
+
   const allowedHosts = (env.ALLOWED_HOSTS || '')
     .split(',')
     .map((host) => host.trim())
     .filter(Boolean)
 
-  if (
-    allowedHosts.length > 0 &&
-    !allowedHosts.includes(new URL(upstreamUrl).host)
-  ) {
+  if (allowedHosts.length === 0) {
+    return new Response('ALLOWED_HOSTS is required', {
+      status: 500,
+      headers: corsHeaders,
+    })
+  }
+
+  if (!allowedHosts.includes(upstream.host)) {
     return new Response('Host is not allowed', {
       status: 403,
       headers: corsHeaders,

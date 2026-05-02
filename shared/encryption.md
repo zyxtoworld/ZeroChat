@@ -10,7 +10,8 @@ ZeroChat 同步数据使用端到端加密。Gist、Cloudflare Worker、Cloudfla
 {
   "data": {},
   "secrets": {
-    "providerKeys": {}
+    "providerKeys": {},
+    "providerProxyTokens": {}
   }
 }
 ```
@@ -19,6 +20,7 @@ ZeroChat 同步数据使用端到端加密。Gist、Cloudflare Worker、Cloudfla
 
 - `data` 是普通应用数据，格式见 `snapshot.schema.json`。
 - `secrets.providerKeys` 是各 AI 服务商 API Key。
+- `secrets.providerProxyTokens` 是各服务商的 Worker 代理访问密钥。
 
 `GitHub Token` 和 `Cloudflare Worker 同步访问密钥` 不进入加密包，因为新设备必须先用它们取到远端密文。
 
@@ -59,7 +61,7 @@ ZeroChat 同步数据使用端到端加密。Gist、Cloudflare Worker、Cloudfla
 用户只需要在 ZeroChat 里设置一个“同步加密密码/恢复码”。程序负责：
 
 1. 从密码派生加密密钥。
-2. 加密聊天、设置、服务商配置和 AI API Key。
+2. 加密聊天、设置、服务商配置、AI API Key 和代理访问密钥。
 3. 上传密文。
 4. 在新设备上输入同一个密码后自动解密。
 

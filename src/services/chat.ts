@@ -3,6 +3,7 @@ import type { ChatMessage, ProviderConfig } from '../types'
 interface StreamOptions {
   provider: ProviderConfig
   apiKey: string
+  proxyToken: string
   model: string
   messages: ChatMessage[]
   signal: AbortSignal
@@ -174,11 +175,15 @@ async function assertOk(response: Response): Promise<void> {
 }
 
 export async function streamChat(options: StreamOptions): Promise<void> {
-  const { provider, apiKey, model, messages, signal, onToken } = options
+  const { provider, apiKey, proxyToken, model, messages, signal, onToken } = options
   const endpoint = buildEndpoint(provider)
 
   if (provider.needsApiKey && !apiKey) {
     throw new Error('请先在设置里填写这个服务商的 API Key')
+  }
+
+  if (provider.proxyUrl?.trim() && !proxyToken.trim()) {
+    throw new Error('请先填写这个服务商的代理访问密钥')
   }
 
   if (!model.trim()) {
@@ -195,6 +200,9 @@ export async function streamChat(options: StreamOptions): Promise<void> {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
+        ...(provider.proxyUrl?.trim()
+          ? { 'x-zerochat-proxy-token': proxyToken }
+          : {}),
         ...proxyHeaders(provider),
       },
       body: JSON.stringify({
@@ -222,6 +230,9 @@ export async function streamChat(options: StreamOptions): Promise<void> {
     headers: {
       'content-type': 'application/json',
       ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+      ...(provider.proxyUrl?.trim()
+        ? { 'x-zerochat-proxy-token': proxyToken }
+        : {}),
       ...proxyHeaders(provider),
     },
     body: JSON.stringify({

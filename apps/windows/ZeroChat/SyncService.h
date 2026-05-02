@@ -8,8 +8,9 @@ namespace ZeroChat
     class SyncService
     {
     public:
-        winrt::Windows::Foundation::IAsyncOperation<AppSnapshot> SyncCloudflareAsync(
-            AppSnapshot snapshot,
+        winrt::Windows::Foundation::IAsyncOperation<EncryptedSnapshotEnvelope> SyncCloudflareAsync(
+            EncryptedSnapshotEnvelope envelope,
+            std::wstring const& workerEndpoint,
             std::wstring const& syncToken);
     };
 }

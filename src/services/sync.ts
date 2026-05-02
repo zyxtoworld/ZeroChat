@@ -13,6 +13,7 @@ const DEFAULT_GIST_FILE = 'zerochat-sync.json'
 interface SyncContext {
   encryptionPassphrase: string
   providerKeys: Record<string, string>
+  providerProxyTokens: Record<string, string>
 }
 
 function markSynced(data: AppData, message: string): AppData {
@@ -48,27 +49,7 @@ function acceptRemoteVault(remote: SyncVault, local: AppData): SyncVault {
     },
     secrets: {
       providerKeys: remote.secrets?.providerKeys ?? {},
-    },
-  }
-}
-
-function parsePlainSnapshot(value: unknown): SyncVault | null {
-  const data = value as AppData
-
-  if (data?.version !== 1 || !Array.isArray(data.conversations)) {
-    return null
-  }
-
-  return {
-    data: {
-      ...data,
-      sync: {
-        ...data.sync,
-        encryptionEnabled: true,
-      },
-    },
-    secrets: {
-      providerKeys: {},
+      providerProxyTokens: remote.secrets?.providerProxyTokens ?? {},
     },
   }
 }
@@ -86,14 +67,14 @@ async function parseRemoteVault(
   try {
     parsed = JSON.parse(content)
   } catch {
-    return null
+    throw new Error('远端同步数据不是有效 JSON')
   }
 
   if (isEncryptedSnapshot(parsed)) {
     return decryptVault(parsed, passphrase)
   }
 
-  return parsePlainSnapshot(parsed)
+  throw new Error('远端同步数据不是加密快照，已拒绝导入')
 }
 
 async function serializeVault(
@@ -152,6 +133,7 @@ async function syncWithGist(
   const fileName = data.sync.gistFile || DEFAULT_GIST_FILE
   const secrets: ProviderSecrets = {
     providerKeys: context.providerKeys,
+    providerProxyTokens: context.providerProxyTokens,
   }
 
   if (!token) {
@@ -262,6 +244,7 @@ async function syncWithCloudflare(
   const endpoint = data.sync.workerEndpoint?.replace(/\/+$/, '')
   const secrets: ProviderSecrets = {
     providerKeys: context.providerKeys,
+    providerProxyTokens: context.providerProxyTokens,
   }
 
   if (!endpoint) {
@@ -329,6 +312,7 @@ export async function performSync(
       data: local,
       secrets: {
         providerKeys: context.providerKeys,
+        providerProxyTokens: context.providerProxyTokens,
       },
       remoteAccepted: false,
       message: local.sync.lastSyncStatus ?? '当前使用本地模式',

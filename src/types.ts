@@ -64,6 +64,7 @@ export interface SyncConfig {
 
 export interface ProviderSecrets {
   providerKeys: Record<string, string>
+  providerProxyTokens: Record<string, string>
 }
 
 export interface SyncVault {

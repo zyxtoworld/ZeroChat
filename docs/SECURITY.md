@@ -10,6 +10,7 @@ ZeroChat 的同步安全目标是：远端同步服务可以保存和传输数�
 - 用户设置
 - 服务商配置
 - AI API Key
+- Worker 代理访问密钥
 
 然后用用户设置的“同步加密密码/恢复码”在本机加密成 `encrypted-snapshot.v1`。
 

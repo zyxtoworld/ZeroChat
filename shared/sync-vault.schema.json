@@ -12,9 +12,15 @@
     "secrets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["providerKeys"],
+      "required": ["providerKeys", "providerProxyTokens"],
       "properties": {
         "providerKeys": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "providerProxyTokens": {
           "type": "object",
           "additionalProperties": {
             "type": "string"

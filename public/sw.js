@@ -28,6 +28,19 @@ self.addEventListener('fetch', (event) => {
     return
   }
 
+  const cacheableDestinations = new Set([
+    'document',
+    'font',
+    'image',
+    'manifest',
+    'script',
+    'style',
+  ])
+
+  if (!cacheableDestinations.has(request.destination)) {
+    return
+  }
+
   event.respondWith(
     fetch(request)
       .then((response) => {

@@ -69,3 +69,21 @@ public struct AppSnapshot: Codable, Sendable {
     public var preferences: Preferences
     public var updatedAt: Int64
 }
+
+public struct EncryptedSnapshotEnvelope: Codable, Sendable {
+    public var kind: String
+    public var version: Int
+    public var encryptedAt: Int64
+    public var updatedAt: Int64
+    public var crypto: EnvelopeCrypto
+    public var payload: String
+}
+
+public struct EnvelopeCrypto: Codable, Sendable {
+    public var cipher: String
+    public var kdf: String
+    public var iterations: Int
+    public var salt: String
+    public var iv: String
+    public var aad: String
+}

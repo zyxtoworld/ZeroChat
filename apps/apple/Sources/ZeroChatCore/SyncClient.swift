@@ -10,9 +10,12 @@ public actor SyncClient {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     }
 
-    public func syncCloudflare(snapshot: AppSnapshot, token: String) async throws -> AppSnapshot {
-        guard let workerEndpoint = snapshot.sync.workerEndpoint,
-              let endpoint = URL(string: workerEndpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/snapshot") else {
+    public func syncCloudflare(
+        envelope: EncryptedSnapshotEnvelope,
+        workerEndpoint: String,
+        token: String
+    ) async throws -> EncryptedSnapshotEnvelope {
+        guard let endpoint = URL(string: workerEndpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/snapshot") else {
             throw SyncError.missingEndpoint
         }
 
@@ -21,30 +24,27 @@ public actor SyncClient {
 
         let (remoteData, readResponse) = try await session.data(for: readRequest)
         if let http = readResponse as? HTTPURLResponse, http.statusCode == 200 {
-            let remote = try decoder.decode(AppSnapshot.self, from: remoteData)
-            if remote.updatedAt > snapshot.updatedAt {
-                var accepted = remote
-                accepted.sync.lastSyncAt = Int64(Date().timeIntervalSince1970 * 1000)
-                accepted.sync.lastSyncStatus = "已采用远端较新的数据"
-                return accepted
+            let remote = try decoder.decode(EncryptedSnapshotEnvelope.self, from: remoteData)
+            if remote.kind == "zerochat.encryptedSnapshot", remote.updatedAt > envelope.updatedAt {
+                return remote
             }
         }
-
-        var synced = snapshot
-        synced.sync.lastSyncAt = Int64(Date().timeIntervalSince1970 * 1000)
-        synced.sync.lastSyncStatus = "同步完成"
 
         var writeRequest = URLRequest(url: endpoint)
         writeRequest.httpMethod = "PUT"
         writeRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         writeRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        writeRequest.httpBody = try encoder.encode(synced)
+        writeRequest.httpBody = try encoder.encode(envelope)
 
-        _ = try await session.data(for: writeRequest)
-        return synced
+        let (_, writeResponse) = try await session.data(for: writeRequest)
+        if let http = writeResponse as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw SyncError.writeFailed(http.statusCode)
+        }
+        return envelope
     }
 }
 
 public enum SyncError: Error {
     case missingEndpoint
+    case writeFailed(Int)
 }

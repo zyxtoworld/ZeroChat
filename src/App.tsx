@@ -23,6 +23,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { providerFromPreset, providerPresets } from './data/presets'
 import { streamChat } from './services/chat'
+import { decryptVault, encryptVault, isEncryptedSnapshot } from './services/crypto'
 import { performSync } from './services/sync'
 import {
   clearAppData,
@@ -33,12 +34,15 @@ import {
 } from './storage/db'
 import {
   clearZeroChatSecrets,
+  clearProviderSecrets,
   getGithubToken,
   getProviderKey,
+  getProviderProxyToken,
   getSyncPassphrase,
   getWorkerToken,
   setGithubToken,
   setProviderKey,
+  setProviderProxyToken,
   setSyncPassphrase,
   setWorkerToken,
 } from './storage/secrets'
@@ -107,6 +111,7 @@ function App() {
   const [data, setData] = useState<AppData | null>(null)
   const [draft, setDraft] = useState('')
   const [providerKeys, setProviderKeys] = useState<Record<string, string>>({})
+  const [providerProxyTokens, setProviderProxyTokens] = useState<Record<string, string>>({})
   const [githubTokenValue, setGithubTokenValue] = useState('')
   const [workerTokenValue, setWorkerTokenValue] = useState('')
   const [syncPassphraseValue, setSyncPassphraseValue] = useState('')
@@ -140,6 +145,14 @@ function App() {
             initial.providers.map((provider) => [
               provider.id,
               getProviderKey(provider.id),
+            ]),
+          ),
+        )
+        setProviderProxyTokens(
+          Object.fromEntries(
+            initial.providers.map((provider) => [
+              provider.id,
+              getProviderProxyToken(provider.id),
             ]),
           ),
         )
@@ -370,13 +383,32 @@ function App() {
       [providerId]: value,
     }))
     setProviderKey(providerId, value)
+    updateData((current) => bump(current))
   }
 
-  function applySyncedProviderKeys(keys: Record<string, string>): void {
+  function updateProviderProxyToken(providerId: string, value: string): void {
+    setProviderProxyTokens((current) => ({
+      ...current,
+      [providerId]: value,
+    }))
+    setProviderProxyToken(providerId, value)
+    updateData((current) => bump(current))
+  }
+
+  function applySyncedSecrets(
+    keys: Record<string, string>,
+    proxyTokens: Record<string, string>,
+  ): void {
+    clearProviderSecrets()
     setProviderKeys(keys)
+    setProviderProxyTokens(proxyTokens)
 
     for (const [providerId, value] of Object.entries(keys)) {
       setProviderKey(providerId, value)
+    }
+
+    for (const [providerId, value] of Object.entries(proxyTokens)) {
+      setProviderProxyToken(providerId, value)
     }
   }
 
@@ -427,12 +459,16 @@ function App() {
       const result = await performSync(current, {
         encryptionPassphrase: syncPassphraseValue,
         providerKeys,
+        providerProxyTokens,
       })
       dataRef.current = result.data
       setData(result.data)
 
       if (result.secrets?.providerKeys) {
-        applySyncedProviderKeys(result.secrets.providerKeys)
+        applySyncedSecrets(
+          result.secrets.providerKeys,
+          result.secrets.providerProxyTokens ?? {},
+        )
       }
 
       setNotice(result.message)
@@ -499,6 +535,7 @@ function App() {
       await streamChat({
         provider: activeProvider,
         apiKey,
+        proxyToken: providerProxyTokens[activeProvider.id] ?? workerTokenValue,
         model,
         messages: requestMessages,
         signal: controller.signal,
@@ -620,20 +657,39 @@ function App() {
     )
   }
 
-  function exportData(): void {
+  async function exportData(): Promise<void> {
     if (!data) {
       return
     }
 
-    const blob = new Blob([JSON.stringify(data, null, 2)], {
-      type: 'application/json',
-    })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `zerochat-${new Date().toISOString().slice(0, 10)}.json`
-    link.click()
-    URL.revokeObjectURL(url)
+    if (!syncPassphraseValue) {
+      setNotice('请先填写同步加密密码，再导出加密备份')
+      return
+    }
+
+    try {
+      const envelope = await encryptVault(
+        {
+          data,
+          secrets: {
+            providerKeys,
+            providerProxyTokens,
+          },
+        },
+        syncPassphraseValue,
+      )
+      const blob = new Blob([JSON.stringify(envelope, null, 2)], {
+        type: 'application/json',
+      })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `zerochat-encrypted-${new Date().toISOString().slice(0, 10)}.json`
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch (error: unknown) {
+      setNotice(error instanceof Error ? error.message : String(error))
+    }
   }
 
   async function importData(event: ChangeEvent<HTMLInputElement>): Promise<void> {
@@ -644,18 +700,32 @@ function App() {
     }
 
     try {
-      const parsed = JSON.parse(await file.text()) as AppData
+      if (!syncPassphraseValue) {
+        throw new Error('请先填写同步加密密码，再导入加密备份')
+      }
 
-      if (parsed.version !== 1 || !Array.isArray(parsed.conversations)) {
+      const parsed = JSON.parse(await file.text()) as unknown
+
+      if (!isEncryptedSnapshot(parsed)) {
+        throw new Error('为保护隐私，当前只支持导入加密备份')
+      }
+
+      const vault = await decryptVault(parsed, syncPassphraseValue)
+
+      if (vault.data.version !== 1 || !Array.isArray(vault.data.conversations)) {
         throw new Error('文件格式不正确')
       }
 
       setData({
-        ...parsed,
+        ...vault.data,
         updatedAt: now(),
       })
-      setSelectedProviderId(parsed.providers[0]?.id ?? '')
-      setNotice('已导入')
+      setSelectedProviderId(vault.data.providers[0]?.id ?? '')
+      applySyncedSecrets(
+        vault.secrets?.providerKeys ?? {},
+        vault.secrets?.providerProxyTokens ?? {},
+      )
+      setNotice('已导入加密备份')
     } catch (error: unknown) {
       setNotice(error instanceof Error ? error.message : String(error))
     } finally {
@@ -674,6 +744,7 @@ function App() {
     setData(fresh)
     setSelectedProviderId(fresh.providers[0].id)
     setProviderKeys({})
+    setProviderProxyTokens({})
     setGithubTokenValue('')
     setWorkerTokenValue('')
     setSyncPassphraseValue('')
@@ -998,6 +1069,20 @@ function App() {
                     />
                   </label>
                   <label>
+                    代理访问密钥
+                    <input
+                      type="password"
+                      value={providerProxyTokens[selectedProvider.id] ?? ''}
+                      onChange={(event) =>
+                        updateProviderProxyToken(
+                          selectedProvider.id,
+                          event.target.value,
+                        )
+                      }
+                      placeholder="Worker PROXY_TOKEN"
+                    />
+                  </label>
+                  <label>
                     默认模型
                     <input
                       value={selectedProvider.model}
@@ -1262,13 +1347,17 @@ function App() {
                   紧凑显示
                 </label>
                 <div className="button-row">
-                  <button className="ghost-button" type="button" onClick={exportData}>
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => void exportData()}
+                  >
                     <Download size={16} />
-                    导出
+                    导出加密备份
                   </button>
                   <label className="file-button">
                     <Upload size={16} />
-                    导入
+                    导入加密备份
                     <input
                       type="file"
                       accept="application/json"

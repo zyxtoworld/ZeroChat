@@ -4,6 +4,7 @@ compatibility_date = "2026-05-01"
 
 [vars]
 SYNC_TOKEN = "replace-with-a-long-random-token"
+PROXY_TOKEN = "replace-with-a-different-long-random-token"
 ALLOWED_HOSTS = "api.openai.com,api.deepseek.com,openrouter.ai,api.siliconflow.cn,dashscope.aliyuncs.com,api.moonshot.cn,ark.cn-beijing.volces.com,api.anthropic.com"
 
 [[kv_namespaces]]

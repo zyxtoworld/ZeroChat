@@ -52,6 +52,11 @@ paths:
           required: true
           schema:
             enum: [openai-compatible, anthropic]
+        - name: x-zerochat-proxy-token
+          in: header
+          required: true
+          schema:
+            type: string
       responses:
         "200":
           description: Provider response stream or JSON

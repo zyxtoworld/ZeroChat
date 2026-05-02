@@ -85,3 +85,23 @@ data class AppSnapshot(
     val preferences: Preferences = Preferences(),
     val updatedAt: Long = System.currentTimeMillis(),
 )
+
+@Serializable
+data class EncryptedSnapshotEnvelope(
+    val kind: String = "zerochat.encryptedSnapshot",
+    val version: Int = 1,
+    val encryptedAt: Long,
+    val updatedAt: Long,
+    val crypto: EnvelopeCrypto,
+    val payload: String,
+)
+
+@Serializable
+data class EnvelopeCrypto(
+    val cipher: String = "AES-256-GCM",
+    val kdf: String = "PBKDF2-SHA256",
+    val iterations: Int,
+    val salt: String,
+    val iv: String,
+    val aad: String,
+)

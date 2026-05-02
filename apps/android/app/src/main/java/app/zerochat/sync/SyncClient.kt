@@ -1,6 +1,6 @@
 package app.zerochat.sync
 
-import app.zerochat.data.AppSnapshot
+import app.zerochat.data.EncryptedSnapshotEnvelope
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.android.Android
@@ -25,39 +25,31 @@ class SyncClient {
         }
     }
 
-    suspend fun syncCloudflare(snapshot: AppSnapshot, token: String): AppSnapshot {
-        val endpoint = snapshot.sync.workerEndpoint?.trimEnd('/')
-            ?: error("Cloudflare Worker 地址为空")
+    suspend fun syncCloudflare(
+        envelope: EncryptedSnapshotEnvelope,
+        workerEndpoint: String,
+        token: String,
+    ): EncryptedSnapshotEnvelope {
+        val endpoint = workerEndpoint.trimEnd('/')
+        require(endpoint.isNotBlank()) { "Cloudflare Worker 地址为空" }
 
         val remoteResponse = client.get("$endpoint/snapshot") {
             bearerAuth(token)
         }
 
         if (remoteResponse.status == HttpStatusCode.OK) {
-            val remote = remoteResponse.body<AppSnapshot>()
-            if (remote.updatedAt > snapshot.updatedAt) {
-                return remote.copy(
-                    sync = remote.sync.copy(
-                        lastSyncAt = System.currentTimeMillis(),
-                        lastSyncStatus = "已采用远端较新的数据",
-                    ),
-                )
+            val remote = remoteResponse.body<EncryptedSnapshotEnvelope>()
+            if (remote.kind == "zerochat.encryptedSnapshot" && remote.updatedAt > envelope.updatedAt) {
+                return remote
             }
         }
-
-        val synced = snapshot.copy(
-            sync = snapshot.sync.copy(
-                lastSyncAt = System.currentTimeMillis(),
-                lastSyncStatus = "同步完成",
-            ),
-        )
 
         client.put("$endpoint/snapshot") {
             bearerAuth(token)
             contentType(ContentType.Application.Json)
-            setBody(synced)
+            setBody(envelope)
         }
 
-        return synced
+        return envelope
     }
 }

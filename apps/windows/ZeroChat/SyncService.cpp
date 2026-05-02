@@ -11,15 +11,16 @@ using namespace Windows::Web::Http::Headers;
 
 namespace ZeroChat
 {
-    IAsyncOperation<AppSnapshot> SyncService::SyncCloudflareAsync(
-        AppSnapshot snapshot,
+    IAsyncOperation<EncryptedSnapshotEnvelope> SyncService::SyncCloudflareAsync(
+        EncryptedSnapshotEnvelope envelope,
+        std::wstring const& workerEndpoint,
         std::wstring const& syncToken)
     {
         HttpClient client;
         client.DefaultRequestHeaders().Authorization(
             HttpCredentialsHeaderValue(L"Bearer", syncToken));
 
-        auto endpoint = snapshot.sync.workerEndpoint;
+        auto endpoint = workerEndpoint;
         if (!endpoint.ends_with(L"/snapshot"))
         {
             endpoint += L"/snapshot";
@@ -31,10 +32,10 @@ namespace ZeroChat
         {
             auto remoteJson = co_await response.Content().ReadAsStringAsync();
             (void)remoteJson;
-            // TODO: Parse remote snapshot and compare updatedAt.
+            // TODO: Parse encrypted envelope and compare updatedAt.
         }
 
-        // TODO: Serialize snapshot and PUT when local data is newer.
-        co_return snapshot;
+        // TODO: Serialize encrypted envelope and PUT when local data is newer.
+        co_return envelope;
     }
 }
