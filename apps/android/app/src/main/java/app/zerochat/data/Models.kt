@@ -74,6 +74,7 @@ data class Preferences(
     val theme: String = "system",
     val compactMode: Boolean = false,
     val activeConversationId: String? = null,
+    val dismissedDangerWarnings: List<String> = emptyList(),
 )
 
 @Serializable

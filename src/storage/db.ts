@@ -120,6 +120,7 @@ export function createDefaultData(): AppData {
       theme: 'system',
       compactMode: false,
       activeConversationId: firstConversation.id,
+      dismissedDangerWarnings: [],
     },
     updatedAt: now,
   }

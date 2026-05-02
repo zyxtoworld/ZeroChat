@@ -6,6 +6,13 @@ export type ThemeMode = 'system' | 'light' | 'dark'
 
 export type SyncMode = 'local' | 'gist' | 'cloudflare'
 
+export type DangerWarningId =
+  | 'delete-message'
+  | 'delete-conversation'
+  | 'delete-provider'
+  | 'import-backup-overwrite'
+  | 'reset-local-data'
+
 export type SnapshotKdf = 'PBKDF2-SHA256'
 
 export type SnapshotCipher = 'AES-256-GCM'
@@ -118,6 +125,7 @@ export interface Preferences {
   theme: ThemeMode
   compactMode: boolean
   activeConversationId?: string
+  dismissedDangerWarnings?: DangerWarningId[]
 }
 
 export interface AppData {

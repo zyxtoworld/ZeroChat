@@ -48,12 +48,21 @@ import type {
   AppData,
   ChatMessage,
   Conversation,
+  DangerWarningId,
   ProviderConfig,
   SyncMode,
   ThemeMode,
 } from './types'
 
 type SettingsTab = 'providers' | 'sync' | 'data'
+
+interface DangerPrompt {
+  id: DangerWarningId
+  title: string
+  body: string
+  details: string[]
+  confirmLabel: string
+}
 
 const AUTO_SYNC_DEBOUNCE_MS = 1200
 const REMOTE_PULL_INTERVAL_MS = 20_000
@@ -161,6 +170,8 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [editingMessageId, setEditingMessageId] = useState('')
   const [editingContent, setEditingContent] = useState('')
+  const [dangerPrompt, setDangerPrompt] = useState<DangerPrompt | null>(null)
+  const [dangerSkipChecked, setDangerSkipChecked] = useState(false)
   const [sending, setSending] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [notice, setNotice] = useState('')
@@ -175,6 +186,7 @@ function App() {
   const syncTimerRef = useRef<number | null>(null)
   const syncingRef = useRef(false)
   const pendingSyncRef = useRef<PendingSyncRun | null>(null)
+  const dangerResolverRef = useRef<((confirmed: boolean) => void) | null>(null)
 
   useEffect(() => {
     let mounted = true
@@ -444,22 +456,53 @@ function App() {
     setSidebarOpen(false)
   }
 
-  function deleteConversation(conversationId: string): void {
-    if (!data) {
+  async function deleteConversation(conversationId: string): Promise<void> {
+    const current = dataRef.current
+
+    if (!current) {
       return
     }
 
-    const remaining = data.conversations.filter(
+    if (sending) {
+      setNotice('请先停止或等待当前生成完成，再删除对话')
+      return
+    }
+
+    const target = current.conversations.find(
+      (conversation) => conversation.id === conversationId,
+    )
+
+    if (!target) {
+      return
+    }
+
+    const confirmed = await requestDangerConfirmation({
+      id: 'delete-conversation',
+      title: '删除整个对话',
+      body: `将永久删除「${target.title}」这整个对话。`,
+      details: [
+        '如果已开启即时自动同步，云端加密数据也会同步删除这个对话。',
+        '同步完成后，其他设备会看不到这段记录。',
+        '这个操作不能从 ZeroChat 内恢复，只能依赖你之前导出的加密备份。',
+      ],
+      confirmLabel: '删除对话',
+    })
+
+    if (!confirmed) {
+      return
+    }
+
+    const remaining = current.conversations.filter(
       (conversation) => conversation.id !== conversationId,
     )
-    const fallbackProvider = data.providers[0]
+    const fallbackProvider = current.providers[0]
     const nextConversations =
       remaining.length > 0
         ? remaining
         : [createConversation(fallbackProvider.id, fallbackProvider.model)]
     const nextActive = nextConversations[0].id
 
-    updateData((current) =>
+    const saved = updateData((current) =>
       bump({
         ...current,
         conversations: nextConversations,
@@ -469,6 +512,10 @@ function App() {
         },
       }),
     )
+
+    if (saved) {
+      scheduleAutoSync(saved, 0, { allowStreaming: true })
+    }
   }
 
   function updateProvider(providerId: string, patch: Partial<ProviderConfig>): void {
@@ -499,19 +546,40 @@ function App() {
     setSelectedProviderId(provider.id)
   }
 
-  function removeProvider(providerId: string): void {
-    if (!data || data.providers.length <= 1) {
+  async function removeProvider(providerId: string): Promise<void> {
+    const currentData = dataRef.current
+
+    if (!currentData || currentData.providers.length <= 1) {
       setNotice('至少保留一个服务商')
       return
     }
 
-    const fallback = data.providers.find((provider) => provider.id !== providerId)
+    const target = currentData.providers.find((provider) => provider.id === providerId)
+    const fallback = currentData.providers.find(
+      (provider) => provider.id !== providerId,
+    )
 
-    if (!fallback) {
+    if (!target || !fallback) {
       return
     }
 
-    updateData((current) =>
+    const confirmed = await requestDangerConfirmation({
+      id: 'delete-provider',
+      title: '删除服务商配置',
+      body: `将删除「${target.name}」的服务商配置和本机 API Key。`,
+      details: [
+        '如果已开启即时自动同步，云端加密数据里对应的服务商配置和 API Key 也会被删除。',
+        `使用这个服务商的对话会改用「${fallback.name}」。`,
+        '删除后需要重新添加服务商并输入 API Key 才能恢复发送能力。',
+      ],
+      confirmLabel: '删除服务商',
+    })
+
+    if (!confirmed) {
+      return
+    }
+
+    const saved = updateData((current) =>
       bump({
         ...current,
         providers: current.providers.filter(
@@ -542,6 +610,10 @@ function App() {
       return next
     })
     setSelectedProviderId(fallback.id)
+
+    if (saved) {
+      scheduleAutoSync(saved, 0, { allowStreaming: true })
+    }
   }
 
   function updateProviderKey(providerId: string, value: string): void {
@@ -588,6 +660,56 @@ function App() {
         setProviderProxyToken(providerId, value),
       ),
     ])
+  }
+
+  function hasDismissedDangerWarning(id: DangerWarningId): boolean {
+    return Boolean(
+      dataRef.current?.preferences.dismissedDangerWarnings?.includes(id),
+    )
+  }
+
+  function dismissDangerWarning(id: DangerWarningId): void {
+    updateData((current) => {
+      const dismissed = current.preferences.dismissedDangerWarnings ?? []
+
+      if (dismissed.includes(id)) {
+        return current
+      }
+
+      return bump({
+        ...current,
+        preferences: {
+          ...current.preferences,
+          dismissedDangerWarnings: [...dismissed, id],
+        },
+      })
+    })
+  }
+
+  function requestDangerConfirmation(prompt: DangerPrompt): Promise<boolean> {
+    if (hasDismissedDangerWarning(prompt.id)) {
+      return Promise.resolve(true)
+    }
+
+    return new Promise((resolve) => {
+      dangerResolverRef.current = resolve
+      setDangerSkipChecked(false)
+      setDangerPrompt(prompt)
+    })
+  }
+
+  function closeDangerPrompt(confirmed: boolean): void {
+    const prompt = dangerPrompt
+    const resolve = dangerResolverRef.current
+
+    if (confirmed && dangerSkipChecked && prompt) {
+      dismissDangerWarning(prompt.id)
+    }
+
+    dangerResolverRef.current = null
+    setDangerPrompt(null)
+    setDangerSkipChecked(false)
+    resolve?.(confirmed)
   }
 
   function hasSyncCredentials(snapshot: AppData): boolean {
@@ -972,12 +1094,32 @@ function App() {
     }
   }
 
-  function deleteMessage(messageId: string): void {
+  async function deleteMessage(messageId: string): Promise<void> {
     if (!activeConversation || sending) {
       return
     }
 
-    if (!window.confirm('确定要删除这条消息吗？')) {
+    const target = activeConversation.messages.find(
+      (message) => message.id === messageId,
+    )
+
+    if (!target) {
+      return
+    }
+
+    const confirmed = await requestDangerConfirmation({
+      id: 'delete-message',
+      title: '删除聊天记录',
+      body: `将永久删除这条${target.role === 'assistant' ? 'AI 回复' : '用户消息'}。`,
+      details: [
+        '如果已开启即时自动同步，云端加密数据也会同步删除这条记录。',
+        '同步完成后，其他设备会看不到这条记录。',
+        '这个操作不能从 ZeroChat 内恢复，只能依赖你之前导出的加密备份。',
+      ],
+      confirmLabel: '删除记录',
+    })
+
+    if (!confirmed) {
       return
     }
 
@@ -1222,6 +1364,22 @@ function App() {
     }
 
     try {
+      const confirmed = await requestDangerConfirmation({
+        id: 'import-backup-overwrite',
+        title: '导入会覆盖当前数据',
+        body: '导入加密备份会替换当前本机聊天记录、服务商配置、设置和已同步的 API Key。',
+        details: [
+          '如果导入后的数据开启了即时自动同步，之后同步时可能会把云端也改成导入的版本。',
+          '当前未导出的本机改动可能无法恢复。',
+          '建议先导出一份当前加密备份，再继续导入。',
+        ],
+        confirmLabel: '继续导入',
+      })
+
+      if (!confirmed) {
+        return
+      }
+
       if (!syncPassphraseValue) {
         throw new Error('请先填写同步加密密码，再导入加密备份')
       }
@@ -1258,13 +1416,28 @@ function App() {
   }
 
   async function resetLocalData(): Promise<void> {
-    if (!window.confirm('确定要清空本机聊天记录、配置和本机密钥吗？')) {
+    const confirmed = await requestDangerConfirmation({
+      id: 'reset-local-data',
+      title: '重置本机数据',
+      body: '将清空本机聊天记录、配置、AI API Key、GitHub Token、Worker 同步密钥和同步加密密码。',
+      details: [
+        '这个操作不会主动删除云端同步库里的密文。',
+        '如果没有加密备份或同步加密密码，旧数据可能无法在本机恢复。',
+        '重置后会回到首次启动状态。',
+      ],
+      confirmLabel: '重置本机',
+    })
+
+    if (!confirmed) {
       return
     }
 
     await clearAppData()
     await clearZeroChatSecrets()
+    const dismissedDangerWarnings =
+      dataRef.current?.preferences.dismissedDangerWarnings ?? []
     const fresh = createDefaultData()
+    fresh.preferences.dismissedDangerWarnings = dismissedDangerWarnings
     dataRef.current = fresh
     setData(fresh)
     setSelectedProviderId(fresh.providers[0].id)
@@ -1409,7 +1582,7 @@ function App() {
               className="icon-button"
               type="button"
               title="删除当前对话"
-              onClick={() => deleteConversation(activeConversation.id)}
+              onClick={() => void deleteConversation(activeConversation.id)}
             >
               <Trash2 size={18} />
             </button>
@@ -1461,7 +1634,7 @@ function App() {
                           <button
                             type="button"
                             title="删除消息"
-                            onClick={() => deleteMessage(message.id)}
+                            onClick={() => void deleteMessage(message.id)}
                             disabled={sending}
                           >
                             <Trash2 size={14} />
@@ -1729,7 +1902,7 @@ function App() {
                   <button
                     className="danger-button"
                     type="button"
-                    onClick={() => removeProvider(selectedProvider.id)}
+                    onClick={() => void removeProvider(selectedProvider.id)}
                   >
                     <Trash2 size={16} />
                     删除服务商
@@ -1975,6 +2148,65 @@ function App() {
                 </button>
               </div>
             ) : null}
+          </section>
+        </div>
+      ) : null}
+
+      {dangerPrompt ? (
+        <div
+          className="modal-backdrop danger-backdrop"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="danger-title"
+        >
+          <section className="modal danger-modal">
+            <div className="modal-header">
+              <div>
+                <h2 id="danger-title">{dangerPrompt.title}</h2>
+                <p>请先确认这个操作的影响。</p>
+              </div>
+              <button
+                className="icon-button"
+                type="button"
+                title="取消"
+                onClick={() => closeDangerPrompt(false)}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="danger-copy">
+              <p>{dangerPrompt.body}</p>
+              <ul>
+                {dangerPrompt.details.map((detail) => (
+                  <li key={detail}>{detail}</li>
+                ))}
+              </ul>
+            </div>
+            <label className="switch-row danger-skip">
+              <input
+                type="checkbox"
+                checked={dangerSkipChecked}
+                onChange={(event) => setDangerSkipChecked(event.target.checked)}
+              />
+              我已理解这个风险，以后不再提醒这类操作
+            </label>
+            <div className="modal-actions">
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={() => closeDangerPrompt(false)}
+              >
+                取消
+              </button>
+              <button
+                className="danger-button"
+                type="button"
+                onClick={() => closeDangerPrompt(true)}
+              >
+                <Trash2 size={16} />
+                {dangerPrompt.confirmLabel}
+              </button>
+            </div>
           </section>
         </div>
       ) : null}

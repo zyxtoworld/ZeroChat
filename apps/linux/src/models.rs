@@ -73,6 +73,7 @@ pub struct Preferences {
     pub theme: String,
     pub compact_mode: bool,
     pub active_conversation_id: Option<String>,
+    pub dismissed_danger_warnings: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

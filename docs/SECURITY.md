@@ -41,6 +41,10 @@ Web/PWA 会用 Web Crypto 生成本机 AES-GCM 密钥，并以不可导出的 `C
 
 浏览器端无法完全防住同源 XSS，因为恶意脚本一旦在同一 Origin 执行，就能调用应用自己的解密流程。因此应用不使用 `dangerouslySetInnerHTML`，并且 Worker 和客户端会拒绝不安全的 HTTP 远程端点。
 
+## 危险操作提示
+
+Web/PWA 对删除聊天记录、删除整个对话、删除服务商、导入覆盖和重置本机数据使用统一确认框。删除类操作会明确提示：如果已开启即时自动同步，云端加密数据也会删除对应记录。用户确认并勾选“不再提醒”后，偏好会写入 `preferences.dismissedDangerWarnings`，跟随端到端加密同步。
+
 ## 不同步的内容
 
 以下内容不进入 vault：

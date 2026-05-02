@@ -71,6 +71,7 @@ namespace ZeroChat
         std::wstring theme{ L"system" };
         bool compactMode{ false };
         std::wstring activeConversationId;
+        std::vector<std::wstring> dismissedDangerWarnings;
     };
 
     struct AppSnapshot

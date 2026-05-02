@@ -210,6 +210,19 @@
         },
         "activeConversationId": {
           "type": "string"
+        },
+        "dismissedDangerWarnings": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "delete-message",
+              "delete-conversation",
+              "delete-provider",
+              "import-backup-overwrite",
+              "reset-local-data"
+            ]
+          },
+          "uniqueItems": true
         }
       }
     }

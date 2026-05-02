@@ -59,6 +59,7 @@ public struct Preferences: Codable, Sendable {
     public var theme: String
     public var compactMode: Bool
     public var activeConversationId: String?
+    public var dismissedDangerWarnings: [String]?
 }
 
 public struct AppSnapshot: Codable, Sendable {
