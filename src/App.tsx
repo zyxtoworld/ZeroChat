@@ -8,6 +8,7 @@ import {
   KeyRound,
   Menu,
   MessageSquarePlus,
+  Pencil,
   RefreshCw,
   RotateCcw,
   Send,
@@ -158,6 +159,8 @@ function App() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('providers')
   const [guideOpen, setGuideOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [editingMessageId, setEditingMessageId] = useState('')
+  const [editingContent, setEditingContent] = useState('')
   const [sending, setSending] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [notice, setNotice] = useState('')
@@ -920,6 +923,209 @@ function App() {
     abortRef.current?.abort()
   }
 
+  function startEditingMessage(message: ChatMessage): void {
+    if (message.status === 'streaming') {
+      return
+    }
+
+    setEditingMessageId(message.id)
+    setEditingContent(message.content)
+  }
+
+  function cancelEditingMessage(): void {
+    setEditingMessageId('')
+    setEditingContent('')
+  }
+
+  function saveEditingMessage(): void {
+    if (!activeConversation || !editingMessageId) {
+      return
+    }
+
+    const content = editingContent.trim()
+
+    if (!content) {
+      setNotice('消息内容不能为空')
+      return
+    }
+
+    const saved = updateData((current) =>
+      updateConversation(current, activeConversation.id, (conversation) => ({
+        ...conversation,
+        messages: conversation.messages.map((message) =>
+          message.id === editingMessageId
+            ? {
+                ...message,
+                content,
+                status: 'done',
+                error: undefined,
+              }
+            : message,
+        ),
+      })),
+    )
+
+    cancelEditingMessage()
+
+    if (saved) {
+      scheduleAutoSync(saved, 0, { allowStreaming: true })
+    }
+  }
+
+  function deleteMessage(messageId: string): void {
+    if (!activeConversation || sending) {
+      return
+    }
+
+    if (!window.confirm('确定要删除这条消息吗？')) {
+      return
+    }
+
+    const saved = updateData((current) =>
+      updateConversation(current, activeConversation.id, (conversation) => ({
+        ...conversation,
+        messages: conversation.messages.filter((message) => message.id !== messageId),
+      })),
+    )
+
+    if (editingMessageId === messageId) {
+      cancelEditingMessage()
+    }
+
+    if (saved) {
+      scheduleAutoSync(saved, 0, { allowStreaming: true })
+    }
+  }
+
+  async function regenerateAssistantMessage(messageId: string): Promise<void> {
+    if (!data || !activeConversation || !activeProvider || sending) {
+      return
+    }
+
+    const targetIndex = activeConversation.messages.findIndex(
+      (message) => message.id === messageId,
+    )
+    const target = activeConversation.messages[targetIndex]
+
+    if (!target || target.role !== 'assistant' || target.status === 'streaming') {
+      return
+    }
+
+    const requestMessages = activeConversation.messages.slice(0, targetIndex)
+
+    if (!requestMessages.some((message) => message.role === 'user')) {
+      setNotice('没有可用于重新生成的用户消息')
+      return
+    }
+
+    const model = activeConversation.model || activeProvider.model
+    const apiKey = providerKeysRef.current[activeProvider.id] ?? ''
+
+    cancelEditingMessage()
+    setSending(true)
+    setNotice('')
+
+    const prepared = updateData((current) =>
+      updateConversation(current, activeConversation.id, (conversation) => ({
+        ...conversation,
+        model,
+        messages: conversation.messages
+          .slice(0, targetIndex + 1)
+          .map((message, index) =>
+            index === targetIndex
+              ? {
+                  ...message,
+                  content: '',
+                  status: 'streaming',
+                  error: undefined,
+                }
+              : message,
+          ),
+      })),
+    )
+
+    if (prepared) {
+      scheduleAutoSync(prepared, 0, { allowStreaming: true })
+    }
+
+    const controller = new AbortController()
+    abortRef.current = controller
+    let assistantContent = ''
+
+    try {
+      await streamChat({
+        provider: activeProvider,
+        apiKey,
+        proxyToken:
+          providerProxyTokensRef.current[activeProvider.id] ?? workerTokenRef.current,
+        model,
+        messages: requestMessages,
+        signal: controller.signal,
+        onToken: (token) => {
+          assistantContent += token
+          updateData((current) =>
+            updateConversation(current, activeConversation.id, (conversation) => ({
+              ...conversation,
+              messages: conversation.messages.map((message) =>
+                message.id === messageId
+                  ? { ...message, content: assistantContent, status: 'streaming' }
+                  : message,
+              ),
+            })),
+          )
+        },
+      })
+
+      updateData((current) =>
+        updateConversation(current, activeConversation.id, (conversation) => ({
+          ...conversation,
+          messages: conversation.messages.map((message) =>
+            message.id === messageId
+              ? { ...message, content: assistantContent, status: 'done' }
+              : message,
+          ),
+        })),
+      )
+
+      const snapshot = dataRef.current
+      if (snapshot) {
+        scheduleAutoSync(snapshot, 0, { allowStreaming: true })
+      }
+    } catch (error: unknown) {
+      const isAbort =
+        error instanceof DOMException && error.name === 'AbortError'
+      const message = isAbort
+        ? '已停止生成'
+        : error instanceof Error
+          ? error.message
+          : String(error)
+
+      const failed = updateData((current) =>
+        updateConversation(current, activeConversation.id, (conversation) => ({
+          ...conversation,
+          messages: conversation.messages.map((item) =>
+            item.id === messageId
+              ? {
+                  ...item,
+                  content: assistantContent || message,
+                  status: isAbort ? 'done' : 'error',
+                  error: isAbort ? undefined : message,
+                }
+              : item,
+          ),
+        })),
+      )
+
+      if (failed) {
+        scheduleAutoSync(failed, 0, { allowStreaming: true })
+      }
+      setNotice(message)
+    } finally {
+      abortRef.current = null
+      setSending(false)
+    }
+  }
+
   function handleDraftKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
@@ -1218,21 +1424,80 @@ function App() {
               <p>选择服务商、填写模型名称和 API Key 后即可发送。</p>
             </div>
           ) : (
-            activeConversation.messages.map((message) => (
-              <article className={assistantMessageClass(message)} key={message.id}>
-                <div className="avatar">
-                  {message.role === 'user' ? <User size={16} /> : <Bot size={16} />}
-                </div>
-                <div className="message-body">
-                  <div className="message-meta">
-                    <strong>{message.role === 'user' ? '你' : 'AI'}</strong>
-                    {message.status === 'streaming' ? <span>生成中</span> : null}
-                    {message.error ? <span>{message.error}</span> : null}
+            activeConversation.messages.map((message) => {
+              const isEditing = editingMessageId === message.id
+              const isStreaming = message.status === 'streaming'
+
+              return (
+                <article className={assistantMessageClass(message)} key={message.id}>
+                  <div className="avatar">
+                    {message.role === 'user' ? <User size={16} /> : <Bot size={16} />}
                   </div>
-                  <p>{message.content || '...'}</p>
-                </div>
-              </article>
-            ))
+                  <div className="message-body">
+                    <div className="message-meta">
+                      <strong>{message.role === 'user' ? '你' : 'AI'}</strong>
+                      {isStreaming ? <span>生成中</span> : null}
+                      {message.error ? <span>{message.error}</span> : null}
+                      {!isStreaming ? (
+                        <div className="message-actions">
+                          <button
+                            type="button"
+                            title="编辑消息"
+                            onClick={() => startEditingMessage(message)}
+                            disabled={sending}
+                          >
+                            <Pencil size={14} />
+                          </button>
+                          {message.role === 'assistant' ? (
+                            <button
+                              type="button"
+                              title="重新生成"
+                              onClick={() => void regenerateAssistantMessage(message.id)}
+                              disabled={sending}
+                            >
+                              <RefreshCw size={14} />
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            title="删除消息"
+                            onClick={() => deleteMessage(message.id)}
+                            disabled={sending}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                    {isEditing ? (
+                      <div className="message-editor">
+                        <textarea
+                          value={editingContent}
+                          onChange={(event) => setEditingContent(event.target.value)}
+                          rows={Math.min(
+                            8,
+                            Math.max(3, editingContent.split('\n').length),
+                          )}
+                          aria-label="编辑消息"
+                        />
+                        <div className="message-editor-actions">
+                          <button type="button" onClick={saveEditingMessage}>
+                            <Check size={14} />
+                            保存
+                          </button>
+                          <button type="button" onClick={cancelEditingMessage}>
+                            <X size={14} />
+                            取消
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <p>{message.content || '...'}</p>
+                    )}
+                  </div>
+                </article>
+              )
+            })
           )}
         </section>
 
