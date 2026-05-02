@@ -136,6 +136,24 @@ function providerKindLabel(kind: ProviderConfig['kind']): string {
   return 'OpenAI 兼容'
 }
 
+function presetById(presetId: string) {
+  return (
+    providerPresets.find((item) => item.id === presetId) ?? providerPresets[0]
+  )
+}
+
+function presetProviderPatch(
+  preset: (typeof providerPresets)[number],
+): Partial<ProviderConfig> {
+  return {
+    name: preset.name,
+    kind: preset.kind,
+    baseUrl: preset.baseUrl,
+    model: preset.model,
+    needsApiKey: preset.needsApiKey,
+  }
+}
+
 function timeLabel(value?: number): string {
   if (!value) {
     return '尚未同步'
@@ -467,6 +485,10 @@ function App() {
   const activeProviderModels = activeProvider
     ? providerModels[activeProvider.id] ?? []
     : []
+  const activeModel =
+    activeConversation && activeProvider
+      ? activeConversation.model || activeProvider.model
+      : ''
   const selectedProviderModels = selectedProvider
     ? providerModels[selectedProvider.id] ?? []
     : []
@@ -626,10 +648,8 @@ function App() {
     )
   }
 
-  function addProviderFromSelectedPreset(): void {
-    const preset =
-      providerPresets.find((item) => item.id === selectedPresetId) ??
-      providerPresets[0]
+  function addProviderFromPresetId(presetId: string): ProviderConfig {
+    const preset = presetById(presetId)
     const provider = providerFromPreset(preset)
 
     updateData((current) =>
@@ -639,19 +659,24 @@ function App() {
       }),
     )
     setSelectedProviderId(provider.id)
+    return provider
   }
 
-  function usePresetInGuide(): void {
-    const preset =
-      providerPresets.find((item) => item.id === selectedPresetId) ??
-      providerPresets[0]
-
-    if (preset.custom) {
-      addProviderFromSelectedPreset()
+  function addProviderFromPresetSelect(presetId: string): void {
+    if (!presetId) {
       return
     }
 
-    const existing = dataRef.current?.providers.find(
+    addProviderFromPresetId(presetId)
+  }
+
+  function applyGuidePreset(presetId: string): void {
+    const preset = presetById(presetId)
+    const current = dataRef.current
+
+    setSelectedPresetId(preset.id)
+
+    const existing = current?.providers.find(
       (provider) =>
         provider.kind === preset.kind &&
         provider.name === preset.name &&
@@ -668,7 +693,15 @@ function App() {
       return
     }
 
-    addProviderFromSelectedPreset()
+    if (
+      selectedProviderId &&
+      current?.providers.some((provider) => provider.id === selectedProviderId)
+    ) {
+      updateProvider(selectedProviderId, presetProviderPatch(preset))
+      return
+    }
+
+    addProviderFromPresetId(preset.id)
   }
 
   async function removeProvider(providerId: string): Promise<void> {
@@ -1735,12 +1768,12 @@ function App() {
     )
   }
 
-  const welcomeHint = activeConversation.model.trim()
+  const welcomeHint = activeModel.trim()
     ? activeProvider.needsApiKey
       ? '确认 API Key 已填写后即可发送。'
       : '输入消息即可发送。'
     : activeProvider.needsApiKey
-      ? '获取或填写模型名称，并在设置里填写 API Key 后即可发送。'
+      ? '填写 API Key，并获取或填写模型名称后即可发送。'
       : '获取或填写模型名称后即可发送。'
   const syncRequirement =
     data.sync.mode === 'local'
@@ -1841,7 +1874,7 @@ function App() {
             <h1>{activeConversation.title}</h1>
             <span>
               {activeProvider.name}
-              {activeConversation.model ? ` / ${activeConversation.model}` : ''}
+              {activeModel ? ` / ${activeModel}` : ''}
             </span>
           </div>
           <div className="header-controls">
@@ -1861,7 +1894,7 @@ function App() {
             <div className="model-picker">
               <div className="model-row">
                 <input
-                  value={activeConversation.model}
+                  value={activeModel}
                   onChange={(event) => updateConversationModel(event.target.value)}
                   placeholder="模型名称"
                   aria-label="模型名称"
@@ -1888,8 +1921,8 @@ function App() {
               {activeProviderModels.length > 0 ? (
                 <select
                   value={
-                    activeProviderModels.includes(activeConversation.model)
-                      ? activeConversation.model
+                    activeProviderModels.includes(activeModel)
+                      ? activeModel
                       : ''
                   }
                   onChange={(event) => updateConversationModel(event.target.value)}
@@ -2090,24 +2123,21 @@ function App() {
                   ))}
                   <div className="add-provider">
                     <select
-                      value={selectedPresetId}
-                      onChange={(event) => setSelectedPresetId(event.target.value)}
-                      aria-label="选择预设"
+                      value=""
+                      onChange={(event) =>
+                        addProviderFromPresetSelect(event.target.value)
+                      }
+                      aria-label="选择并添加服务商"
                     >
+                      <option value="" disabled>
+                        添加服务商...
+                      </option>
                       {providerPresets.map((preset) => (
                         <option key={preset.id} value={preset.id}>
                           {preset.name}
                         </option>
                       ))}
                     </select>
-                    <button
-                      className="ghost-button"
-                      type="button"
-                      onClick={addProviderFromSelectedPreset}
-                    >
-                      <MessageSquarePlus size={16} />
-                      添加
-                    </button>
                   </div>
                 </div>
 
@@ -2177,6 +2207,25 @@ function App() {
                     />
                   </label>
                   <label>
+                    API Key
+                    <div className="input-icon">
+                      <KeyRound size={16} />
+                      <input
+                        type="password"
+                        value={providerKeys[selectedProvider.id] ?? ''}
+                        onChange={(event) =>
+                          updateProviderKey(
+                            selectedProvider.id,
+                            event.target.value,
+                          )
+                        }
+                        placeholder={
+                          selectedProvider.needsApiKey ? 'sk-...' : '可留空'
+                        }
+                      />
+                    </div>
+                  </label>
+                  <label>
                     默认模型
                     <div className="model-picker">
                       <div className="model-row">
@@ -2232,25 +2281,6 @@ function App() {
                           ))}
                         </select>
                       ) : null}
-                    </div>
-                  </label>
-                  <label>
-                    API Key
-                    <div className="input-icon">
-                      <KeyRound size={16} />
-                      <input
-                        type="password"
-                        value={providerKeys[selectedProvider.id] ?? ''}
-                        onChange={(event) =>
-                          updateProviderKey(
-                            selectedProvider.id,
-                            event.target.value,
-                          )
-                        }
-                        placeholder={
-                          selectedProvider.needsApiKey ? 'sk-...' : '可留空'
-                        }
-                      />
                     </div>
                   </label>
                   <label className="switch-row">
@@ -2621,7 +2651,7 @@ function App() {
                   服务商
                   <select
                     value={selectedPresetId}
-                    onChange={(event) => setSelectedPresetId(event.target.value)}
+                    onChange={(event) => applyGuidePreset(event.target.value)}
                   >
                     {providerPresets.map((preset) => (
                       <option key={preset.id} value={preset.id}>
@@ -2630,14 +2660,6 @@ function App() {
                     ))}
                   </select>
                 </label>
-                <button
-                  className="ghost-button"
-                  type="button"
-                  onClick={usePresetInGuide}
-                >
-                  <Check size={16} />
-                  使用这个预设
-                </button>
                 {selectedProvider ? (
                   <>
                     <label>
@@ -2691,6 +2713,22 @@ function App() {
                       <span>发送前要求 API Key</span>
                     </label>
                     <label>
+                      API Key
+                      <input
+                        type="password"
+                        value={providerKeys[selectedProvider.id] ?? ''}
+                        onChange={(event) =>
+                          updateProviderKey(
+                            selectedProvider.id,
+                            event.target.value,
+                          )
+                        }
+                        placeholder={
+                          selectedProvider.needsApiKey ? 'sk-...' : '可留空'
+                        }
+                      />
+                    </label>
+                    <label>
                       默认模型
                       <div className="model-picker">
                         <div className="model-row">
@@ -2727,7 +2765,9 @@ function App() {
                         {selectedProviderModels.length > 0 ? (
                           <select
                             value={
-                              selectedProviderModels.includes(selectedProvider.model)
+                              selectedProviderModels.includes(
+                                selectedProvider.model,
+                              )
                                 ? selectedProvider.model
                                 : ''
                             }
@@ -2747,22 +2787,6 @@ function App() {
                           </select>
                         ) : null}
                       </div>
-                    </label>
-                    <label>
-                      API Key
-                      <input
-                        type="password"
-                        value={providerKeys[selectedProvider.id] ?? ''}
-                        onChange={(event) =>
-                          updateProviderKey(
-                            selectedProvider.id,
-                            event.target.value,
-                          )
-                        }
-                        placeholder={
-                          selectedProvider.needsApiKey ? 'sk-...' : '可留空'
-                        }
-                      />
                     </label>
                   </>
                 ) : null}

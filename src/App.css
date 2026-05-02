@@ -624,9 +624,7 @@ textarea:focus {
 }
 
 .add-provider {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
+  display: block;
 }
 
 .form-stack {
