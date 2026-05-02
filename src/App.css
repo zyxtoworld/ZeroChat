@@ -167,7 +167,19 @@
 
 .header-controls {
   display: grid;
-  grid-template-columns: minmax(130px, 190px) minmax(130px, 190px) 38px;
+  grid-template-columns: minmax(130px, 190px) minmax(180px, 260px) 38px;
+  gap: 8px;
+  align-items: center;
+}
+
+.model-picker {
+  display: grid;
+  gap: 6px;
+}
+
+.model-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
   gap: 8px;
   align-items: center;
 }
@@ -469,6 +481,13 @@ textarea:focus {
 
 .primary-button:disabled {
   opacity: 0.7;
+  cursor: wait;
+}
+
+.icon-button:disabled,
+.ghost-button:disabled,
+.danger-button:disabled {
+  opacity: 0.55;
   cursor: wait;
 }
 

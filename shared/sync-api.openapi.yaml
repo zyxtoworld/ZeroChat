@@ -133,6 +133,36 @@ paths:
         "200":
           description: Object deleted
   /proxy:
+    get:
+      summary: Optional AI provider proxy for model listing
+      parameters:
+        - name: x-zerochat-base-url
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: x-zerochat-provider-kind
+          in: header
+          required: true
+          schema:
+            enum: [openai-compatible, anthropic]
+        - name: x-zerochat-proxy-token
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: x-zerochat-proxy-action
+          in: header
+          required: true
+          schema:
+            const: models
+      responses:
+        "200":
+          description: Provider model list JSON
+        "400":
+          description: Missing provider metadata
+        "403":
+          description: Provider host is not allowed
     post:
       summary: Optional AI provider proxy for clients blocked by CORS
       parameters:
@@ -151,6 +181,11 @@ paths:
           required: true
           schema:
             type: string
+        - name: x-zerochat-proxy-action
+          in: header
+          required: false
+          schema:
+            enum: [chat]
       responses:
         "200":
           description: Provider response stream or JSON

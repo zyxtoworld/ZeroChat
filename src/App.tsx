@@ -23,7 +23,7 @@ import type { ChangeEvent, FormEvent, KeyboardEvent } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { providerFromPreset, providerPresets } from './data/presets'
-import { streamChat } from './services/chat'
+import { listProviderModels, streamChat } from './services/chat'
 import { decryptVault, encryptVault, isEncryptedSnapshot } from './services/crypto'
 import { performSync, pullRemoteChanges } from './services/sync'
 import {
@@ -164,6 +164,8 @@ function App() {
   const [syncPassphraseValue, setSyncPassphraseValue] = useState('')
   const [selectedProviderId, setSelectedProviderId] = useState('')
   const [selectedPresetId, setSelectedPresetId] = useState(providerPresets[0].id)
+  const [providerModels, setProviderModels] = useState<Record<string, string[]>>({})
+  const [loadingModelsProviderId, setLoadingModelsProviderId] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('providers')
   const [guideOpen, setGuideOpen] = useState(false)
@@ -186,6 +188,7 @@ function App() {
   const syncTimerRef = useRef<number | null>(null)
   const syncingRef = useRef(false)
   const pendingSyncRef = useRef<PendingSyncRun | null>(null)
+  const modelLoadProviderIdRef = useRef('')
   const dangerResolverRef = useRef<((confirmed: boolean) => void) | null>(null)
 
   useEffect(() => {
@@ -402,6 +405,12 @@ function App() {
   const guideVisible = Boolean(
     data && (!data.preferences.firstRunDone || guideOpen),
   )
+  const activeProviderModels = activeProvider
+    ? providerModels[activeProvider.id] ?? []
+    : []
+  const selectedProviderModels = selectedProvider
+    ? providerModels[selectedProvider.id] ?? []
+    : []
 
   function updateData(updater: (current: AppData) => AppData): AppData | null {
     const current = dataRef.current
@@ -640,6 +649,67 @@ function App() {
     }
     reportSecretWrite(setProviderProxyToken(providerId, value))
     updateData((current) => bump(current))
+  }
+
+  async function refreshProviderModels(
+    providerId: string,
+    options: { useAsConversationModel?: boolean; useAsProviderModel?: boolean } = {},
+  ): Promise<void> {
+    if (modelLoadProviderIdRef.current) {
+      return
+    }
+
+    const provider = dataRef.current?.providers.find((item) => item.id === providerId)
+
+    if (!provider) {
+      return
+    }
+
+    modelLoadProviderIdRef.current = providerId
+    setLoadingModelsProviderId(providerId)
+    setNotice('')
+
+    try {
+      const models = await listProviderModels({
+        provider,
+        apiKey: providerKeysRef.current[providerId] ?? '',
+        proxyToken:
+          providerProxyTokensRef.current[providerId] ?? workerTokenRef.current,
+      })
+      setProviderModels((current) => ({
+        ...current,
+        [providerId]: models,
+      }))
+      setNotice(`已获取 ${models.length} 个模型`)
+
+      const firstModel = models[0]
+
+      if (!firstModel) {
+        return
+      }
+
+      if (options.useAsProviderModel && !provider.model.trim()) {
+        updateProvider(providerId, { model: firstModel })
+      }
+
+      const currentConversation = dataRef.current?.conversations.find(
+        (conversation) =>
+          conversation.id === dataRef.current?.preferences.activeConversationId,
+      )
+
+      if (
+        options.useAsConversationModel &&
+        currentConversation?.providerId === providerId &&
+        !currentConversation.model.trim()
+      ) {
+        updateConversationModel(firstModel)
+      }
+    } catch (error: unknown) {
+      setNotice(error instanceof Error ? error.message : String(error))
+    } finally {
+      modelLoadProviderIdRef.current = ''
+      setLoadingModelsProviderId('')
+    }
   }
 
   async function applySyncedSecrets(
@@ -1572,12 +1642,52 @@ function App() {
                   </option>
                 ))}
             </select>
-            <input
-              value={activeConversation.model}
-              onChange={(event) => updateConversationModel(event.target.value)}
-              placeholder="模型名称"
-              aria-label="模型名称"
-            />
+            <div className="model-picker">
+              <div className="model-row">
+                <input
+                  value={activeConversation.model}
+                  onChange={(event) => updateConversationModel(event.target.value)}
+                  placeholder="模型名称"
+                  aria-label="模型名称"
+                />
+                <button
+                  className="icon-button"
+                  type="button"
+                  title="从服务商获取模型"
+                  onClick={() =>
+                    void refreshProviderModels(activeProvider.id, {
+                      useAsConversationModel: true,
+                    })
+                  }
+                  disabled={Boolean(loadingModelsProviderId)}
+                >
+                  <RefreshCw
+                    size={16}
+                    className={
+                      loadingModelsProviderId === activeProvider.id ? 'spin' : ''
+                    }
+                  />
+                </button>
+              </div>
+              {activeProviderModels.length > 0 ? (
+                <select
+                  value={
+                    activeProviderModels.includes(activeConversation.model)
+                      ? activeConversation.model
+                      : ''
+                  }
+                  onChange={(event) => updateConversationModel(event.target.value)}
+                  aria-label="选择已获取的模型"
+                >
+                  <option value="">选择模型</option>
+                  {activeProviderModels.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+            </div>
             <button
               className="icon-button"
               type="button"
@@ -1594,7 +1704,7 @@ function App() {
             <div className="welcome-panel">
               <Bot size={28} />
               <h2>开始对话</h2>
-              <p>选择服务商、填写模型名称和 API Key 后即可发送。</p>
+              <p>选择服务商、获取或填写模型名称和 API Key 后即可发送。</p>
             </div>
           ) : (
             activeConversation.messages.map((message) => {
@@ -1846,15 +1956,61 @@ function App() {
                   </label>
                   <label>
                     默认模型
-                    <input
-                      value={selectedProvider.model}
-                      onChange={(event) =>
-                        updateProvider(selectedProvider.id, {
-                          model: event.target.value,
-                        })
-                      }
-                      placeholder="按平台控制台填写"
-                    />
+                    <div className="model-picker">
+                      <div className="model-row">
+                        <input
+                          value={selectedProvider.model}
+                          onChange={(event) =>
+                            updateProvider(selectedProvider.id, {
+                              model: event.target.value,
+                            })
+                          }
+                          placeholder="可手填，也可从服务商获取"
+                        />
+                        <button
+                          className="icon-button"
+                          type="button"
+                          title="从服务商获取模型"
+                          onClick={() =>
+                            void refreshProviderModels(selectedProvider.id, {
+                              useAsProviderModel: true,
+                            })
+                          }
+                          disabled={Boolean(loadingModelsProviderId)}
+                        >
+                          <RefreshCw
+                            size={16}
+                            className={
+                              loadingModelsProviderId === selectedProvider.id
+                                ? 'spin'
+                                : ''
+                            }
+                          />
+                        </button>
+                      </div>
+                      {selectedProviderModels.length > 0 ? (
+                        <select
+                          value={
+                            selectedProviderModels.includes(selectedProvider.model)
+                              ? selectedProvider.model
+                              : ''
+                          }
+                          onChange={(event) =>
+                            updateProvider(selectedProvider.id, {
+                              model: event.target.value,
+                            })
+                          }
+                          aria-label="选择已获取的默认模型"
+                        >
+                          <option value="">选择模型</option>
+                          {selectedProviderModels.map((model) => (
+                            <option key={model} value={model}>
+                              {model}
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
+                    </div>
                   </label>
                   <label>
                     API Key
@@ -2258,15 +2414,61 @@ function App() {
                   <>
                     <label>
                       默认模型
-                      <input
-                        value={selectedProvider.model}
-                        onChange={(event) =>
-                          updateProvider(selectedProvider.id, {
-                            model: event.target.value,
-                          })
-                        }
-                        placeholder="按平台控制台填写"
-                      />
+                      <div className="model-picker">
+                        <div className="model-row">
+                          <input
+                            value={selectedProvider.model}
+                            onChange={(event) =>
+                              updateProvider(selectedProvider.id, {
+                                model: event.target.value,
+                              })
+                            }
+                            placeholder="可手填，也可从服务商获取"
+                          />
+                          <button
+                            className="icon-button"
+                            type="button"
+                            title="从服务商获取模型"
+                            onClick={() =>
+                              void refreshProviderModels(selectedProvider.id, {
+                                useAsProviderModel: true,
+                              })
+                            }
+                            disabled={Boolean(loadingModelsProviderId)}
+                          >
+                            <RefreshCw
+                              size={16}
+                              className={
+                                loadingModelsProviderId === selectedProvider.id
+                                  ? 'spin'
+                                  : ''
+                              }
+                            />
+                          </button>
+                        </div>
+                        {selectedProviderModels.length > 0 ? (
+                          <select
+                            value={
+                              selectedProviderModels.includes(selectedProvider.model)
+                                ? selectedProvider.model
+                                : ''
+                            }
+                            onChange={(event) =>
+                              updateProvider(selectedProvider.id, {
+                                model: event.target.value,
+                              })
+                            }
+                            aria-label="选择已获取的默认模型"
+                          >
+                            <option value="">选择模型</option>
+                            {selectedProviderModels.map((model) => (
+                              <option key={model} value={model}>
+                                {model}
+                              </option>
+                            ))}
+                          </select>
+                        ) : null}
+                      </div>
                     </label>
                     <label>
                       API Key

@@ -161,6 +161,86 @@ await expectStatus(
 )
 
 await expectStatus(
+  await call(env, '/proxy', {
+    method: 'GET',
+    headers: {
+      'x-zerochat-proxy-token': 'proxy-token',
+      'x-zerochat-base-url': 'https://api.openai.com/v1',
+    },
+  }),
+  405,
+  'chat proxy must reject GET',
+)
+
+await expectStatus(
+  await call(env, '/proxy', {
+    method: 'POST',
+    headers: {
+      'x-zerochat-proxy-token': 'proxy-token',
+      'x-zerochat-base-url': 'https://api.openai.com/v1',
+      'x-zerochat-proxy-action': 'models',
+    },
+    body: '{}',
+  }),
+  405,
+  'model proxy must reject POST',
+)
+
+const originalFetch = globalThis.fetch
+let upstreamProxyRequest = null
+globalThis.fetch = async (url, init = {}) => {
+  upstreamProxyRequest = {
+    url: String(url),
+    method: init.method,
+    redirect: init.redirect,
+    headers: new Headers(init.headers),
+  }
+
+  return new Response(
+    JSON.stringify({
+      data: [{ id: 'model-b' }, { id: 'model-a' }],
+    }),
+    { headers: { 'content-type': 'application/json' } },
+  )
+}
+
+try {
+  const modelListResponse = await call(env, '/proxy', {
+    method: 'GET',
+    headers: {
+      authorization: 'Bearer provider-key',
+      'x-zerochat-proxy-token': 'proxy-token',
+      'x-zerochat-base-url': 'https://api.openai.com/v1/chat/completions',
+      'x-zerochat-proxy-action': 'models',
+    },
+  })
+
+  await expectStatus(
+    modelListResponse,
+    200,
+    'model proxy should forward GET requests',
+  )
+
+  if (upstreamProxyRequest?.url !== 'https://api.openai.com/v1/models') {
+    throw new Error('model proxy must rewrite chat endpoint to model endpoint')
+  }
+
+  if (upstreamProxyRequest.method !== 'GET') {
+    throw new Error('model proxy must use GET upstream')
+  }
+
+  if (upstreamProxyRequest.redirect !== 'manual') {
+    throw new Error('model proxy must not auto-follow upstream redirects')
+  }
+
+  if (upstreamProxyRequest.headers.get('authorization') !== 'Bearer provider-key') {
+    throw new Error('model proxy must forward provider authorization')
+  }
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+await expectStatus(
   await call(env, '/sync/object/chunk-00000000-0000-4000-8000-000000000000.json', {
     method: 'PUT',
     headers: {

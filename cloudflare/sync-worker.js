@@ -312,7 +312,7 @@ async function handleIncrementalObject(request, env, corsHeaders, url) {
 }
 
 async function proxyAiRequest(request, env, corsHeaders) {
-  if (request.method !== 'POST') {
+  if (request.method !== 'POST' && request.method !== 'GET') {
     return new Response('Method not allowed', {
       status: 405,
       headers: corsHeaders,
@@ -333,6 +333,7 @@ async function proxyAiRequest(request, env, corsHeaders) {
   const kind =
     request.headers.get('x-zerochat-provider-kind') || 'openai-compatible'
   const baseUrl = request.headers.get('x-zerochat-base-url')
+  const action = request.headers.get('x-zerochat-proxy-action') || 'chat'
 
   if (kind !== 'openai-compatible' && kind !== 'anthropic') {
     return new Response('Unsupported provider kind', {
@@ -348,9 +349,30 @@ async function proxyAiRequest(request, env, corsHeaders) {
     })
   }
 
+  if (action !== 'chat' && action !== 'models') {
+    return new Response('Unsupported proxy action', {
+      status: 400,
+      headers: corsHeaders,
+    })
+  }
+
+  if (action === 'models' && request.method !== 'GET') {
+    return new Response('Model list must use GET', {
+      status: 405,
+      headers: corsHeaders,
+    })
+  }
+
+  if (action === 'chat' && request.method !== 'POST') {
+    return new Response('Chat proxy must use POST', {
+      status: 405,
+      headers: corsHeaders,
+    })
+  }
+
   let upstreamUrl
   try {
-    upstreamUrl = buildUpstreamUrl(baseUrl, kind)
+    upstreamUrl = buildUpstreamUrl(baseUrl, kind, action)
   } catch {
     return new Response('Invalid upstream URL', {
       status: 400,
@@ -396,9 +418,10 @@ async function proxyAiRequest(request, env, corsHeaders) {
   }
 
   const response = await fetch(upstreamUrl, {
-    method: 'POST',
+    method: request.method,
     headers,
-    body: request.body,
+    body: request.method === 'POST' ? request.body : undefined,
+    redirect: 'manual',
   })
 
   return new Response(response.body, {
@@ -413,7 +436,7 @@ async function proxyAiRequest(request, env, corsHeaders) {
   })
 }
 
-function buildUpstreamUrl(baseUrl, kind) {
+function buildUpstreamUrl(baseUrl, kind, action = 'chat') {
   const url = new URL(baseUrl.trim())
 
   if (url.protocol !== 'https:' || url.username || url.password) {
@@ -423,6 +446,30 @@ function buildUpstreamUrl(baseUrl, kind) {
   url.hash = ''
   url.search = ''
   const normalized = url.toString().replace(/\/+$/, '')
+
+  if (normalized.endsWith('/chat/completions')) {
+    return action === 'models'
+      ? `${normalized.slice(0, -'/chat/completions'.length)}/models`
+      : normalized
+  }
+
+  if (normalized.endsWith('/messages')) {
+    return action === 'models'
+      ? `${normalized.slice(0, -'/messages'.length)}/models`
+      : normalized
+  }
+
+  if (normalized.endsWith('/models')) {
+    return action === 'models'
+      ? normalized
+      : kind === 'anthropic'
+        ? `${normalized.slice(0, -'/models'.length)}/messages`
+        : `${normalized.slice(0, -'/models'.length)}/chat/completions`
+  }
+
+  if (action === 'models') {
+    return `${normalized}/models`
+  }
 
   if (kind === 'anthropic') {
     return normalized.endsWith('/messages')
@@ -439,9 +486,9 @@ function buildCorsHeaders(request, env) {
   const allowedOrigins = splitList(env.ALLOWED_ORIGINS)
   const requestOrigin = request.headers.get('origin')
   const headers = {
-    'access-control-allow-methods': 'GET, POST, PUT, OPTIONS',
+    'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
     'access-control-allow-headers':
-      'authorization, content-type, x-api-key, x-zerochat-proxy-token, anthropic-version, anthropic-dangerous-direct-browser-access, x-zerochat-base-url, x-zerochat-provider-kind',
+      'authorization, content-type, x-api-key, x-zerochat-proxy-token, x-zerochat-proxy-action, anthropic-version, anthropic-dangerous-direct-browser-access, x-zerochat-base-url, x-zerochat-provider-kind',
     'access-control-max-age': '86400',
     'cache-control': 'no-store',
     'referrer-policy': 'no-referrer',

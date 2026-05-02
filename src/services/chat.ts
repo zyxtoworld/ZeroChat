@@ -10,6 +10,13 @@ interface StreamOptions {
   onToken: (token: string) => void
 }
 
+interface ListModelsOptions {
+  provider: ProviderConfig
+  apiKey: string
+  proxyToken: string
+  signal?: AbortSignal
+}
+
 function trimSlash(value: string): string {
   return value.replace(/\/+$/, '')
 }
@@ -61,6 +68,32 @@ function buildEndpoint(provider: ProviderConfig): string {
     : `${baseUrl}/chat/completions`
 }
 
+function buildModelsEndpoint(provider: ProviderConfig): string {
+  if (provider.proxyUrl?.trim()) {
+    return `${safeBaseUrl(provider.proxyUrl, '代理地址')}/proxy`
+  }
+
+  return `${providerApiRoot(provider)}/models`
+}
+
+function providerApiRoot(provider: ProviderConfig): string {
+  const baseUrl = safeBaseUrl(provider.baseUrl, 'Base URL')
+
+  if (baseUrl.endsWith('/chat/completions')) {
+    return baseUrl.slice(0, -'/chat/completions'.length)
+  }
+
+  if (baseUrl.endsWith('/messages')) {
+    return baseUrl.slice(0, -'/messages'.length)
+  }
+
+  if (baseUrl.endsWith('/models')) {
+    return baseUrl.slice(0, -'/models'.length)
+  }
+
+  return baseUrl
+}
+
 function proxyHeaders(provider: ProviderConfig): Record<string, string> {
   if (!provider.proxyUrl?.trim()) {
     return {}
@@ -69,6 +102,38 @@ function proxyHeaders(provider: ProviderConfig): Record<string, string> {
   return {
     'x-zerochat-base-url': safeBaseUrl(provider.baseUrl, 'Base URL'),
     'x-zerochat-provider-kind': provider.kind,
+  }
+}
+
+function modelListHeaders(
+  provider: ProviderConfig,
+  apiKey: string,
+  proxyToken: string,
+): Record<string, string> {
+  if (provider.kind === 'anthropic') {
+    return {
+      ...(apiKey ? { 'x-api-key': apiKey } : {}),
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+      ...(provider.proxyUrl?.trim()
+        ? {
+            'x-zerochat-proxy-token': proxyToken,
+            'x-zerochat-proxy-action': 'models',
+          }
+        : {}),
+      ...proxyHeaders(provider),
+    }
+  }
+
+  return {
+    ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+    ...(provider.proxyUrl?.trim()
+      ? {
+          'x-zerochat-proxy-token': proxyToken,
+          'x-zerochat-proxy-action': 'models',
+        }
+      : {}),
+    ...proxyHeaders(provider),
   }
 }
 
@@ -203,6 +268,102 @@ async function assertOk(response: Response): Promise<void> {
 
   const text = await response.text()
   throw new Error(text || `请求失败：${response.status}`)
+}
+
+function readModelId(value: unknown): string | null {
+  if (typeof value === 'string') {
+    return value.trim() || null
+  }
+
+  if (typeof value !== 'object' || value === null) {
+    return null
+  }
+
+  const item = value as {
+    id?: unknown
+    name?: unknown
+    model?: unknown
+    slug?: unknown
+  }
+  const candidate = item.id ?? item.name ?? item.model ?? item.slug
+
+  return typeof candidate === 'string' && candidate.trim()
+    ? candidate.trim()
+    : null
+}
+
+function modelItemsFromResponse(value: unknown): unknown[] {
+  if (Array.isArray(value)) {
+    return value
+  }
+
+  if (typeof value !== 'object' || value === null) {
+    return []
+  }
+
+  const record = value as {
+    data?: unknown
+    models?: unknown
+    result?: unknown
+  }
+
+  if (Array.isArray(record.data)) {
+    return record.data
+  }
+
+  if (Array.isArray(record.models)) {
+    return record.models
+  }
+
+  if (Array.isArray(record.result)) {
+    return record.result
+  }
+
+  return []
+}
+
+function parseModelIds(value: unknown): string[] {
+  const seen = new Set<string>()
+
+  for (const item of modelItemsFromResponse(value)) {
+    const id = readModelId(item)
+
+    if (id) {
+      seen.add(id)
+    }
+  }
+
+  return Array.from(seen).sort((left, right) => left.localeCompare(right))
+}
+
+export async function listProviderModels(
+  options: ListModelsOptions,
+): Promise<string[]> {
+  const { provider, apiKey, proxyToken, signal } = options
+
+  if (provider.needsApiKey && !apiKey) {
+    throw new Error('请先在设置里填写这个服务商的 API Key')
+  }
+
+  if (provider.proxyUrl?.trim() && !proxyToken.trim()) {
+    throw new Error('请先填写这个服务商的代理访问密钥')
+  }
+
+  const response = await fetch(buildModelsEndpoint(provider), {
+    method: 'GET',
+    signal,
+    headers: modelListHeaders(provider, apiKey, proxyToken),
+  })
+
+  await assertOk(response)
+
+  const models = parseModelIds(await response.json())
+
+  if (models.length === 0) {
+    throw new Error('没有从服务商返回的数据中识别到模型')
+  }
+
+  return models
 }
 
 export async function streamChat(options: StreamOptions): Promise<void> {

@@ -121,6 +121,10 @@ Cloudflare 同步优先使用增量模式：KV 只保存最新 manifest 指针�
 
 Web/PWA 本机存储也会加密：聊天、设置和本机密钥记录写入 IndexedDB 前会用 Web Crypto AES-GCM 加密；同步加密密码只在当前浏览器会话保存，关闭标签页后需要重新输入。
 
+## 模型列表
+
+在聊天顶部或服务商设置里点击刷新按钮，可以从当前配置的第三方服务商获取模型列表。OpenAI 兼容服务商使用 `{Base URL}/models`，Anthropic 使用 `/models`；如果配置了 Worker 代理，会通过同一个 `/proxy` 走白名单和代理密钥校验。获取失败时仍可手动填写模型名。
+
 当前加密方案：
 
 - AES-256-GCM

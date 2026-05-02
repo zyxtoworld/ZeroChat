@@ -10,6 +10,36 @@ ZeroChat 各端用相同的服务商字段：
 | `model` | 用户填写的平台模型名 |
 | `needsApiKey` | 是否发送前要求 API Key |
 
+## 模型列表
+
+客户端可以从已配置的服务商获取模型列表。模型列表只用于辅助选择，用户仍然可以手动填写模型名。
+
+OpenAI 兼容服务商：
+
+```text
+GET {baseUrl}/models
+Authorization: Bearer <api-key>
+```
+
+Anthropic：
+
+```text
+GET {baseUrl}/models
+X-API-Key: <api-key>
+Anthropic-Version: 2023-06-01
+```
+
+如果 `proxyUrl` 不为空，请求：
+
+```text
+GET {proxyUrl}/proxy
+X-ZeroChat-Proxy-Action: models
+X-ZeroChat-Base-Url: <baseUrl>
+X-ZeroChat-Provider-Kind: <kind>
+```
+
+客户端从 `data[]`、`models[]` 或数组根节点中读取 `id`、`name`、`model` 或字符串项作为可选模型名。
+
 ## OpenAI 兼容请求
 
 如果 `proxyUrl` 为空，客户端直接请求：
