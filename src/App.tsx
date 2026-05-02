@@ -24,7 +24,7 @@ import './App.css'
 import { providerFromPreset, providerPresets } from './data/presets'
 import { streamChat } from './services/chat'
 import { decryptVault, encryptVault, isEncryptedSnapshot } from './services/crypto'
-import { performSync } from './services/sync'
+import { performSync, pullRemoteChanges } from './services/sync'
 import {
   clearAppData,
   createConversation,
@@ -53,6 +53,19 @@ import type {
 } from './types'
 
 type SettingsTab = 'providers' | 'sync' | 'data'
+
+const AUTO_SYNC_DEBOUNCE_MS = 1200
+const REMOTE_PULL_INTERVAL_MS = 20_000
+
+interface RunSyncOptions {
+  silent?: boolean
+  pullOnly?: boolean
+}
+
+interface PendingSyncRun {
+  snapshot: AppData
+  options: RunSyncOptions
+}
 
 function now(): number {
   return Date.now()
@@ -104,6 +117,33 @@ function assistantMessageClass(message: ChatMessage): string {
     .join(' ')
 }
 
+function hasStreamingMessage(data: AppData): boolean {
+  return data.conversations.some((conversation) =>
+    conversation.messages.some((message) => message.status === 'streaming'),
+  )
+}
+
+function mergeSyncIdentifiers(current: AppData, synced: AppData): AppData {
+  const sameMode = current.sync.mode === synced.sync.mode
+
+  return {
+    ...current,
+    sync: {
+      ...current.sync,
+      encryptionEnabled: true,
+      gistId: sameMode
+        ? synced.sync.gistId ?? current.sync.gistId
+        : current.sync.gistId,
+      gistFile: sameMode
+        ? synced.sync.gistFile ?? current.sync.gistFile
+        : current.sync.gistFile,
+      workerEndpoint: sameMode
+        ? synced.sync.workerEndpoint ?? current.sync.workerEndpoint
+        : current.sync.workerEndpoint,
+    },
+  }
+}
+
 function App() {
   const [data, setData] = useState<AppData | null>(null)
   const [draft, setDraft] = useState('')
@@ -124,6 +164,14 @@ function App() {
   const [loadError, setLoadError] = useState('')
   const abortRef = useRef<AbortController | null>(null)
   const dataRef = useRef<AppData | null>(null)
+  const providerKeysRef = useRef<Record<string, string>>({})
+  const providerProxyTokensRef = useRef<Record<string, string>>({})
+  const githubTokenRef = useRef('')
+  const workerTokenRef = useRef('')
+  const syncPassphraseRef = useRef('')
+  const syncTimerRef = useRef<number | null>(null)
+  const syncingRef = useRef(false)
+  const pendingSyncRef = useRef<PendingSyncRun | null>(null)
 
   useEffect(() => {
     let mounted = true
@@ -136,13 +184,20 @@ function App() {
       )
 
       if (mounted) {
+        const syncPassphrase = getSyncPassphrase()
+        providerKeysRef.current = secrets.providerKeys
+        providerProxyTokensRef.current = secrets.providerProxyTokens
+        githubTokenRef.current = secrets.githubToken
+        workerTokenRef.current = secrets.workerToken
+        syncPassphraseRef.current = syncPassphrase
+        dataRef.current = initial
         setData(initial)
         setSelectedProviderId(initial.providers[0]?.id ?? '')
         setProviderKeys(secrets.providerKeys)
         setProviderProxyTokens(secrets.providerProxyTokens)
         setGithubTokenValue(secrets.githubToken)
         setWorkerTokenValue(secrets.workerToken)
-        setSyncPassphraseValue(getSyncPassphrase())
+        setSyncPassphraseValue(syncPassphrase)
       }
     }
 
@@ -162,6 +217,34 @@ function App() {
   useEffect(() => {
     dataRef.current = data
   }, [data])
+
+  useEffect(() => {
+    providerKeysRef.current = providerKeys
+  }, [providerKeys])
+
+  useEffect(() => {
+    providerProxyTokensRef.current = providerProxyTokens
+  }, [providerProxyTokens])
+
+  useEffect(() => {
+    githubTokenRef.current = githubTokenValue
+  }, [githubTokenValue])
+
+  useEffect(() => {
+    workerTokenRef.current = workerTokenValue
+  }, [workerTokenValue])
+
+  useEffect(() => {
+    syncPassphraseRef.current = syncPassphraseValue
+  }, [syncPassphraseValue])
+
+  useEffect(() => {
+    return () => {
+      if (syncTimerRef.current !== null) {
+        window.clearTimeout(syncTimerRef.current)
+      }
+    }
+  }, [])
 
   useEffect(() => {
     if (!data) {
@@ -187,6 +270,83 @@ function App() {
 
     return () => window.clearTimeout(handle)
   }, [data])
+
+  useEffect(() => {
+    if (!data) {
+      return
+    }
+
+    if (hasStreamingMessage(data)) {
+      clearScheduledSync()
+      return
+    }
+
+    scheduleAutoSync(data)
+    // Sync helpers read current credentials and data through refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, githubTokenValue, syncPassphraseValue, workerTokenValue])
+
+  useEffect(() => {
+    if (!data || !canPullRemote(data)) {
+      return
+    }
+
+    let disposed = false
+    const pullLatest = (): void => {
+      if (disposed) {
+        return
+      }
+
+      const snapshot = dataRef.current
+
+      if (!snapshot || !canPullRemote(snapshot)) {
+        return
+      }
+
+      if (hasUnsyncedLocalChanges(snapshot)) {
+        scheduleAutoSync(snapshot)
+        return
+      }
+
+      void runSync(snapshot, {
+        pullOnly: true,
+        silent: true,
+      })
+    }
+    const pullWhenVisible = (): void => {
+      if (document.visibilityState === 'visible') {
+        pullLatest()
+      }
+    }
+    const startupHandle = window.setTimeout(pullLatest, 600)
+    const intervalHandle = window.setInterval(
+      pullWhenVisible,
+      REMOTE_PULL_INTERVAL_MS,
+    )
+
+    window.addEventListener('focus', pullLatest)
+    window.addEventListener('online', pullLatest)
+    document.addEventListener('visibilitychange', pullWhenVisible)
+
+    return () => {
+      disposed = true
+      window.clearTimeout(startupHandle)
+      window.clearInterval(intervalHandle)
+      window.removeEventListener('focus', pullLatest)
+      window.removeEventListener('online', pullLatest)
+      document.removeEventListener('visibilitychange', pullWhenVisible)
+    }
+    // Remote pull should only restart when sync configuration changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    data?.sync.autoSync,
+    data?.sync.gistId,
+    data?.sync.mode,
+    data?.sync.workerEndpoint,
+    githubTokenValue,
+    syncPassphraseValue,
+    workerTokenValue,
+  ])
 
   const activeConversation = useMemo(() => {
     if (!data) {
@@ -228,16 +388,17 @@ function App() {
     data && (!data.preferences.firstRunDone || guideOpen),
   )
 
-  function updateData(updater: (current: AppData) => AppData): void {
-    setData((current) => {
-      if (!current) {
-        return current
-      }
+  function updateData(updater: (current: AppData) => AppData): AppData | null {
+    const current = dataRef.current
 
-      const next = updater(current)
-      dataRef.current = next
-      return next
-    })
+    if (!current) {
+      return null
+    }
+
+    const next = updater(current)
+    dataRef.current = next
+    setData(next)
+    return next
   }
 
   function reportSecretWrite(promise: Promise<void>): void {
@@ -368,6 +529,13 @@ function App() {
     setProviderKeys((current) => {
       const next = { ...current }
       delete next[providerId]
+      providerKeysRef.current = next
+      return next
+    })
+    setProviderProxyTokens((current) => {
+      const next = { ...current }
+      delete next[providerId]
+      providerProxyTokensRef.current = next
       return next
     })
     setSelectedProviderId(fallback.id)
@@ -378,6 +546,10 @@ function App() {
       ...current,
       [providerId]: value,
     }))
+    providerKeysRef.current = {
+      ...providerKeysRef.current,
+      [providerId]: value,
+    }
     reportSecretWrite(setProviderKey(providerId, value))
     updateData((current) => bump(current))
   }
@@ -387,6 +559,10 @@ function App() {
       ...current,
       [providerId]: value,
     }))
+    providerProxyTokensRef.current = {
+      ...providerProxyTokensRef.current,
+      [providerId]: value,
+    }
     reportSecretWrite(setProviderProxyToken(providerId, value))
     updateData((current) => bump(current))
   }
@@ -398,6 +574,8 @@ function App() {
     await clearProviderSecrets()
     setProviderKeys(keys)
     setProviderProxyTokens(proxyTokens)
+    providerKeysRef.current = keys
+    providerProxyTokensRef.current = proxyTokens
 
     await Promise.all([
       ...Object.entries(keys).map(([providerId, value]) =>
@@ -407,6 +585,94 @@ function App() {
         setProviderProxyToken(providerId, value),
       ),
     ])
+  }
+
+  function hasSyncCredentials(snapshot: AppData): boolean {
+    if (!snapshot.sync.autoSync || snapshot.sync.mode === 'local') {
+      return false
+    }
+
+    if (!syncPassphraseRef.current) {
+      return false
+    }
+
+    if (snapshot.sync.mode === 'gist') {
+      return Boolean(githubTokenRef.current.trim())
+    }
+
+    return Boolean(
+      snapshot.sync.workerEndpoint?.trim() && workerTokenRef.current.trim(),
+    )
+  }
+
+  function canPullRemote(snapshot: AppData): boolean {
+    if (!hasSyncCredentials(snapshot)) {
+      return false
+    }
+
+    return snapshot.sync.mode !== 'gist' || Boolean(snapshot.sync.gistId?.trim())
+  }
+
+  function hasUnsyncedLocalChanges(snapshot: AppData): boolean {
+    return snapshot.updatedAt > (snapshot.sync.lastSyncAt ?? 0)
+  }
+
+  function clearScheduledSync(): void {
+    if (syncTimerRef.current !== null) {
+      window.clearTimeout(syncTimerRef.current)
+      syncTimerRef.current = null
+    }
+  }
+
+  function queuePendingSync(snapshot: AppData, options: RunSyncOptions): void {
+    const pullOnly = Boolean(options.pullOnly)
+    const pending = pendingSyncRef.current
+
+    if (pending && !pending.options.pullOnly && pullOnly) {
+      pendingSyncRef.current = {
+        snapshot,
+        options: pending.options,
+      }
+      return
+    }
+
+    pendingSyncRef.current = {
+      snapshot,
+      options: {
+        pullOnly,
+        silent: options.silent ?? true,
+      },
+    }
+  }
+
+  function scheduleAutoSync(
+    snapshot: AppData,
+    delayMs = AUTO_SYNC_DEBOUNCE_MS,
+    options: { allowStreaming?: boolean } = {},
+  ): void {
+    if (!hasSyncCredentials(snapshot) || !hasUnsyncedLocalChanges(snapshot)) {
+      return
+    }
+
+    if (!options.allowStreaming && hasStreamingMessage(snapshot)) {
+      return
+    }
+
+    clearScheduledSync()
+    syncTimerRef.current = window.setTimeout(() => {
+      syncTimerRef.current = null
+      const latest = dataRef.current ?? snapshot
+
+      if (!hasSyncCredentials(latest) || !hasUnsyncedLocalChanges(latest)) {
+        return
+      }
+
+      if (!options.allowStreaming && hasStreamingMessage(latest)) {
+        return
+      }
+
+      void runSync(latest, { silent: true })
+    }, delayMs)
   }
 
   function changeActiveProvider(providerId: string): void {
@@ -442,39 +708,83 @@ function App() {
     )
   }
 
-  async function runSync(snapshot?: AppData): Promise<void> {
+  async function runSync(
+    snapshot?: AppData,
+    options: RunSyncOptions = {},
+  ): Promise<void> {
     const current = snapshot ?? dataRef.current
 
     if (!current) {
       return
     }
 
+    clearScheduledSync()
+
+    if (syncingRef.current) {
+      queuePendingSync(current, options)
+      return
+    }
+
+    syncingRef.current = true
     setSyncing(true)
-    setNotice('')
+
+    if (!options.silent) {
+      setNotice('')
+    }
 
     try {
-      const result = await performSync(current, {
-        encryptionPassphrase: syncPassphraseValue,
-        githubToken: githubTokenValue,
-        providerKeys,
-        providerProxyTokens,
-        workerToken: workerTokenValue,
-      })
-      dataRef.current = result.data
-      setData(result.data)
+      const syncContext = {
+        encryptionPassphrase: syncPassphraseRef.current,
+        githubToken: githubTokenRef.current,
+        providerKeys: providerKeysRef.current,
+        providerProxyTokens: providerProxyTokensRef.current,
+        workerToken: workerTokenRef.current,
+      }
+      const result = options.pullOnly
+        ? await pullRemoteChanges(current, syncContext)
+        : await performSync(current, syncContext)
+      const latest = dataRef.current
+      const changedWhileSyncing = Boolean(
+        latest && latest.updatedAt !== current.updatedAt,
+      )
 
-      if (result.secrets?.providerKeys) {
+      if (changedWhileSyncing) {
+        if (result.remoteAccepted) {
+          setNotice('同步期间本机也有新改动，已保留本机数据，请再同步一次')
+        } else if (!options.pullOnly && latest) {
+          const merged = mergeSyncIdentifiers(latest, result.data)
+          dataRef.current = merged
+          setData(merged)
+        }
+      } else {
+        dataRef.current = result.data
+        setData(result.data)
+      }
+
+      if (!changedWhileSyncing && result.remoteAccepted && result.secrets) {
         await applySyncedSecrets(
           result.secrets.providerKeys,
           result.secrets.providerProxyTokens ?? {},
         )
       }
 
-      setNotice(result.message)
+      if (!changedWhileSyncing && (!options.silent || result.remoteAccepted)) {
+        setNotice(result.message)
+      }
     } catch (error: unknown) {
       setNotice(error instanceof Error ? error.message : String(error))
     } finally {
+      syncingRef.current = false
       setSyncing(false)
+
+      const pending = pendingSyncRef.current
+      pendingSyncRef.current = null
+
+      if (pending) {
+        window.setTimeout(() => {
+          void runSync(pending.snapshot, pending.options)
+        }, 0)
+      }
     }
   }
 
@@ -517,7 +827,7 @@ function App() {
     setSending(true)
     setNotice('')
 
-    updateData((current) =>
+    const submitted = updateData((current) =>
       updateConversation(current, activeConversation.id, (conversation) => ({
         ...conversation,
         title,
@@ -525,6 +835,10 @@ function App() {
         messages: [...conversation.messages, userMessage, assistantMessage],
       })),
     )
+
+    if (submitted) {
+      scheduleAutoSync(submitted, 0, { allowStreaming: true })
+    }
 
     const controller = new AbortController()
     abortRef.current = controller
@@ -565,8 +879,8 @@ function App() {
       )
 
       const snapshot = dataRef.current
-      if (snapshot?.sync.autoSync && snapshot.sync.mode !== 'local') {
-        await runSync(snapshot)
+      if (snapshot) {
+        scheduleAutoSync(snapshot, 0, { allowStreaming: true })
       }
     } catch (error: unknown) {
       const isAbort =
@@ -577,7 +891,7 @@ function App() {
           ? error.message
           : String(error)
 
-      updateData((current) =>
+      const failed = updateData((current) =>
         updateConversation(current, activeConversation.id, (conversation) => ({
           ...conversation,
           messages: conversation.messages.map((item) =>
@@ -592,6 +906,9 @@ function App() {
           ),
         })),
       )
+      if (failed) {
+        scheduleAutoSync(failed, 0, { allowStreaming: true })
+      }
       setNotice(message)
     } finally {
       abortRef.current = null
@@ -715,10 +1032,12 @@ function App() {
         throw new Error('文件格式不正确')
       }
 
-      setData({
+      const imported = {
         ...vault.data,
         updatedAt: now(),
-      })
+      }
+      dataRef.current = imported
+      setData(imported)
       setSelectedProviderId(vault.data.providers[0]?.id ?? '')
       await applySyncedSecrets(
         vault.secrets?.providerKeys ?? {},
@@ -740,6 +1059,7 @@ function App() {
     await clearAppData()
     await clearZeroChatSecrets()
     const fresh = createDefaultData()
+    dataRef.current = fresh
     setData(fresh)
     setSelectedProviderId(fresh.providers[0].id)
     setProviderKeys({})
@@ -747,6 +1067,11 @@ function App() {
     setGithubTokenValue('')
     setWorkerTokenValue('')
     setSyncPassphraseValue('')
+    providerKeysRef.current = {}
+    providerProxyTokensRef.current = {}
+    githubTokenRef.current = ''
+    workerTokenRef.current = ''
+    syncPassphraseRef.current = ''
     setNotice('已重置本地数据')
   }
 
@@ -1184,6 +1509,7 @@ function App() {
                     value={syncPassphraseValue}
                     onChange={(event) => {
                       setSyncPassphraseValue(event.target.value)
+                      syncPassphraseRef.current = event.target.value
                       setSyncPassphrase(event.target.value)
                     }}
                     placeholder="用于端到端加密和解密同步数据"
@@ -1237,6 +1563,7 @@ function App() {
                         value={githubTokenValue}
                         onChange={(event) => {
                           setGithubTokenValue(event.target.value)
+                          githubTokenRef.current = event.target.value
                           reportSecretWrite(setGithubToken(event.target.value))
                         }}
                         placeholder="Fine-grained token"
@@ -1273,6 +1600,7 @@ function App() {
                         value={workerTokenValue}
                         onChange={(event) => {
                           setWorkerTokenValue(event.target.value)
+                          workerTokenRef.current = event.target.value
                           reportSecretWrite(setWorkerToken(event.target.value))
                         }}
                       />
@@ -1296,7 +1624,7 @@ function App() {
                       )
                     }
                   />
-                  回复完成后自动同步
+                  即时自动同步
                 </label>
 
                 <button

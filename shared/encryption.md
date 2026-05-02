@@ -82,7 +82,7 @@ KV 只保存当前 head：
 R2 保存两类 `zerochat.encryptedObject`：
 
 - `manifest-<uuid>.json`：加密 manifest，包含普通设置、服务商配置、密钥、会话元数据和 chunk 引用。
-- `chunk-<uuid>.json`：加密消息分块，当前 Web/PWA 每 60 条消息一个 chunk。
+- `chunk-<uuid>.json`：加密消息分块，当前 Web/PWA 每 60 条消息一个 chunk。60 是分块大小，不是同步门槛；最后一个未满 60 条的 chunk 会跟随每次同步一起上传。
 
 增量对象使用：
 
@@ -90,7 +90,7 @@ R2 保存两类 `zerochat.encryptedObject`：
 - 压缩：优先 `gzip`，浏览器不支持时退回 `none`
 - KDF、salt、iv、cipher、tag 与完整快照一致
 
-客户端同步时会先解密远端 manifest，按 chunk fingerprint 复用未变化分块，只上传新增或改变过的分块。新 head 写入成功后，客户端会请求 Worker 删除旧 manifest 和不再引用的旧 chunk，节省 R2 免费空间。
+客户端同步时会先解密远端 manifest，按 chunk fingerprint 复用未变化分块，只上传新增或改变过的分块。新 head 写入成功后，客户端会请求 Worker 删除旧 manifest 和不再引用的旧 chunk，节省 R2 免费空间。前台设备会定期只读拉取最新 head 和 manifest；只读拉取不写远端，只有本机产生新消息或设置改动时才上传对象。
 
 ## 用户体验
 

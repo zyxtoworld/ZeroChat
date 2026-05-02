@@ -825,6 +825,73 @@ async function syncWithGist(
   }
 }
 
+async function pullWithGist(
+  data: AppData,
+  context: SyncContext,
+): Promise<SyncResult> {
+  const token = context.githubToken.trim()
+  const fileName = data.sync.gistFile || DEFAULT_GIST_FILE
+  const secrets: ProviderSecrets = {
+    providerKeys: context.providerKeys,
+    providerProxyTokens: context.providerProxyTokens,
+  }
+
+  if (!token) {
+    throw new Error('请先填写 GitHub Token')
+  }
+
+  if (!data.sync.gistId) {
+    const checked = markSynced(data, '远端同步库尚未创建')
+
+    return {
+      data: checked,
+      secrets,
+      remoteAccepted: false,
+      message: checked.sync.lastSyncStatus ?? '远端同步库尚未创建',
+    }
+  }
+
+  const response = await fetch(
+    `https://api.github.com/gists/${data.sync.gistId}`,
+    {
+      headers: {
+        accept: 'application/vnd.github+json',
+        authorization: `Bearer ${token}`,
+      },
+    },
+  )
+
+  if (!response.ok) {
+    throw new Error(await readError(response))
+  }
+
+  const json = await response.json()
+  const remote = await parseRemoteVault(
+    json?.files?.[fileName]?.content,
+    context.encryptionPassphrase,
+  )
+
+  if (remote && shouldAcceptRemoteVault(remote, data)) {
+    const accepted = acceptRemoteVault(remote, data)
+
+    return {
+      data: accepted.data,
+      secrets: accepted.secrets,
+      remoteAccepted: true,
+      message: accepted.data.sync.lastSyncStatus ?? '已采用远端加密数据',
+    }
+  }
+
+  const checked = markSynced(data, '已是最新')
+
+  return {
+    data: checked,
+    secrets,
+    remoteAccepted: false,
+    message: checked.sync.lastSyncStatus ?? '已是最新',
+  }
+}
+
 async function syncWithCloudflareSnapshot(
   data: AppData,
   context: SyncContext,
@@ -867,6 +934,40 @@ async function syncWithCloudflareSnapshot(
     secrets,
     remoteAccepted: false,
     message: synced.sync.lastSyncStatus ?? '同步完成',
+  }
+}
+
+async function pullWithCloudflareSnapshot(
+  data: AppData,
+  context: SyncContext,
+  endpoint: string,
+  token: string,
+  secrets: ProviderSecrets,
+): Promise<SyncResult> {
+  const remote = await readCloudflareSnapshotVault(
+    endpoint,
+    token,
+    context.encryptionPassphrase,
+  )
+
+  if (remote && shouldAcceptRemoteVault(remote, data)) {
+    const accepted = acceptRemoteVault(remote, data)
+
+    return {
+      data: accepted.data,
+      secrets: accepted.secrets,
+      remoteAccepted: true,
+      message: accepted.data.sync.lastSyncStatus ?? '已采用远端加密数据',
+    }
+  }
+
+  const checked = markSynced(data, '已是最新')
+
+  return {
+    data: checked,
+    secrets,
+    remoteAccepted: false,
+    message: checked.sync.lastSyncStatus ?? '已是最新',
   }
 }
 
@@ -976,6 +1077,60 @@ async function syncWithCloudflareIncremental(
   }
 }
 
+async function pullWithCloudflareIncremental(
+  data: AppData,
+  context: SyncContext,
+  endpoint: string,
+  token: string,
+  secrets: ProviderSecrets,
+): Promise<SyncResult | null> {
+  const head = await readIncrementalHead(endpoint, token)
+
+  if (head === 'unsupported') {
+    return null
+  }
+
+  if (!head) {
+    return pullWithCloudflareSnapshot(data, context, endpoint, token, secrets)
+  }
+
+  const remote = await readIncrementalRemoteState(
+    endpoint,
+    token,
+    context.encryptionPassphrase,
+    head,
+  )
+
+  if (
+    remote.manifest.updatedAt > data.updatedAt ||
+    (!data.sync.lastSyncAt && !hasLocalUserContent(data))
+  ) {
+    const remoteVault = await manifestToVault(
+      endpoint,
+      token,
+      context.encryptionPassphrase,
+      remote.manifest,
+    )
+    const accepted = acceptRemoteVault(remoteVault, data)
+
+    return {
+      data: accepted.data,
+      secrets: accepted.secrets,
+      remoteAccepted: true,
+      message: accepted.data.sync.lastSyncStatus ?? '已采用远端增量数据',
+    }
+  }
+
+  const checked = markSynced(data, '已是最新')
+
+  return {
+    data: checked,
+    secrets,
+    remoteAccepted: false,
+    message: checked.sync.lastSyncStatus ?? '已是最新',
+  }
+}
+
 async function syncWithCloudflare(
   data: AppData,
   context: SyncContext,
@@ -1006,6 +1161,36 @@ async function syncWithCloudflare(
   return syncWithCloudflareSnapshot(data, context, endpoint, token, secrets)
 }
 
+async function pullWithCloudflare(
+  data: AppData,
+  context: SyncContext,
+): Promise<SyncResult> {
+  const token = context.workerToken.trim()
+  const endpoint = normalizeWorkerEndpoint(data.sync.workerEndpoint)
+  const secrets: ProviderSecrets = {
+    providerKeys: context.providerKeys,
+    providerProxyTokens: context.providerProxyTokens,
+  }
+
+  if (!token) {
+    throw new Error('请先填写同步访问密钥')
+  }
+
+  const incremental = await pullWithCloudflareIncremental(
+    data,
+    context,
+    endpoint,
+    token,
+    secrets,
+  )
+
+  if (incremental) {
+    return incremental
+  }
+
+  return pullWithCloudflareSnapshot(data, context, endpoint, token, secrets)
+}
+
 export async function performSync(
   data: AppData,
   context: SyncContext,
@@ -1033,4 +1218,33 @@ export async function performSync(
   }
 
   return syncWithCloudflare(data, context)
+}
+
+export async function pullRemoteChanges(
+  data: AppData,
+  context: SyncContext,
+): Promise<SyncResult> {
+  if (data.sync.mode === 'local') {
+    const local = markSynced(data, '当前使用本地模式')
+
+    return {
+      data: local,
+      secrets: {
+        providerKeys: context.providerKeys,
+        providerProxyTokens: context.providerProxyTokens,
+      },
+      remoteAccepted: false,
+      message: local.sync.lastSyncStatus ?? '当前使用本地模式',
+    }
+  }
+
+  if (!context.encryptionPassphrase) {
+    throw new Error('请先填写同步加密密码')
+  }
+
+  if (data.sync.mode === 'gist') {
+    return pullWithGist(data, context)
+  }
+
+  return pullWithCloudflare(data, context)
 }
