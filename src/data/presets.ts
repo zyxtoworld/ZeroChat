@@ -1,4 +1,69 @@
-import type { ProviderConfig, ProviderPreset } from '../types'
+import type {
+  ProviderCapability,
+  ProviderConfig,
+  ProviderPreset,
+} from '../types'
+
+export const OPENAI_FULL_CAPABILITIES: ProviderCapability[] = [
+  'chat',
+  'vision',
+  'tools',
+  'image-generation',
+  'image-editing',
+  'audio',
+  'realtime',
+  'embeddings',
+  'moderation',
+  'model-list',
+]
+
+export const OPENAI_DEFAULT_CHAT_MODEL = 'gpt-5.5'
+export const OPENAI_DEFAULT_IMAGE_MODEL = 'gpt-image-2'
+export const OPENAI_DEFAULT_AUDIO_SPEECH_MODEL = 'gpt-4o-mini-tts'
+export const OPENAI_DEFAULT_AUDIO_TRANSCRIPTION_MODEL = 'gpt-4o-transcribe'
+export const OPENAI_DEFAULT_EMBEDDING_MODEL = 'text-embedding-3-large'
+export const OPENAI_DEFAULT_MODERATION_MODEL = 'omni-moderation-latest'
+export const OPENAI_DEFAULT_REALTIME_MODEL = 'gpt-realtime-2'
+
+export const OPENAI_RESPONSES_CAPABILITIES: ProviderCapability[] = [
+  'chat',
+  'vision',
+  'tools',
+  'image-generation',
+  'image-editing',
+  'model-list',
+]
+
+export const OPENAI_COMPATIBLE_CAPABILITIES: ProviderCapability[] = [
+  'chat',
+  'vision',
+  'tools',
+  'embeddings',
+  'model-list',
+]
+
+export const ANTHROPIC_CAPABILITIES: ProviderCapability[] = [
+  'chat',
+  'vision',
+  'tools',
+  'model-list',
+]
+
+export function presetCapabilities(preset: ProviderPreset): ProviderCapability[] {
+  if (preset.capabilities?.length) {
+    return preset.capabilities
+  }
+
+  if (preset.kind === 'anthropic') {
+    return ANTHROPIC_CAPABILITIES
+  }
+
+  if (preset.kind === 'openai-responses') {
+    return OPENAI_RESPONSES_CAPABILITIES
+  }
+
+  return OPENAI_COMPATIBLE_CAPABILITIES
+}
 
 export const providerPresets: ProviderPreset[] = [
   {
@@ -6,8 +71,16 @@ export const providerPresets: ProviderPreset[] = [
     name: 'OpenAI',
     kind: 'openai-responses',
     baseUrl: 'https://api.openai.com/v1',
-    model: '',
+    model: OPENAI_DEFAULT_CHAT_MODEL,
+    imageModel: OPENAI_DEFAULT_IMAGE_MODEL,
+    audioSpeechModel: OPENAI_DEFAULT_AUDIO_SPEECH_MODEL,
+    audioTranscriptionModel: OPENAI_DEFAULT_AUDIO_TRANSCRIPTION_MODEL,
+    embeddingModel: OPENAI_DEFAULT_EMBEDDING_MODEL,
+    moderationModel: OPENAI_DEFAULT_MODERATION_MODEL,
+    realtimeModel: OPENAI_DEFAULT_REALTIME_MODEL,
+    apiKeyUrl: 'https://platform.openai.com/api-keys',
     needsApiKey: true,
+    capabilities: OPENAI_FULL_CAPABILITIES,
   },
   {
     id: 'anthropic',
@@ -15,6 +88,7 @@ export const providerPresets: ProviderPreset[] = [
     kind: 'anthropic',
     baseUrl: 'https://api.anthropic.com/v1',
     model: '',
+    apiKeyUrl: 'https://platform.claude.com/settings/keys',
     needsApiKey: true,
   },
   {
@@ -22,7 +96,8 @@ export const providerPresets: ProviderPreset[] = [
     name: 'Google Gemini',
     kind: 'openai-compatible',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    model: '',
+    model: 'gemini-2.5-flash',
+    apiKeyUrl: 'https://aistudio.google.com/app/apikey',
     needsApiKey: true,
   },
   {
@@ -31,6 +106,7 @@ export const providerPresets: ProviderPreset[] = [
     kind: 'openai-compatible',
     baseUrl: 'https://api.deepseek.com',
     model: 'deepseek-chat',
+    apiKeyUrl: 'https://platform.deepseek.com/api_keys',
     needsApiKey: true,
   },
   {
@@ -39,14 +115,17 @@ export const providerPresets: ProviderPreset[] = [
     kind: 'openai-responses',
     baseUrl: 'https://api.x.ai/v1',
     model: '',
+    apiKeyUrl: 'https://console.x.ai/team/default/api-keys',
     needsApiKey: true,
+    capabilities: OPENAI_RESPONSES_CAPABILITIES,
   },
   {
     id: 'openrouter',
     name: 'OpenRouter',
     kind: 'openai-compatible',
     baseUrl: 'https://openrouter.ai/api/v1',
-    model: '',
+    model: 'openai/gpt-4.1-mini',
+    apiKeyUrl: 'https://openrouter.ai/settings/keys',
     needsApiKey: true,
   },
   {
@@ -54,7 +133,7 @@ export const providerPresets: ProviderPreset[] = [
     name: 'Mistral AI',
     kind: 'openai-compatible',
     baseUrl: 'https://api.mistral.ai/v1',
-    model: '',
+    model: 'mistral-small-latest',
     needsApiKey: true,
   },
   {
@@ -62,7 +141,7 @@ export const providerPresets: ProviderPreset[] = [
     name: 'Groq',
     kind: 'openai-compatible',
     baseUrl: 'https://api.groq.com/openai/v1',
-    model: '',
+    model: 'llama-3.3-70b-versatile',
     needsApiKey: true,
   },
   {
@@ -118,7 +197,7 @@ export const providerPresets: ProviderPreset[] = [
     name: 'SiliconFlow',
     kind: 'openai-compatible',
     baseUrl: 'https://api.siliconflow.cn/v1',
-    model: '',
+    model: 'Qwen/Qwen2.5-7B-Instruct',
     needsApiKey: true,
   },
   {
@@ -142,7 +221,7 @@ export const providerPresets: ProviderPreset[] = [
     name: 'Moonshot',
     kind: 'openai-compatible',
     baseUrl: 'https://api.moonshot.cn/v1',
-    model: '',
+    model: 'moonshot-v1-8k',
     needsApiKey: true,
   },
   {
@@ -174,7 +253,7 @@ export const providerPresets: ProviderPreset[] = [
     name: 'MiniMax',
     kind: 'openai-compatible',
     baseUrl: 'https://api.minimax.io/v1',
-    model: '',
+    model: 'MiniMax-Text-01',
     needsApiKey: true,
   },
   {
@@ -185,6 +264,7 @@ export const providerPresets: ProviderPreset[] = [
     model: '',
     needsApiKey: true,
     custom: true,
+    capabilities: OPENAI_FULL_CAPABILITIES,
   },
   {
     id: 'volcengine',
@@ -202,19 +282,21 @@ export const providerPresets: ProviderPreset[] = [
     model: '',
     needsApiKey: true,
     custom: true,
+    capabilities: OPENAI_RESPONSES_CAPABILITIES,
   },
   {
     id: 'custom-openai-relay',
-    name: '自定义 OpenAI 兼容中转',
+    name: '自定义中转（OpenAI 兼容）',
     kind: 'openai-compatible',
     baseUrl: 'https://relay.example.com/v1',
     model: '',
     needsApiKey: true,
     custom: true,
+    capabilities: OPENAI_FULL_CAPABILITIES,
   },
   {
     id: 'custom-responses-relay',
-    name: '自定义 Responses 中转',
+    name: '自定义中转（OpenAI Responses）',
     kind: 'openai-responses',
     baseUrl: 'https://relay.example.com/v1',
     model: '',
@@ -223,7 +305,7 @@ export const providerPresets: ProviderPreset[] = [
   },
   {
     id: 'custom-anthropic-relay',
-    name: '自定义 Anthropic 中转',
+    name: '自定义中转（Anthropic / Claude）',
     kind: 'anthropic',
     baseUrl: 'https://relay.example.com/v1',
     model: '',
@@ -234,6 +316,15 @@ export const providerPresets: ProviderPreset[] = [
 
 export function providerFromPreset(preset: ProviderPreset): ProviderConfig {
   const now = Date.now()
+  const models = uniquePresetModels([
+    preset.model,
+    preset.imageModel ?? '',
+    preset.audioSpeechModel ?? '',
+    preset.audioTranscriptionModel ?? '',
+    preset.embeddingModel ?? '',
+    preset.moderationModel ?? '',
+    preset.realtimeModel ?? '',
+  ])
 
   return {
     id: crypto.randomUUID(),
@@ -241,9 +332,32 @@ export function providerFromPreset(preset: ProviderPreset): ProviderConfig {
     kind: preset.kind,
     baseUrl: preset.baseUrl,
     model: preset.model,
+    imageModel: preset.imageModel,
+    audioSpeechModel: preset.audioSpeechModel,
+    audioTranscriptionModel: preset.audioTranscriptionModel,
+    embeddingModel: preset.embeddingModel,
+    moderationModel: preset.moderationModel,
+    realtimeModel: preset.realtimeModel,
+    models,
+    capabilities: presetCapabilities(preset),
     enabled: true,
-    needsApiKey: preset.needsApiKey,
+    needsApiKey: true,
+    custom: preset.custom,
     createdAt: now,
     updatedAt: now,
   }
+}
+
+export function uniquePresetModels(values: string[]): string[] {
+  const seen = new Set<string>()
+
+  for (const value of values) {
+    const model = value.trim()
+
+    if (model) {
+      seen.add(model)
+    }
+  }
+
+  return [...seen]
 }

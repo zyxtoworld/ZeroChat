@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>app.zerochat.client-symbolic</title>
+  <g fill="#000">
+    <path fill-rule="evenodd" d="M32 9C20 9 10 17.8 10 29.5 10 40.7 18.8 49 30.1 49.8L25 54.9c-1.4 1.4.3 3.7 2 2.7l11-6.2c9-2.8 16-11.2 16-21.9C54 17.8 44 9 32 9Zm0 9c7.5 0 13.5 4.7 13.5 11.5S39.5 41 32 41s-13.5-4.7-13.5-11.5S24.5 18 32 18Z"/>
+    <path d="M48.5 4.5 51 11l6.5 2.5L51 16l-2.5 6.5L46 16l-6.5-2.5L46 11l2.5-6.5Z"/>
+  </g>
+  <path d="M8 40c5 11 21 16 35 8M56 23c-5-8-19-11-31-6" fill="none" stroke="#000" stroke-linecap="round" stroke-width="4"/>
+  <path d="M27 28h10M27 34h6" fill="none" stroke="#000" stroke-linecap="round" stroke-width="4"/>
+</svg>

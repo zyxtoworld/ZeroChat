@@ -11,13 +11,23 @@ node_modules
 dist
 dist-ssr
 *.local
+.visual-audit/
+.manual-qa*/
+.i18n-qa/
+.codex-*/
+.codex-chrome-responsive-profile*/
+.codex-edge-qa-profile*/
+.codex-edge-ux-profile*/
+cloudflare/wrangler.toml
 
 # Native build outputs
 apps/**/build/
 apps/**/.gradle/
+apps/**/obj/
 apps/**/DerivedData/
 apps/**/.build/
 apps/**/target/
+apps/*/target/
 apps/**/*.xcuserdata/
 apps/**/*.apk
 apps/**/*.aab
@@ -26,6 +36,11 @@ apps/**/*.ipa
 apps/**/*.msix
 apps/**/*.msi
 apps/**/*.exe
+
+# Local agent/session state and scratch output
+.claude/
+.pi/
+tmp/
 
 # Editor directories and files
 .vscode/*
@@ -36,4 +51,6 @@ apps/**/*.exe
 *.ntvs*
 *.njsproj
 *.sln
+!apps/windows/**/*.sln
+!apps/windows/*.sln
 *.sw?

@@ -1,30 +1,30 @@
-# ZeroChat 原生优先架构
+# ZeroChat Native-First Architecture
 
-ZeroChat 采用“各平台原生 UI + 共享数据协议”的结构。
+ZeroChat uses platform-native user interfaces with a shared data protocol.
 
-## 平台技术栈
+## Platform Stack
 
-| 平台 | 语言 | UI / 系统框架 | 本地数据 | 密钥存储 |
+| Platform | Language | UI / System Framework | Local Data | Secret Storage |
 | --- | --- | --- | --- | --- |
-| Web/PWA | TypeScript | React | IndexedDB 加密记录 | Web Crypto 不可导出密钥 |
-| Windows | C++ | WinUI 3 / C++/WinRT | SQLite 或 LocalFolder JSON | Windows Credential Locker |
+| Web/PWA | TypeScript | React API on Preact compat | Encrypted IndexedDB records | Non-exportable Web Crypto key |
+| Windows | C++ | WinUI 3 / C++/WinRT | SQLite or LocalFolder JSON | Windows Credential Locker |
 | Android | Kotlin | Jetpack Compose | Room | Android Keystore + EncryptedSharedPreferences |
-| iOS | Swift | SwiftUI | SwiftData 或 SQLite | Keychain |
-| macOS | Swift | SwiftUI / AppKit interop | SwiftData 或 SQLite | Keychain |
+| iOS | Swift | SwiftUI | SwiftData or SQLite | Keychain |
+| macOS | Swift | SwiftUI / AppKit interop | SwiftData or SQLite | Keychain |
 | Linux | Rust | GTK4 / libadwaita | SQLite | Secret Service |
 
-## 为什么不再用一个 Web 壳包所有平台
+## Why ZeroChat Does Not Use One Web Container for Every Platform
 
-Web/PWA 仍然保留，因为浏览器和 Cloudflare Pages 是最省力的使用方式。但桌面和手机 App 不再以 Tauri/Capacitor 作为主路线：
+The Web/PWA client remains available because browsers and Cloudflare Pages provide broad reach with low hosting cost. Desktop and mobile clients do not use Tauri or Capacitor as the primary direction:
 
-- Windows 用 WinUI 3，系统通知、窗口、凭据和安装体验更贴近 Windows。
-- Android 用 Kotlin/Compose，列表、输入法、后台限制和系统分享更自然。
-- iOS/macOS 用 SwiftUI，Keychain、文件、窗口、多设备体验最稳。
-- Linux 用 Rust/GTK4，启动快、内存低、桌面环境集成直接。
+- Windows uses WinUI 3 for native notifications, windows, credentials, and installation behavior.
+- Android uses Kotlin and Compose for list performance, input-method behavior, background constraints, and system sharing.
+- iOS and macOS use SwiftUI with Keychain, files, windows, and platform multi-device conventions.
+- Linux uses Rust and GTK4 for fast startup, low memory overhead, and desktop-environment integration.
 
-## 共享边界
+## Shared Boundary
 
-共享的不是 UI 代码，而是：
+ZeroChat shares protocol files rather than UI code:
 
 - `shared/snapshot.schema.json`
 - `shared/sync-vault.schema.json`
@@ -35,38 +35,44 @@ Web/PWA 仍然保留，因为浏览器和 Cloudflare Pages 是最省力的使用
 - `shared/ai-provider-contract.md`
 - `cloudflare/sync-worker.js`
 
-所有端本地可以使用自己的数据库。Gist 同步和 Cloudflare 兜底模式使用完整 `sync-vault.v1`，加密成 `encrypted-snapshot.v1`。Cloudflare 推荐模式使用增量同步：KV 保存最新 manifest 指针，R2 保存加密 manifest 和加密消息分块。远端不能保存明文 snapshot、manifest 或 chunk。
+Each client may use its own local database. Gist synchronization and Cloudflare fallback mode use a complete `sync-vault.v1` encrypted as `encrypted-snapshot.v1`. The recommended Cloudflare mode uses incremental synchronization: one Durable Object owns the current sync generation, head, and fallback snapshot with conditional commits; KV remains a one-time migration source and stores Worker proxy metadata; R2 stores encrypted manifests, encrypted message chunks, and encrypted Skill chunks. Remote services must never store plaintext snapshots, manifests, or chunks.
 
-## 隐私和安全
+User skills are part of the shared snapshot contract. Clients store pre-chunked skill content plus lightweight keyword indexes, then inject only pinned skills and relevant snippets within a context budget at send time. The Web/PWA loads the skill matcher as a separate chunk, keeping first startup focused on chat.
 
-同步采用端到端加密：
+## Privacy and Security
 
-1. 用户在 ZeroChat 内设置同步加密密码。
-2. 客户端用 PBKDF2-HMAC-SHA-256 派生 AES-256-GCM 密钥。
-3. 聊天、服务商设置、普通设置和 AI API Key 组成 vault。
-4. vault 在本机加密后上传。
-5. Gist、Cloudflare Worker、KV 和服务器都只能看到密文。
+Synchronization uses end-to-end encryption:
 
-GitHub Token 和 Cloudflare Worker 同步访问密钥不进入 vault，因为新设备必须先用它们获取远端密文。
-Web/PWA 本机落盘数据也会用浏览器内的不可导出 AES-GCM 密钥加密，降低浏览器配置文件或 IndexedDB 被直接读取时的泄露风险。
+1. The user sets a data encryption password inside ZeroChat.
+2. The client derives an AES-256-GCM key with PBKDF2-HMAC-SHA-256.
+3. Chats, skills, provider settings, general settings, and AI API keys are placed into a vault.
+4. The vault is encrypted locally before upload.
+5. Gist, Cloudflare Worker, KV, and server storage receive ciphertext only.
 
-## 同步冲突策略
+GitHub Token does not enter the vault because a new device needs it to retrieve GitHub-hosted ciphertext. Cloudflare access is derived locally from the data encryption password and configured in the Worker as `ZEROCHAT_ACCESS_KEY`; the raw password is never sent to the Worker. Web/PWA local data is also encrypted with a non-exportable browser AES-GCM key before being written to IndexedDB, reducing exposure when a browser profile or IndexedDB files are read directly.
 
-首版采用个人应用最可靠的策略：
+## Synchronization Conflict Strategy
 
-1. 本地和远端都带 `updatedAt`。
-2. 同步时先读取远端。
-3. 如果远端 `updatedAt` 更新，采用远端数据。
-4. 新设备没有本地用户内容时，即使本机默认数据时间较新，也优先采用远端，避免首次同步覆盖云端。
-5. 否则上传本地数据。
-6. Cloudflare 增量同步只上传新增或改变过的消息分块，并复用远端未变化分块。当前实现每 60 条消息一个分块，但未满 60 条的最后一个分块也会立即上传，60 只是节省空间和流量的存储粒度。
-7. Worker 会拒绝旧快照或旧 head 覆盖较新的已存数据。
-8. AI API Key 只进入加密 vault 或加密 manifest，不进入明文远端数据。
+The first release uses a conservative strategy suitable for personal usage:
 
-Web/PWA 的即时同步策略是：发送消息后立刻排队上传当前会话状态；AI 回复完成、停止或失败后再上传最终状态；编辑或删除已完成消息、重新生成 AI 回复后，也会立即上传新的分块和 manifest。普通设置改动使用短延迟合并。其他设备切回前台、恢复网络和保持前台时做只读拉取，只有检测到本机有未同步改动时才会写远端。
+1. Local and remote data both carry `updatedAt`.
+2. Synchronization reads remote data first.
+3. If this device has never synced and has no local user content, remote data is adopted automatically.
+4. If this device has never synced and both local and cloud data exist, the client must ask for an explicit direction: use cloud data, upload this device, or merge both sides. It must not silently choose by timestamp.
+5. After the first sync direction is resolved, newer remote data is adopted and newer local data is uploaded.
+6. First-sync merge keeps different conversations, providers, Skills, and provider keys from both sides. If the same item ID exists on both sides, the newer item wins; provider model and capability lists are unioned. Extra local providers beyond the shipped defaults count as local user content, even before a message exists.
+7. Cloudflare incremental sync uploads only new or changed message and Skill chunks, then reuses unchanged remote chunks. The current implementation stores up to 60 messages per message chunk, but the latest partial chunk is uploaded immediately. The value 60 is a storage granularity, not a synchronization threshold. Deleted or replaced Skill chunks are removed from R2 after the new head is written successfully.
+8. The Worker rejects older snapshots or older heads that attempt to overwrite newer remote data.
+9. AI API keys enter only the encrypted vault or encrypted manifest, never plaintext remote data. Saving, changing, or clearing a provider key updates that provider's `updatedAt`, bumps the local snapshot, and queues encrypted sync when remote sync is configured.
 
-如果后续需要多人协作或频繁多端离线编辑，再把对话消息升级为按消息级别合并。个人使用优先保证同步速度、空间节省和可恢复性。
+The Web/PWA queues synchronization immediately after a user sends a message. It queues another upload when the AI response completes, is stopped, or fails. Editing, deleting, or regenerating completed messages also uploads the new manifest and chunks immediately. General setting changes use a short debounce. Other devices perform read-only pulls when returning to the foreground, recovering network connectivity, or remaining active; they write remote data only when local unsynced changes are detected.
 
-## AI 请求策略
+Native clients that still use snapshot-mode Cloudflare sync check `/sync/head` before writing `/snapshot`. If an incremental head already exists, they refuse the snapshot write instead of creating a second remote truth; users can clear cloud data or use a native build that implements Cloudflare incremental sync.
 
-所有端只内置远程 AI 服务商，不提供本地 AI 服务商预设。原生端优先直连 AI 厂商接口或用户配置的第三方远程中转。只有 Web 或特殊网络环境遇到 CORS/代理需求时，才填写 `proxyUrl` 走自己的 Cloudflare Worker。客户端和 Worker 都会拒绝 HTTP、localhost、内网、局域网和带用户名密码的 AI Base URL。
+Snapshot-mode native sync clients receive `hasCompletedSync` and `hasLocalUserContent` from the decrypted local snapshot before encryption. That keeps first-sync behavior identical to Web/PWA: a fresh empty iPhone, Android phone, desktop, or Linux client can pull cloud data immediately, while a device with real local content, including user-added providers, must ask before either side is replaced or merged. For merge, the app layer merges decrypted local and remote app data first, then passes the merged encrypted snapshot to the sync transport for upload.
+
+If future versions need multi-user collaboration or frequent offline editing across several devices, conversation data can be upgraded to message-level merge logic. The current version prioritizes personal synchronization speed, storage efficiency, and recoverability.
+
+## AI Request Strategy
+
+All clients include only remote AI provider presets. Native clients prefer direct official provider APIs or user-configured third-party remote relays. Web clients use `proxyUrl` only when CORS or network policy requires a user-owned Cloudflare Worker. When the Web/PWA uses a Worker proxy, it can reuse the Cloudflare sync Worker and keep the Worker learned custom relay host list aligned with provider edits, deletes, imports, and sync changes through `/proxy/hosts`. Clients and the Worker reject HTTP, localhost, private network, LAN, and credentialed AI Base URLs.

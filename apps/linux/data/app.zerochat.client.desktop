@@ -1,0 +1,53 @@
+[Desktop Entry]
+Type=Application
+Name=ZeroChat
+Comment=Local-first AI chat with encrypted sync
+Exec=zerochat-linux
+Icon=app.zerochat.client
+Terminal=false
+Categories=Network;Chat;Utility;
+StartupNotify=true
+StartupWMClass=app.zerochat.client
+Actions=QuickAsk;SearchChats;Settings;
+
+[Desktop Action QuickAsk]
+Name=Quick Ask
+Name[zh_CN]=快速提问
+Name[es]=Pregunta rápida
+Name[fr]=Question rapide
+Name[hi]=त्वरित प्रश्न
+Name[ar]=سؤال سريع
+Name[pt_BR]=Pergunta rápida
+Name[ru]=Быстрый вопрос
+Name[ja]=クイック質問
+Name[ko]=빠른 질문
+Exec=zerochat-linux --quick-ask
+Icon=app.zerochat.client
+
+[Desktop Action SearchChats]
+Name=Search Chats
+Name[zh_CN]=搜索对话
+Name[es]=Buscar chats
+Name[fr]=Rechercher des chats
+Name[hi]=चैट खोजें
+Name[ar]=البحث في المحادثات
+Name[pt_BR]=Buscar chats
+Name[ru]=Искать чаты
+Name[ja]=チャットを検索
+Name[ko]=채팅 검색
+Exec=zerochat-linux --search-chats
+Icon=app.zerochat.client
+
+[Desktop Action Settings]
+Name=Settings
+Name[zh_CN]=设置
+Name[es]=Ajustes
+Name[fr]=Paramètres
+Name[hi]=सेटिंग्स
+Name[ar]=الإعدادات
+Name[pt_BR]=Configurações
+Name[ru]=Настройки
+Name[ja]=設定
+Name[ko]=설정
+Exec=zerochat-linux --settings
+Icon=app.zerochat.client

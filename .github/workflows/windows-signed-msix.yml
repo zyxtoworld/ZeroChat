@@ -1,0 +1,88 @@
+name: Windows Signed MSIX
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-signed-msix-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  signed-msix:
+    name: Build signed Windows MSIX
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - uses: microsoft/setup-msbuild@v2
+      - run: pnpm install --frozen-lockfile
+      - name: Check Windows packaging guards
+        run: |
+          pnpm run check:windows-shell
+          pnpm run check:windows-msix
+      - run: pnpm run build
+      - name: Build Windows Release shell
+        shell: pwsh
+        run: .\scripts\build-windows.ps1 -Configuration Release -SkipWebBuild -MsixReady
+      - name: Package signed MSIX
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          WINDOWS_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PFX_BASE64)) {
+            throw "Set WINDOWS_SIGNING_PFX_BASE64 as a repository secret before running this workflow."
+          }
+
+          $certificatePath = Join-Path $env:RUNNER_TEMP "ZeroChat.Signing.pfx"
+          [System.IO.File]::WriteAllBytes(
+            $certificatePath,
+            [System.Convert]::FromBase64String($env:WINDOWS_SIGNING_PFX_BASE64)
+          )
+
+          $signArgs = @(
+            "-BuildRoot", "C:\ZeroChatWindowsBuild",
+            "-Configuration", "Release",
+            "-Platform", "x64",
+            "-CertificatePath", $certificatePath
+          )
+
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PFX_PASSWORD)) {
+            $signArgs += @("-CertificatePassword", $env:WINDOWS_SIGNING_PFX_PASSWORD)
+          }
+
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_TIMESTAMP_URL)) {
+            $signArgs += @("-TimestampUrl", $env:WINDOWS_TIMESTAMP_URL)
+          }
+
+          .\scripts\package-windows-msix.ps1 @signArgs
+      - name: Inspect signed MSIX without installing
+        shell: pwsh
+        run: .\scripts\windows-msix-install-qa.ps1
+      - name: Remove temporary signing certificate
+        if: always()
+        shell: pwsh
+        run: |
+          $certificatePath = Join-Path $env:RUNNER_TEMP "ZeroChat.Signing.pfx"
+          Remove-Item -LiteralPath $certificatePath -Force -ErrorAction SilentlyContinue
+          if (Test-Path -LiteralPath $certificatePath) {
+            throw "Temporary signing certificate cleanup failed."
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-signed-msix
+          path: .manual-qa\ZeroChat_*.msix
+          if-no-files-found: error

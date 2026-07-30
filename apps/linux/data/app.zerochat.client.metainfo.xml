@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>app.zerochat.client</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <name>ZeroChat</name>
+  <summary>Local-first AI chat with encrypted sync</summary>
+  <description>
+    <p>
+      ZeroChat is a privacy-first AI chat client. You bring your own provider
+      key, keep chats and settings local by default, and can sync encrypted data
+      across devices without sending plaintext to a ZeroChat server.
+    </p>
+    <p>
+      The Linux app uses GTK4 and libadwaita with native settings, file pickers,
+      Secret Service-backed local secrets when available, and the same encrypted
+      sync protocol as the Web, Android, Apple, and Windows clients.
+    </p>
+  </description>
+  <launchable type="desktop-id">app.zerochat.client.desktop</launchable>
+  <categories>
+    <category>Network</category>
+    <category>Chat</category>
+    <category>Utility</category>
+  </categories>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0" date="2026-06-13">
+      <description>
+        <p>
+          Initial native Linux packaging metadata for Flatpak/AppStream review.
+        </p>
+      </description>
+    </release>
+  </releases>
+</component>

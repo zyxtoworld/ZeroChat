@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ZeroChat</string>
+    <string name="zerochat_widget_description">ZeroChat में नई बातचीत तुरंत शुरू करें।</string>
+    <string name="zerochat_widget_title">नई चैट</string>
+    <string name="zerochat_widget_body">पहले स्थानीय। बाद में सिंक करें।</string>
+    <string name="zerochat_widget_action">अभी पूछें</string>
+    <string name="zerochat_widget_accessibility">ZeroChat Quick Ask। नई चैट। पहले स्थानीय। बाद में सिंक करें। अभी पूछें।</string>
+</resources>

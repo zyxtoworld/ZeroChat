@@ -3,6 +3,7 @@ import type {
   EncryptedSnapshotEnvelope,
   SyncVault,
 } from '../types'
+import { rt } from '../i18n'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -10,7 +11,7 @@ const decoder = new TextDecoder()
 export const VAULT_KDF = 'PBKDF2-SHA256'
 export const VAULT_CIPHER = 'AES-256-GCM'
 export const VAULT_KDF_ITERATIONS = 600_000
-export const VAULT_KDF_MAX_ITERATIONS = 2_000_000
+export const MAX_DECOMPRESSED_SYNC_JSON_BYTES = 32_000_000
 
 const SALT_BYTES = 16
 const IV_BYTES = 12
@@ -73,7 +74,7 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 
 function assertSafeTimestamp(value: number, field: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${field} 不正确`)
+    throw new Error(rt('error.crypto.invalidField', { field }))
   }
 }
 
@@ -87,11 +88,11 @@ function decodeFixedBase64(
   try {
     bytes = base64ToBytes(value)
   } catch {
-    throw new Error(`${field} 不是有效的 base64`)
+    throw new Error(rt('error.crypto.badBase64', { field }))
   }
 
   if (bytes.byteLength !== size) {
-    throw new Error(`${field} 长度不正确`)
+    throw new Error(rt('error.crypto.invalidField', { field }))
   }
 
   return bytes
@@ -101,7 +102,7 @@ function decodeBase64(value: string, field: string): Uint8Array {
   try {
     return base64ToBytes(value)
   } catch {
-    throw new Error(`${field} 不是有效的 base64`)
+    throw new Error(rt('error.crypto.badBase64', { field }))
   }
 }
 
@@ -115,15 +116,14 @@ function assertEnvelopeCrypto(envelope: EncryptedSnapshotEnvelope): {
   assertSafeTimestamp(envelope.updatedAt, 'updatedAt')
 
   if (envelope.crypto.cipher !== VAULT_CIPHER || envelope.crypto.kdf !== VAULT_KDF) {
-    throw new Error('不支持的加密快照格式')
+    throw new Error(rt('error.crypto.unsupportedSnapshot'))
   }
 
   if (
     !Number.isSafeInteger(envelope.crypto.iterations) ||
-    envelope.crypto.iterations < VAULT_KDF_ITERATIONS ||
-    envelope.crypto.iterations > VAULT_KDF_MAX_ITERATIONS
+    envelope.crypto.iterations !== VAULT_KDF_ITERATIONS
   ) {
-    throw new Error('加密快照的 KDF 迭代次数不安全')
+    throw new Error(rt('error.crypto.badKdf'))
   }
 
   const salt = decodeFixedBase64(envelope.crypto.salt, SALT_BYTES, 'salt')
@@ -132,13 +132,13 @@ function assertEnvelopeCrypto(envelope: EncryptedSnapshotEnvelope): {
   const expectedAad = aadFor(envelope.updatedAt)
 
   if (!bytesEqual(aad, expectedAad)) {
-    throw new Error('加密快照认证信息不匹配')
+    throw new Error(rt('error.crypto.aadMismatch'))
   }
 
   const payload = decodeBase64(envelope.payload, 'payload')
 
   if (payload.byteLength <= 16) {
-    throw new Error('加密快照内容为空或已损坏')
+    throw new Error(rt('error.crypto.emptyPayload'))
   }
 
   return {
@@ -162,26 +162,25 @@ function assertObjectEnvelopeCrypto(
   assertSafeTimestamp(envelope.updatedAt, 'updatedAt')
 
   if (envelope.objectType !== expectedObjectType) {
-    throw new Error('加密对象类型不匹配')
+    throw new Error(rt('error.crypto.badObjectType'))
   }
 
   if (envelope.crypto.cipher !== VAULT_CIPHER || envelope.crypto.kdf !== VAULT_KDF) {
-    throw new Error('不支持的加密对象格式')
+    throw new Error(rt('error.crypto.unsupportedObject'))
   }
 
   if (
     !Number.isSafeInteger(envelope.crypto.iterations) ||
-    envelope.crypto.iterations < VAULT_KDF_ITERATIONS ||
-    envelope.crypto.iterations > VAULT_KDF_MAX_ITERATIONS
+    envelope.crypto.iterations !== VAULT_KDF_ITERATIONS
   ) {
-    throw new Error('加密对象的 KDF 迭代次数不安全')
+    throw new Error(rt('error.crypto.badObjectKdf'))
   }
 
   if (
     envelope.crypto.compression !== 'gzip' &&
     envelope.crypto.compression !== 'none'
   ) {
-    throw new Error('不支持的加密对象压缩格式')
+    throw new Error(rt('error.crypto.badObjectCompression'))
   }
 
   const salt = decodeFixedBase64(envelope.crypto.salt, SALT_BYTES, 'salt')
@@ -190,13 +189,13 @@ function assertObjectEnvelopeCrypto(
   const expectedAad = objectAadFor(envelope.objectType, envelope.updatedAt)
 
   if (!bytesEqual(aad, expectedAad)) {
-    throw new Error('加密对象认证信息不匹配')
+    throw new Error(rt('error.crypto.badObjectAad'))
   }
 
   const payload = decodeBase64(envelope.payload, 'payload')
 
   if (payload.byteLength <= 16) {
-    throw new Error('加密对象内容为空或已损坏')
+    throw new Error(rt('error.crypto.emptyObjectPayload'))
   }
 
   return {
@@ -211,6 +210,7 @@ async function transformBytes(
   bytes: Uint8Array,
   format: 'gzip',
   mode: 'compress' | 'decompress',
+  maxOutputBytes = Number.MAX_SAFE_INTEGER,
 ): Promise<Uint8Array> {
   const stream =
     mode === 'compress'
@@ -220,9 +220,64 @@ async function transformBytes(
       : new Blob([toArrayBuffer(bytes)])
           .stream()
           .pipeThrough(new DecompressionStream(format))
-  const buffer = await new Response(stream).arrayBuffer()
 
-  return new Uint8Array(buffer)
+  return readBoundedByteStream(
+    stream,
+    maxOutputBytes,
+    mode === 'decompress' ? 'Encrypted sync data' : 'Compressed sync data',
+  )
+}
+
+export async function readBoundedByteStream(
+  stream: ReadableStream<Uint8Array>,
+  maxBytes: number,
+  label: string,
+): Promise<Uint8Array> {
+  assertByteStreamLimit(maxBytes)
+
+  const reader = stream.getReader()
+  const chunks: Uint8Array[] = []
+  let totalBytes = 0
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+
+      if (done) {
+        break
+      }
+
+      if (value.byteLength > maxBytes - totalBytes) {
+        const error = new Error(
+          `${label} exceeded the ${maxBytes}-byte safety limit.`,
+        )
+
+        await reader.cancel(error).catch(() => undefined)
+        throw error
+      }
+
+      chunks.push(value)
+      totalBytes += value.byteLength
+    }
+  } finally {
+    reader.releaseLock()
+  }
+
+  const output = new Uint8Array(totalBytes)
+  let offset = 0
+
+  for (const chunk of chunks) {
+    output.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+
+  return output
+}
+
+function assertByteStreamLimit(maxBytes: number): void {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    throw new RangeError('Byte stream limit must be a non-negative safe integer.')
+  }
 }
 
 async function compressJsonPayload(bytes: Uint8Array): Promise<{
@@ -261,19 +316,28 @@ async function compressJsonPayload(bytes: Uint8Array): Promise<{
   }
 }
 
-async function decompressJsonPayload(
+export async function decompressJsonPayload(
   bytes: Uint8Array,
   compression: 'gzip' | 'none',
+  maxBytes = MAX_DECOMPRESSED_SYNC_JSON_BYTES,
 ): Promise<Uint8Array> {
+  assertByteStreamLimit(maxBytes)
+
   if (compression === 'none') {
+    if (bytes.byteLength > maxBytes) {
+      throw new Error(
+        `Encrypted sync data exceeded the ${maxBytes}-byte safety limit.`,
+      )
+    }
+
     return bytes
   }
 
   if (typeof DecompressionStream === 'undefined') {
-    throw new Error('当前浏览器不支持解压远端增量同步数据')
+    throw new Error(rt('error.crypto.unsupportedDecompression'))
   }
 
-  return transformBytes(bytes, 'gzip', 'decompress')
+  return transformBytes(bytes, 'gzip', 'decompress', maxBytes)
 }
 
 async function deriveVaultKey(
@@ -306,29 +370,70 @@ async function deriveVaultKey(
   )
 }
 
-export function isEncryptedSnapshot(value: unknown): value is EncryptedSnapshotEnvelope {
+function isEncryptedCryptoShape(
+  value: unknown,
+): value is EncryptedSnapshotEnvelope['crypto'] {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const cryptoConfig = value as Record<string, unknown>
+
   return (
-    typeof value === 'object' &&
-    value !== null &&
-    (value as EncryptedSnapshotEnvelope).kind === 'zerochat.encryptedSnapshot' &&
-    (value as EncryptedSnapshotEnvelope).version === 1
+    typeof cryptoConfig.cipher === 'string' &&
+    typeof cryptoConfig.kdf === 'string' &&
+    typeof cryptoConfig.iterations === 'number' &&
+    typeof cryptoConfig.salt === 'string' &&
+    typeof cryptoConfig.iv === 'string' &&
+    typeof cryptoConfig.aad === 'string'
+  )
+}
+
+function isEncryptedEnvelopeShape(
+  value: unknown,
+): value is Pick<
+  EncryptedSnapshotEnvelope,
+  'encryptedAt' | 'updatedAt' | 'crypto' | 'payload'
+> {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const envelope = value as Partial<EncryptedSnapshotEnvelope>
+
+  return (
+    typeof envelope.encryptedAt === 'number' &&
+    typeof envelope.updatedAt === 'number' &&
+    isEncryptedCryptoShape(envelope.crypto) &&
+    typeof envelope.payload === 'string'
+  )
+}
+
+export function isEncryptedSnapshot(value: unknown): value is EncryptedSnapshotEnvelope {
+  const envelope = value as Partial<EncryptedSnapshotEnvelope> | null
+
+  return (
+    envelope?.kind === 'zerochat.encryptedSnapshot' &&
+    envelope.version === 1 &&
+    isEncryptedEnvelopeShape(value)
   )
 }
 
 export function isEncryptedObject(value: unknown): value is EncryptedObjectEnvelope {
+  const envelope = value as Partial<EncryptedObjectEnvelope> | null
+
   return (
-    typeof value === 'object' &&
-    value !== null &&
-    (value as EncryptedObjectEnvelope).kind === 'zerochat.encryptedObject' &&
-    (value as EncryptedObjectEnvelope).version === 1 &&
-    typeof (value as EncryptedObjectEnvelope).objectType === 'string'
+    envelope?.kind === 'zerochat.encryptedObject' &&
+    envelope.version === 1 &&
+    typeof envelope.objectType === 'string' &&
+    isEncryptedEnvelopeShape(value) &&
+    (envelope.crypto?.compression === 'gzip' ||
+      envelope.crypto?.compression === 'none')
   )
 }
 
 export function assertUsablePassphrase(passphrase: string): void {
-  if (passphrase.trim().length < 12) {
-    throw new Error('同步加密密码至少需要 12 个字符')
-  }
+  void passphrase
 }
 
 export async function encryptVault(
@@ -443,12 +548,12 @@ export async function decryptVault(
     const vault = JSON.parse(decoder.decode(decrypted)) as SyncVault
 
     if (vault.data?.updatedAt !== envelope.updatedAt) {
-      throw new Error('加密快照时间戳不匹配')
+      throw new Error(rt('error.crypto.badTimestamp'))
     }
 
     return vault
   } catch {
-    throw new Error('解密失败：同步加密密码不正确，或远端数据已损坏')
+    throw new Error(rt('error.crypto.badDecryption'))
   }
 }
 
@@ -486,6 +591,6 @@ export async function decryptObject<T>(
 
     return JSON.parse(decoder.decode(decompressed)) as T
   } catch {
-    throw new Error('解密失败：同步加密密码不正确，或远端增量数据已损坏')
+    throw new Error(rt('error.crypto.badIncrementalDecryption'))
   }
 }

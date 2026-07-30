@@ -1,5 +1,56 @@
 import type { ChatMessage, ProviderConfig } from '../types'
-import { assertSafeRemoteBaseUrl } from './providerSafety'
+import { rt } from '../i18n'
+import { normalizeChatContextMessageLimit } from './appData'
+import {
+  generatedImageFromProviderResponse,
+  parseProviderModelIds,
+  type GeneratedImage,
+} from './providerResponses'
+import {
+  accumulateProviderResponseBytes,
+  assertProviderResponseContentLength,
+  assertProviderResponseOk,
+  isAbortError,
+  MAX_PROVIDER_IMAGE_RESPONSE_BYTES,
+  MAX_PROVIDER_STREAM_RESPONSE_BYTES,
+  ProviderRequestError,
+  providerConnectionError,
+  providerTimeoutError,
+  readProviderJsonResponse,
+} from './providerErrors'
+import { fileToDataUrl } from './imageAttachments'
+import { materializeGeneratedImage } from './generatedImagePersistence'
+import {
+  buildProviderAnthropicChatBody,
+  buildProviderChatEndpoint,
+  buildProviderChatHeaders,
+  buildProviderImageEditBody,
+  buildProviderImageEditEndpoint,
+  buildProviderImageEditHeaders,
+  buildProviderImageGenerationBody,
+  buildProviderImageGenerationEndpoint,
+  buildProviderImageGenerationHeaders,
+  buildProviderModelListEndpoint,
+  buildProviderModelListHeaders,
+  buildProviderOpenAIChatBody,
+  buildProviderResponsesImageEditBody,
+  buildProviderResponsesImageGenerationBody,
+  buildProviderResponsesImageGenerationEndpoint,
+  buildProviderResponsesImageGenerationHeaders,
+  buildProviderResponsesChatBody,
+} from './providerRequests'
+import {
+  providerNeedsBrowserKey,
+  providerUsesProxy,
+} from './providerRequestMode'
+import { providerTimeoutSignal } from './providerTimeoutSignal'
+
+export { synthesizeSpeechAudio } from './audioSpeech'
+export { transcribeAudioFile } from './audioTranscription'
+export {
+  regenerateAssistantMessageGeneration,
+  submitEditedUserMessageGeneration,
+} from './chatGenerationMessageReruns'
 
 interface StreamOptions {
   provider: ProviderConfig
@@ -7,6 +58,7 @@ interface StreamOptions {
   proxyToken: string
   model: string
   messages: ChatMessage[]
+  contextMessageLimit: number
   signal: AbortSignal
   onToken: (token: string) => void
 }
@@ -18,249 +70,663 @@ interface ListModelsOptions {
   signal?: AbortSignal
 }
 
-function safeBaseUrl(value: string, label: string): string {
-  return assertSafeRemoteBaseUrl(value, label)
+interface GenerateImageOptions {
+  provider: ProviderConfig
+  apiKey: string
+  proxyToken: string
+  model: string
+  prompt: string
+  responsesModel?: string
+  signal: AbortSignal
+  size?: string
 }
 
-function buildEndpoint(provider: ProviderConfig): string {
-  if (provider.proxyUrl?.trim()) {
-    return `${safeBaseUrl(provider.proxyUrl, '代理地址')}/proxy`
-  }
-
-  const baseUrl = safeBaseUrl(provider.baseUrl, 'Base URL')
-
-  if (provider.kind === 'openai-responses') {
-    return baseUrl.endsWith('/responses') ? baseUrl : `${baseUrl}/responses`
-  }
-
-  if (provider.kind === 'anthropic') {
-    return baseUrl.endsWith('/messages') ? baseUrl : `${baseUrl}/messages`
-  }
-
-  return baseUrl.endsWith('/chat/completions')
-    ? baseUrl
-    : `${baseUrl}/chat/completions`
+interface EditImageOptions extends GenerateImageOptions {
+  image: File
+  mask?: File
 }
 
-function buildModelsEndpoint(provider: ProviderConfig): string {
-  if (provider.proxyUrl?.trim()) {
-    return `${safeBaseUrl(provider.proxyUrl, '代理地址')}/proxy`
-  }
+export type { GeneratedImage } from './providerResponses'
+export { ProviderRequestError } from './providerErrors'
+export type { ProviderRequestErrorCode } from './providerErrors'
+export {
+  buildProviderCapabilityRequestPlan,
+  executeProviderCapabilityRequestPlan,
+  providerCapabilityCheckKey,
+  providerCapabilityRequestForCheck,
+} from './providerCapabilityChecks'
+export type { ProviderCapabilityCheckKind } from './providerCapabilityChecks'
 
-  return `${providerApiRoot(provider)}/models`
-}
+export const PROVIDER_MODEL_LIST_TIMEOUT_MS = 30_000
+export const PROVIDER_CHAT_REQUEST_TIMEOUT_MS = 60_000
+export const PROVIDER_IMAGE_REQUEST_TIMEOUT_MS = 180_000
+export const PROVIDER_STREAM_IDLE_TIMEOUT_MS = 90_000
 
-function providerApiRoot(provider: ProviderConfig): string {
-  const baseUrl = safeBaseUrl(provider.baseUrl, 'Base URL')
-
-  if (baseUrl.endsWith('/chat/completions')) {
-    return baseUrl.slice(0, -'/chat/completions'.length)
-  }
-
-  if (baseUrl.endsWith('/responses')) {
-    return baseUrl.slice(0, -'/responses'.length)
-  }
-
-  if (baseUrl.endsWith('/messages')) {
-    return baseUrl.slice(0, -'/messages'.length)
-  }
-
-  if (baseUrl.endsWith('/models')) {
-    return baseUrl.slice(0, -'/models'.length)
-  }
-
-  return baseUrl
-}
-
-function proxyHeaders(provider: ProviderConfig): Record<string, string> {
-  if (!provider.proxyUrl?.trim()) {
-    return {}
-  }
-
-  return {
-    'x-zerochat-base-url': safeBaseUrl(provider.baseUrl, 'Base URL'),
-    'x-zerochat-provider-kind': provider.kind,
-  }
-}
-
-function modelListHeaders(
+async function fetchProviderEndpoint<T>(
   provider: ProviderConfig,
-  apiKey: string,
-  proxyToken: string,
-): Record<string, string> {
-  if (provider.kind === 'anthropic') {
-    return {
-      ...(apiKey ? { 'x-api-key': apiKey } : {}),
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-      ...(provider.proxyUrl?.trim()
-        ? {
-            'x-zerochat-proxy-token': proxyToken,
-            'x-zerochat-proxy-action': 'models',
-          }
-        : {}),
-      ...proxyHeaders(provider),
-    }
-  }
+  target: string,
+  url: string,
+  init: RequestInit,
+  consumeResponse: (response: Response, signal: AbortSignal) => Promise<T>,
+  timeoutMs = PROVIDER_CHAT_REQUEST_TIMEOUT_MS,
+): Promise<T> {
+  const timeoutSignal = providerTimeoutSignal(init.signal, timeoutMs)
+  let responseReceived = false
 
-  return {
-    ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
-    ...(provider.proxyUrl?.trim()
-      ? {
-          'x-zerochat-proxy-token': proxyToken,
-          'x-zerochat-proxy-action': 'models',
-        }
-      : {}),
-    ...proxyHeaders(provider),
+  try {
+    const response = await fetch(url, {
+      ...init,
+      redirect: 'error',
+      signal: timeoutSignal.signal,
+    })
+    responseReceived = true
+    const result = await consumeResponse(response, timeoutSignal.signal)
+    timeoutSignal.signal.throwIfAborted()
+    return result
+  } catch (error: unknown) {
+    if (timeoutSignal.timedOut()) {
+      throw providerTimeoutError()
+    }
+
+    if (timeoutSignal.sourceAborted()) {
+      throw new DOMException('Aborted', 'AbortError')
+    }
+
+    if (isAbortError(error)) {
+      throw error
+    }
+
+    if (responseReceived) {
+      throw error
+    }
+
+    throw providerConnectionError(provider, target)
+  } finally {
+    timeoutSignal.dispose()
   }
 }
 
-function connectionError(provider: ProviderConfig, target: string): Error {
-  if (provider.proxyUrl?.trim()) {
-    return new Error(
-      `无法连接到${target}；请检查代理地址、代理访问密钥、Worker 白名单和网络。`,
-    )
-  }
-
-  return new Error(
-    `无法连接到${target}；请检查 Base URL、API 网络权限和当前网络。浏览器直连受限时，可以配置 Worker 代理。`,
+async function fetchProviderJsonEndpoint<T>(
+  provider: ProviderConfig,
+  target: string,
+  url: string,
+  init: RequestInit,
+  parse: (value: unknown) => T,
+  timeoutMs = PROVIDER_CHAT_REQUEST_TIMEOUT_MS,
+  maxBytes?: number,
+): Promise<T> {
+  return fetchProviderEndpoint(
+    provider,
+    target,
+    url,
+    init,
+    async (response, signal) => {
+      await assertProviderResponseOk(response, signal)
+      return parse(await readProviderJsonResponse(response, maxBytes, signal))
+    },
+    timeoutMs,
   )
 }
 
-async function fetchProviderEndpoint(
+async function fetchProviderStreamResponse(
   provider: ProviderConfig,
   target: string,
   url: string,
   init: RequestInit,
 ): Promise<Response> {
+  return fetchProviderEndpoint(
+    provider,
+    target,
+    url,
+    init,
+    async (response, signal) => {
+      await assertProviderResponseOk(response, signal)
+      return response
+    },
+  )
+}
+
+function publishProviderToken(
+  signal: AbortSignal,
+  onToken: (token: string) => void,
+  token: string,
+): void {
+  signal.throwIfAborted()
+  onToken(token)
+}
+
+function throwIfProviderStreamAborted(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+): void {
+  if (!signal.aborted) {
+    return
+  }
+
+  void cancelProviderStreamReader(reader)
+  throw new DOMException('Aborted', 'AbortError')
+}
+
+async function readProviderStreamChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+  byteBudget: { totalBytes: number },
+  timeoutMs = PROVIDER_STREAM_IDLE_TIMEOUT_MS,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (signal.aborted) {
+    await cancelProviderStreamReader(reader)
+    throw new DOMException('Aborted', 'AbortError')
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const cleanup = () => {
+      globalThis.clearTimeout(timeoutId)
+      signal.removeEventListener('abort', abort)
+    }
+    const settle = (
+      action: () => void,
+      cancelReader = false,
+    ) => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+      cleanup()
+
+      if (cancelReader) {
+        void cancelProviderStreamReader(reader)
+      }
+
+      action()
+    }
+    const abort = () => {
+      settle(() => reject(new DOMException('Aborted', 'AbortError')), true)
+    }
+    const timeoutId = globalThis.setTimeout(() => {
+      settle(() => reject(providerTimeoutError()), true)
+    }, timeoutMs)
+
+    signal.addEventListener('abort', abort, { once: true })
+
+    reader.read().then(
+      (result) => {
+        try {
+          if (!result.done && result.value?.byteLength) {
+            byteBudget.totalBytes = accumulateProviderResponseBytes(
+              byteBudget.totalBytes,
+              result.value.byteLength,
+              MAX_PROVIDER_STREAM_RESPONSE_BYTES,
+            )
+          }
+
+          settle(() => resolve(result))
+        } catch (error: unknown) {
+          settle(() => reject(error), true)
+        }
+      },
+      (error: unknown) => {
+        settle(() => {
+          if (signal.aborted) {
+            reject(new DOMException('Aborted', 'AbortError'))
+            return
+          }
+
+          reject(error)
+        })
+      },
+    )
+  })
+}
+
+export async function cancelProviderStreamReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<boolean> {
   try {
-    return await fetch(url, init)
+    await reader.cancel()
+    return true
   } catch {
-    throw connectionError(provider, target)
+    // Provider stream cleanup is best-effort; abort/timeout owns the user-visible result.
+    return false
   }
 }
 
-function recentMessages(messages: ChatMessage[]): ChatMessage[] {
-  return messages
-    .filter((message) => message.role !== 'system' || message.content.trim())
-    .slice(-24)
+function releaseProviderStreamReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): void {
+  try {
+    reader.releaseLock()
+  } catch {
+    // A non-compliant reader must not replace the provider stream result.
+  }
+}
+
+function consumeProviderSseEvents(
+  buffer: string,
+  flush: boolean,
+  onEvent: (event: string) => boolean | void,
+): { remainder: string; stopped: boolean } {
+  const parts = buffer.split(/\r?\n\r?\n/)
+  const events = flush ? parts : parts.slice(0, -1)
+  const remainder = flush ? '' : parts.at(-1) ?? ''
+
+  for (const event of events) {
+    if (!event.trim()) {
+      continue
+    }
+
+    if (onEvent(event) === true) {
+      return { remainder: '', stopped: true }
+    }
+  }
+
+  return { remainder, stopped: false }
+}
+
+export function selectContextMessages(
+  messages: ChatMessage[],
+  contextMessageLimit: number,
+): ChatMessage[] {
+  const normalizedLimit = normalizeChatContextMessageLimit(contextMessageLimit)
+  const systemMessages = messages.filter(
+    (message) => message.role === 'system' && message.content.trim(),
+  )
+  const chatMessages = messages
+    .filter((message) => message.role !== 'system')
+    .slice(-normalizedLimit)
+
+  return [...systemMessages, ...chatMessages]
+}
+
+function shouldTryResponsesImageFallback(error: unknown): boolean {
+  if (!(error instanceof ProviderRequestError)) {
+    return false
+  }
+
+  return (
+    error.code === 'network' ||
+    error.code === 'server' ||
+    error.code === 'rate-limit' ||
+    error.status === 429 ||
+    error.status === 404 ||
+    error.status === 405 ||
+    error.status === 501
+  )
+}
+
+function responsesImageFallbackModel({
+  imageModel,
+  provider,
+  responsesModel,
+}: {
+  imageModel: string
+  provider: ProviderConfig
+  responsesModel?: string
+}): string[] {
+  const seen = new Set<string>()
+  const models: string[] = []
+  const primaryResponsesModel = responsesModel?.trim() ?? ''
+  const orderedModels = primaryResponsesModel
+    ? [primaryResponsesModel, imageModel, provider.model]
+    : [provider.model, imageModel]
+
+  for (const model of orderedModels) {
+    const trimmed = model?.trim() ?? ''
+
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed)
+      models.push(trimmed)
+    }
+  }
+
+  return models
+}
+
+function shouldTryNextResponsesImageFallbackModel(error: unknown): boolean {
+  if (isAbortError(error)) {
+    return false
+  }
+
+  if (!(error instanceof ProviderRequestError)) {
+    return true
+  }
+
+  return (
+    error.code === 'request' &&
+    (error.status === 400 || error.status === 422)
+  )
+}
+
+function chatConnectionTarget(): string {
+  return rt('target.chatApi')
+}
+
+function imageEditConnectionTarget(): string {
+  return rt('target.imageEditApi')
+}
+
+function imageGenerationConnectionTarget(): string {
+  return rt('target.imageGenerationApi')
+}
+
+function modelListConnectionTarget(): string {
+  return rt('target.modelListApi')
+}
+
+async function generateImageViaResponsesTool({
+  apiKey,
+  imageModel,
+  provider,
+  prompt,
+  proxyToken,
+  responsesModel,
+  signal,
+  size,
+}: {
+  apiKey: string
+  imageModel: string
+  provider: ProviderConfig
+  prompt: string
+  proxyToken: string
+  responsesModel?: string
+  signal: AbortSignal
+  size?: string
+}): Promise<GeneratedImage> {
+  const models = responsesImageFallbackModel({
+    imageModel,
+    provider,
+    responsesModel,
+  })
+
+  if (models.length === 0) {
+    throw new Error(rt('error.modelRequired'))
+  }
+
+  let lastError: unknown
+
+  for (const model of models) {
+    try {
+      return await fetchProviderJsonEndpoint(
+        provider,
+        imageGenerationConnectionTarget(),
+        buildProviderResponsesImageGenerationEndpoint(provider),
+        {
+          method: 'POST',
+          signal,
+          headers: buildProviderResponsesImageGenerationHeaders({
+            provider,
+            apiKey,
+            proxyToken,
+          }),
+          body: JSON.stringify(
+            buildProviderResponsesImageGenerationBody({
+              model,
+              prompt,
+              size,
+            }),
+          ),
+        },
+        generatedImageFromProviderResponse,
+        PROVIDER_IMAGE_REQUEST_TIMEOUT_MS,
+        MAX_PROVIDER_IMAGE_RESPONSE_BYTES,
+      )
+    } catch (error: unknown) {
+      lastError = error
+      if (!shouldTryNextResponsesImageFallbackModel(error)) {
+        break
+      }
+    }
+  }
+
+  throw lastError
+}
+
+async function editImageViaResponsesTool({
+  apiKey,
+  image,
+  imageModel,
+  provider,
+  prompt,
+  proxyToken,
+  responsesModel,
+  signal,
+  size,
+}: {
+  apiKey: string
+  image: File
+  imageModel: string
+  provider: ProviderConfig
+  prompt: string
+  proxyToken: string
+  responsesModel?: string
+  signal: AbortSignal
+  size?: string
+}): Promise<GeneratedImage> {
+  const models = responsesImageFallbackModel({
+    imageModel,
+    provider,
+    responsesModel,
+  })
+
+  if (models.length === 0) {
+    throw new Error(rt('error.modelRequired'))
+  }
+
+  const imageDataUrl = await fileToDataUrl(image)
+  let lastError: unknown
+
+  for (const model of models) {
+    try {
+      return await fetchProviderJsonEndpoint(
+        provider,
+        imageEditConnectionTarget(),
+        buildProviderResponsesImageGenerationEndpoint(provider),
+        {
+          method: 'POST',
+          signal,
+          headers: buildProviderResponsesImageGenerationHeaders({
+            provider,
+            apiKey,
+            proxyToken,
+          }),
+          body: JSON.stringify(
+            buildProviderResponsesImageEditBody({
+              imageDataUrl,
+              model,
+              prompt,
+              size,
+            }),
+          ),
+        },
+        generatedImageFromProviderResponse,
+        PROVIDER_IMAGE_REQUEST_TIMEOUT_MS,
+        MAX_PROVIDER_IMAGE_RESPONSE_BYTES,
+      )
+    } catch (error: unknown) {
+      lastError = error
+      if (!shouldTryNextResponsesImageFallbackModel(error)) {
+        break
+      }
+    }
+  }
+
+  throw lastError
 }
 
 async function readOpenAIStream(
   response: Response,
+  signal: AbortSignal,
   onToken: (token: string) => void,
 ): Promise<void> {
   const contentType = response.headers.get('content-type') ?? ''
 
   if (!response.body || contentType.includes('application/json')) {
-    const json = await response.json()
+    const json = await readProviderJsonResponse(response, undefined, signal) as {
+      choices?: Array<{ message?: { content?: unknown } }>
+    }
+    signal.throwIfAborted()
     const content = json?.choices?.[0]?.message?.content
 
     if (typeof content === 'string') {
-      onToken(content)
+      publishProviderToken(signal, onToken, content)
     }
 
     return
   }
 
+  await assertProviderResponseContentLength(
+    response,
+    MAX_PROVIDER_STREAM_RESPONSE_BYTES,
+  )
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
+  const byteBudget = { totalBytes: 0 }
   let buffer = ''
+  const consumeEvent = (part: string): boolean => {
+    for (const line of part.split(/\r?\n/)) {
+      const trimmed = line.trim()
 
-  while (true) {
-    const { done, value } = await reader.read()
+      if (!trimmed.startsWith('data:')) {
+        continue
+      }
 
-    if (done) {
-      break
-    }
+      const payload = trimmed.slice(5).trim()
+      throwIfProviderStreamAborted(reader, signal)
 
-    buffer += decoder.decode(value, { stream: true })
-    const parts = buffer.split('\n\n')
-    buffer = parts.pop() ?? ''
+      if (payload === '[DONE]') {
+        return true
+      }
 
-    for (const part of parts) {
-      for (const line of part.split('\n')) {
-        const trimmed = line.trim()
+      let json: {
+        choices?: Array<{ delta?: { content?: unknown } }>
+      }
 
-        if (!trimmed.startsWith('data:')) {
-          continue
-        }
+      try {
+        json = JSON.parse(payload) as typeof json
+      } catch {
+        // Some compatible services send keep-alive frames that are not JSON.
+        continue
+      }
 
-        const payload = trimmed.slice(5).trim()
+      const token = json?.choices?.[0]?.delta?.content
 
-        if (payload === '[DONE]') {
-          return
-        }
-
-        try {
-          const json = JSON.parse(payload)
-          const token = json?.choices?.[0]?.delta?.content
-
-          if (typeof token === 'string') {
-            onToken(token)
-          }
-        } catch {
-          // Some compatible services send keep-alive frames that are not JSON.
-        }
+      if (typeof token === 'string') {
+        publishProviderToken(signal, onToken, token)
       }
     }
+
+    return false
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await readProviderStreamChunk(
+        reader,
+        signal,
+        byteBudget,
+      )
+      throwIfProviderStreamAborted(reader, signal)
+
+      if (done) {
+        buffer += decoder.decode()
+        consumeProviderSseEvents(buffer, true, consumeEvent)
+        break
+      }
+
+      buffer += decoder.decode(value, { stream: true })
+      const parsed = consumeProviderSseEvents(buffer, false, consumeEvent)
+      buffer = parsed.remainder
+
+      if (parsed.stopped) {
+        await cancelProviderStreamReader(reader)
+        return
+      }
+    }
+  } finally {
+    releaseProviderStreamReader(reader)
   }
 }
 
 async function readAnthropicStream(
   response: Response,
+  signal: AbortSignal,
   onToken: (token: string) => void,
 ): Promise<void> {
   const contentType = response.headers.get('content-type') ?? ''
 
   if (!response.body || contentType.includes('application/json')) {
-    const json = await response.json()
+    const json = await readProviderJsonResponse(response, undefined, signal) as {
+      content?: Array<{ type?: string; text?: string }>
+    }
+    signal.throwIfAborted()
     const text = json?.content
       ?.map((block: { type?: string; text?: string }) => block.text ?? '')
       .join('')
 
     if (typeof text === 'string') {
-      onToken(text)
+      publishProviderToken(signal, onToken, text)
     }
 
     return
   }
 
+  await assertProviderResponseContentLength(
+    response,
+    MAX_PROVIDER_STREAM_RESPONSE_BYTES,
+  )
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
+  const byteBudget = { totalBytes: 0 }
   let buffer = ''
+  const consumeEvent = (part: string): boolean => {
+    const dataLine = part
+      .split(/\r?\n/)
+      .find((line) => line.trim().startsWith('data:'))
 
-  while (true) {
-    const { done, value } = await reader.read()
-
-    if (done) {
-      break
+    if (!dataLine) {
+      return false
     }
 
-    buffer += decoder.decode(value, { stream: true })
-    const parts = buffer.split('\n\n')
-    buffer = parts.pop() ?? ''
+    let json: { delta?: { text?: unknown } }
 
-    for (const part of parts) {
-      const dataLine = part
-        .split('\n')
-        .find((line) => line.trim().startsWith('data:'))
-
-      if (!dataLine) {
-        continue
-      }
-
-      try {
-        const json = JSON.parse(dataLine.trim().slice(5).trim())
-        const token = json?.delta?.text
-
-        if (typeof token === 'string') {
-          onToken(token)
-        }
-      } catch {
-        // Ignore non-content frames.
-      }
+    try {
+      json = JSON.parse(dataLine.trim().slice(5).trim()) as typeof json
+    } catch {
+      // Ignore non-content frames.
+      return false
     }
+
+    const token = json?.delta?.text
+
+    if (typeof token === 'string') {
+      publishProviderToken(signal, onToken, token)
+    }
+
+    return false
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await readProviderStreamChunk(
+        reader,
+        signal,
+        byteBudget,
+      )
+      throwIfProviderStreamAborted(reader, signal)
+
+      if (done) {
+        buffer += decoder.decode()
+        consumeProviderSseEvents(buffer, true, consumeEvent)
+        break
+      }
+
+      buffer += decoder.decode(value, { stream: true })
+      const parsed = consumeProviderSseEvents(buffer, false, consumeEvent)
+      buffer = parsed.remainder
+    }
+  } finally {
+    releaseProviderStreamReader(reader)
   }
 }
 
@@ -304,144 +770,97 @@ function readResponsesText(value: unknown): string {
 
 async function readResponsesStream(
   response: Response,
+  signal: AbortSignal,
   onToken: (token: string) => void,
 ): Promise<void> {
   const contentType = response.headers.get('content-type') ?? ''
 
   if (!response.body || contentType.includes('application/json')) {
-    onToken(readResponsesText(await response.json()))
+    const text = readResponsesText(
+      await readProviderJsonResponse(response, undefined, signal),
+    )
+    signal.throwIfAborted()
+    publishProviderToken(signal, onToken, text)
     return
   }
 
+  await assertProviderResponseContentLength(
+    response,
+    MAX_PROVIDER_STREAM_RESPONSE_BYTES,
+  )
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
+  const byteBudget = { totalBytes: 0 }
   let buffer = ''
+  const consumeEvent = (part: string): boolean => {
+    for (const line of part.split(/\r?\n/)) {
+      const trimmed = line.trim()
 
-  while (true) {
-    const { done, value } = await reader.read()
+      if (!trimmed.startsWith('data:')) {
+        continue
+      }
 
-    if (done) {
-      break
-    }
+      const payload = trimmed.slice(5).trim()
+      throwIfProviderStreamAborted(reader, signal)
 
-    buffer += decoder.decode(value, { stream: true })
-    const parts = buffer.split('\n\n')
-    buffer = parts.pop() ?? ''
+      if (payload === '[DONE]') {
+        return true
+      }
 
-    for (const part of parts) {
-      for (const line of part.split('\n')) {
-        const trimmed = line.trim()
+      let json: {
+        type?: unknown
+        delta?: unknown
+        error?: { message?: unknown }
+      }
 
-        if (!trimmed.startsWith('data:')) {
-          continue
-        }
+      try {
+        json = JSON.parse(payload)
+      } catch {
+        continue
+      }
 
-        const payload = trimmed.slice(5).trim()
+      if (typeof json.error?.message === 'string') {
+        throw new Error(json.error.message)
+      }
 
-        if (payload === '[DONE]') {
-          return
-        }
-
-        let json: {
-          type?: unknown
-          delta?: unknown
-          error?: { message?: unknown }
-        }
-
-        try {
-          json = JSON.parse(payload)
-        } catch {
-          continue
-        }
-
-        if (typeof json.error?.message === 'string') {
-          throw new Error(json.error.message)
-        }
-
-        if (
-          json.type === 'response.output_text.delta' &&
-          typeof json.delta === 'string'
-        ) {
-          onToken(json.delta)
-        }
+      if (
+        json.type === 'response.output_text.delta' &&
+        typeof json.delta === 'string'
+      ) {
+        publishProviderToken(signal, onToken, json.delta)
       }
     }
-  }
-}
 
-async function assertOk(response: Response): Promise<void> {
-  if (response.ok) {
-    return
+    return false
   }
 
-  const text = await response.text()
-  throw new Error(text || `请求失败：${response.status}`)
-}
+  try {
+    while (true) {
+      const { done, value } = await readProviderStreamChunk(
+        reader,
+        signal,
+        byteBudget,
+      )
+      throwIfProviderStreamAborted(reader, signal)
 
-function readModelId(value: unknown): string | null {
-  if (typeof value === 'string') {
-    return value.trim() || null
-  }
+      if (done) {
+        buffer += decoder.decode()
+        consumeProviderSseEvents(buffer, true, consumeEvent)
+        break
+      }
 
-  if (typeof value !== 'object' || value === null) {
-    return null
-  }
+      buffer += decoder.decode(value, { stream: true })
+      const parsed = consumeProviderSseEvents(buffer, false, consumeEvent)
+      buffer = parsed.remainder
 
-  const item = value as {
-    id?: unknown
-    name?: unknown
-    model?: unknown
-    slug?: unknown
-  }
-  const candidate = item.id ?? item.name ?? item.model ?? item.slug
-
-  return typeof candidate === 'string' && candidate.trim()
-    ? candidate.trim()
-    : null
-}
-
-function modelItemsFromResponse(value: unknown): unknown[] {
-  if (Array.isArray(value)) {
-    return value
-  }
-
-  if (typeof value !== 'object' || value === null) {
-    return []
-  }
-
-  const record = value as {
-    data?: unknown
-    models?: unknown
-    result?: unknown
-  }
-
-  if (Array.isArray(record.data)) {
-    return record.data
-  }
-
-  if (Array.isArray(record.models)) {
-    return record.models
-  }
-
-  if (Array.isArray(record.result)) {
-    return record.result
-  }
-
-  return []
-}
-
-function parseModelIds(value: unknown): string[] {
-  const seen = new Set<string>()
-
-  for (const item of modelItemsFromResponse(value)) {
-    const id = readModelId(item)
-
-    if (id) {
-      seen.add(id)
+      if (parsed.stopped) {
+        await cancelProviderStreamReader(reader)
+        return
+      }
     }
+  } finally {
+    releaseProviderStreamReader(reader)
   }
-
-  return Array.from(seen).sort((left, right) => left.localeCompare(right))
 }
 
 export async function listProviderModels(
@@ -449,152 +868,293 @@ export async function listProviderModels(
 ): Promise<string[]> {
   const { provider, apiKey, proxyToken, signal } = options
 
-  if (provider.needsApiKey && !apiKey) {
-    throw new Error('请先在设置里填写这个服务商的 API Key')
+  if (providerNeedsBrowserKey(provider) && !apiKey) {
+    throw new Error(rt('error.providerKeyRequired'))
   }
 
-  if (provider.proxyUrl?.trim() && !proxyToken.trim()) {
-    throw new Error('请先填写这个服务商的代理访问密钥')
+  if (providerUsesProxy(provider) && !proxyToken.trim()) {
+    throw new Error(rt('error.cloudflareAccessKeyRequired'))
   }
 
-  const response = await fetchProviderEndpoint(
+  const models = await fetchProviderJsonEndpoint(
     provider,
-    '模型列表接口',
-    buildModelsEndpoint(provider),
+    modelListConnectionTarget(),
+    buildProviderModelListEndpoint(provider),
     {
       method: 'GET',
       signal,
-      headers: modelListHeaders(provider, apiKey, proxyToken),
+      headers: buildProviderModelListHeaders({ provider, apiKey, proxyToken }),
     },
+    parseProviderModelIds,
+    PROVIDER_MODEL_LIST_TIMEOUT_MS,
   )
 
-  await assertOk(response)
-
-  const models = parseModelIds(await response.json())
-
   if (models.length === 0) {
-    throw new Error('没有从服务商返回的数据中识别到模型')
+    throw new Error(rt('error.noModelsFound'))
   }
 
   return models
 }
 
-export async function streamChat(options: StreamOptions): Promise<void> {
-  const { provider, apiKey, proxyToken, model, messages, signal, onToken } = options
-  const endpoint = buildEndpoint(provider)
+export async function generateImage(
+  options: GenerateImageOptions,
+): Promise<GeneratedImage> {
+  const {
+    provider,
+    apiKey,
+    proxyToken,
+    model,
+    prompt,
+    responsesModel,
+    signal,
+    size,
+  } = options
+  const trimmedPrompt = prompt.trim()
 
-  if (provider.needsApiKey && !apiKey) {
-    throw new Error('请先在设置里填写这个服务商的 API Key')
+  if (providerNeedsBrowserKey(provider) && !apiKey) {
+    throw new Error(rt('error.providerKeyRequired'))
   }
 
-  if (provider.proxyUrl?.trim() && !proxyToken.trim()) {
-    throw new Error('请先填写这个服务商的代理访问密钥')
+  if (providerUsesProxy(provider) && !proxyToken.trim()) {
+    throw new Error(rt('error.cloudflareAccessKeyRequired'))
   }
 
   if (!model.trim()) {
-    throw new Error('请先填写模型名称')
+    throw new Error(rt('error.imageModelRequired'))
   }
 
-  if (provider.kind === 'openai-responses') {
-    const response = await fetchProviderEndpoint(
+  if (!trimmedPrompt) {
+    throw new Error(rt('notice.messageContentRequired'))
+  }
+
+  if (provider.kind === 'anthropic') {
+    throw new Error(rt('error.imageGenerationUnsupported'))
+  }
+
+  let generatedImage: GeneratedImage
+
+  try {
+    generatedImage = await fetchProviderJsonEndpoint(
       provider,
-      'AI 对话接口',
+      imageGenerationConnectionTarget(),
+      buildProviderImageGenerationEndpoint(provider),
+      {
+        method: 'POST',
+        signal,
+        headers: buildProviderImageGenerationHeaders({
+          provider,
+          apiKey,
+          proxyToken,
+        }),
+        body: JSON.stringify(
+          buildProviderImageGenerationBody({
+            model,
+            prompt: trimmedPrompt,
+            size,
+          }),
+        ),
+      },
+      generatedImageFromProviderResponse,
+      PROVIDER_IMAGE_REQUEST_TIMEOUT_MS,
+      MAX_PROVIDER_IMAGE_RESPONSE_BYTES,
+    )
+  } catch (error: unknown) {
+    if (!shouldTryResponsesImageFallback(error)) {
+      throw error
+    }
+
+    generatedImage = await generateImageViaResponsesTool({
+      apiKey,
+      imageModel: model,
+      provider,
+      prompt: trimmedPrompt,
+      proxyToken,
+      responsesModel,
+      signal,
+      size,
+    })
+  }
+
+  return materializeGeneratedImage(
+    generatedImage,
+    signal,
+    PROVIDER_IMAGE_REQUEST_TIMEOUT_MS,
+  )
+}
+
+export async function editImage(options: EditImageOptions): Promise<GeneratedImage> {
+  const {
+    provider,
+    apiKey,
+    proxyToken,
+    model,
+    prompt,
+    responsesModel,
+    signal,
+    size,
+    image,
+    mask,
+  } = options
+  const trimmedPrompt = prompt.trim()
+
+  if (providerNeedsBrowserKey(provider) && !apiKey) {
+    throw new Error(rt('error.providerKeyRequired'))
+  }
+
+  if (providerUsesProxy(provider) && !proxyToken.trim()) {
+    throw new Error(rt('error.cloudflareAccessKeyRequired'))
+  }
+
+  if (!model.trim()) {
+    throw new Error(rt('error.imageModelRequired'))
+  }
+
+  if (!trimmedPrompt) {
+    throw new Error(rt('notice.messageContentRequired'))
+  }
+
+  if (provider.kind === 'anthropic') {
+    throw new Error(rt('error.imageGenerationUnsupported'))
+  }
+
+  let generatedImage: GeneratedImage
+
+  try {
+    generatedImage = await fetchProviderJsonEndpoint(
+      provider,
+      imageEditConnectionTarget(),
+      buildProviderImageEditEndpoint(provider),
+      {
+        method: 'POST',
+        signal,
+        headers: buildProviderImageEditHeaders({ provider, apiKey, proxyToken }),
+        body: buildProviderImageEditBody({
+          model,
+          prompt: trimmedPrompt,
+          size,
+          image,
+          mask,
+        }),
+      },
+      generatedImageFromProviderResponse,
+      PROVIDER_IMAGE_REQUEST_TIMEOUT_MS,
+      MAX_PROVIDER_IMAGE_RESPONSE_BYTES,
+    )
+  } catch (error: unknown) {
+    if (mask || !shouldTryResponsesImageFallback(error)) {
+      throw error
+    }
+
+    generatedImage = await editImageViaResponsesTool({
+      apiKey,
+      image,
+      imageModel: model,
+      provider,
+      prompt: trimmedPrompt,
+      proxyToken,
+      responsesModel,
+      signal,
+      size,
+    })
+  }
+
+  return materializeGeneratedImage(
+    generatedImage,
+    signal,
+    PROVIDER_IMAGE_REQUEST_TIMEOUT_MS,
+  )
+}
+
+export async function streamChat(options: StreamOptions): Promise<void> {
+  const {
+    provider,
+    apiKey,
+    proxyToken,
+    model,
+    messages,
+    contextMessageLimit,
+    signal,
+    onToken,
+  } = options
+  const endpoint = buildProviderChatEndpoint(provider)
+
+  if (providerNeedsBrowserKey(provider) && !apiKey) {
+    throw new Error(rt('error.providerKeyRequired'))
+  }
+
+  if (providerUsesProxy(provider) && !proxyToken.trim()) {
+    throw new Error(rt('error.cloudflareAccessKeyRequired'))
+  }
+
+  if (!model.trim()) {
+    throw new Error(rt('error.modelRequired'))
+  }
+
+  const contextMessages = selectContextMessages(messages, contextMessageLimit)
+
+  if (provider.kind === 'openai-responses') {
+    const response = await fetchProviderStreamResponse(
+      provider,
+      chatConnectionTarget(),
       endpoint,
       {
         method: 'POST',
         signal,
-        headers: {
-          'content-type': 'application/json',
-          ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
-          ...(provider.proxyUrl?.trim()
-            ? { 'x-zerochat-proxy-token': proxyToken }
-            : {}),
-          ...proxyHeaders(provider),
-        },
-        body: JSON.stringify({
-          model: model.trim(),
-          input: recentMessages(messages).map((message) => ({
-            role: message.role,
-            content: message.content,
-          })),
-          stream: true,
-          store: false,
-          temperature: 0.7,
-        }),
+        headers: buildProviderChatHeaders({ provider, apiKey, proxyToken }),
+        body: JSON.stringify(
+          buildProviderResponsesChatBody({
+            model,
+            messages: contextMessages,
+          }),
+        ),
       },
     )
 
-    await assertOk(response)
-    await readResponsesStream(response, onToken)
+    await readResponsesStream(response, signal, onToken)
+    signal.throwIfAborted()
     return
   }
 
   if (provider.kind === 'anthropic') {
-    const systemMessage = messages.find((message) => message.role === 'system')
-    const response = await fetchProviderEndpoint(
+    const response = await fetchProviderStreamResponse(
       provider,
-      'AI 对话接口',
+      chatConnectionTarget(),
       endpoint,
       {
         method: 'POST',
         signal,
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
-          ...(provider.proxyUrl?.trim()
-            ? { 'x-zerochat-proxy-token': proxyToken }
-            : {}),
-          ...proxyHeaders(provider),
-        },
-        body: JSON.stringify({
-          model: model.trim(),
-          max_tokens: 4096,
-          stream: true,
-          system: systemMessage?.content,
-          messages: recentMessages(messages)
-            .filter((message) => message.role !== 'system')
-            .map((message) => ({
-              role: message.role === 'assistant' ? 'assistant' : 'user',
-              content: message.content,
-            })),
-        }),
+        headers: buildProviderChatHeaders({ provider, apiKey, proxyToken }),
+        body: JSON.stringify(
+          buildProviderAnthropicChatBody({
+            model,
+            messages: contextMessages,
+          }),
+        ),
       },
     )
 
-    await assertOk(response)
-    await readAnthropicStream(response, onToken)
+    await readAnthropicStream(response, signal, onToken)
+    signal.throwIfAborted()
     return
   }
 
-  const response = await fetchProviderEndpoint(
+  const response = await fetchProviderStreamResponse(
     provider,
-    'AI 对话接口',
+    chatConnectionTarget(),
     endpoint,
     {
       method: 'POST',
       signal,
-      headers: {
-        'content-type': 'application/json',
-        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
-        ...(provider.proxyUrl?.trim()
-          ? { 'x-zerochat-proxy-token': proxyToken }
-          : {}),
-        ...proxyHeaders(provider),
-      },
-      body: JSON.stringify({
-        model: model.trim(),
-        messages: recentMessages(messages).map((message) => ({
-          role: message.role,
-          content: message.content,
-        })),
-        stream: true,
-        temperature: 0.7,
-      }),
+      headers: buildProviderChatHeaders({ provider, apiKey, proxyToken }),
+      body: JSON.stringify(
+        buildProviderOpenAIChatBody({
+          model,
+          messages: contextMessages,
+        }),
+      ),
     },
   )
 
-  await assertOk(response)
-  await readOpenAIStream(response, onToken)
+  await readOpenAIStream(response, signal, onToken)
+  signal.throwIfAborted()
 }

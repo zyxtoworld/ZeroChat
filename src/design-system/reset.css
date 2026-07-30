@@ -1,0 +1,12 @@
+:where(button, input, select, textarea) {
+  font: inherit;
+  letter-spacing: 0;
+}
+
+:where(button) {
+  touch-action: manipulation;
+}
+
+:where(a) {
+  color: inherit;
+}

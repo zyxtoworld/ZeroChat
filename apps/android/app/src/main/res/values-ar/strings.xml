@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ZeroChat</string>
+    <string name="zerochat_widget_description">ابدأ محادثة ZeroChat جديدة بسرعة.</string>
+    <string name="zerochat_widget_title">محادثة جديدة</string>
+    <string name="zerochat_widget_body">محلي أولا. زامن لاحقا.</string>
+    <string name="zerochat_widget_action">اسأل الآن</string>
+    <string name="zerochat_widget_accessibility">ZeroChat Quick Ask. محادثة جديدة. محلي أولا. زامن لاحقا. اسأل الآن.</string>
+</resources>

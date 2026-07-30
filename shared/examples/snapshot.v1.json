@@ -2,14 +2,43 @@
   "version": 1,
   "providers": [
     {
-      "id": "provider-openai-compatible",
-      "name": "OpenAI Compatible",
-      "kind": "openai-compatible",
+      "id": "provider-openai-responses",
+      "name": "OpenAI Responses",
+      "kind": "openai-responses",
       "baseUrl": "https://api.example.com/v1",
       "proxyUrl": "https://zerochat-sync.example.workers.dev",
+      "clientRequestMode": false,
       "model": "example-chat-model",
+      "imageModel": "example-image-model",
+      "audioSpeechModel": "example-speech-model",
+      "audioTranscriptionModel": "example-transcription-model",
+      "embeddingModel": "example-embedding-model",
+      "moderationModel": "example-moderation-model",
+      "realtimeModel": "example-realtime-model",
+      "models": [
+        "example-chat-model",
+        "example-fast-model",
+        "example-image-model",
+        "example-speech-model",
+        "example-transcription-model",
+        "example-embedding-model",
+        "example-moderation-model",
+        "example-realtime-model"
+      ],
+      "capabilities": [
+        "chat",
+        "vision",
+        "tools",
+        "image-generation",
+        "audio",
+        "embeddings",
+        "moderation",
+        "realtime",
+        "model-list"
+      ],
       "enabled": true,
       "needsApiKey": true,
+      "custom": false,
       "createdAt": 1760000000000,
       "updatedAt": 1760000000000
     }
@@ -17,29 +46,72 @@
   "conversations": [
     {
       "id": "conversation-1",
-      "title": "新对话",
-      "providerId": "provider-openai-compatible",
+      "title": "New chat",
+      "providerId": "provider-openai-responses",
       "model": "example-chat-model",
       "messages": [
         {
           "id": "message-1",
           "role": "user",
-          "content": "你好",
+          "content": "Hello",
           "createdAt": 1760000000000,
           "status": "done"
         },
         {
           "id": "message-2",
           "role": "assistant",
-          "content": "你好，有什么可以帮你？",
+          "content": "Image generated",
           "createdAt": 1760000001000,
-          "status": "done"
+          "status": "done",
+          "attachments": [
+            {
+              "id": "attachment-1",
+              "kind": "image",
+              "purpose": "generated",
+              "mimeType": "image/png",
+              "dataUrl": "data:image/png;base64,iVBORw0KGgo=",
+              "alt": "Example generated image",
+              "model": "example-image-model",
+              "createdAt": 1760000001000
+            }
+          ]
         }
       ],
       "createdAt": 1760000000000,
       "updatedAt": 1760000001000
     }
   ],
+  "skills": [
+    {
+      "id": "skill-code-review",
+      "name": "Code review rules",
+      "description": "Prefer small, tested changes and call out user-visible regressions first.",
+      "fileName": "code-review.md",
+      "contentType": "markdown",
+      "sourceSize": 92,
+      "contentHash": "example-skill-hash",
+      "keywords": ["code", "review", "tested", "regressions"],
+      "chunks": [
+        {
+          "id": "chunk-1",
+          "heading": "Review rules",
+          "content": "Prefer small, tested changes. Call out user-visible regressions first.",
+          "keywords": ["review", "tested", "regressions"],
+          "tokenEstimate": 18
+        }
+      ],
+      "fixed": false,
+      "enabled": true,
+      "autoMatch": true,
+      "createdAt": 1760000000000,
+      "updatedAt": 1760000000000
+    }
+  ],
+  "skillSettings": {
+    "autoMatch": true,
+    "contextBudget": 2400,
+    "maxAutoSkills": 3
+  },
   "sync": {
     "mode": "cloudflare",
     "autoSync": true,
@@ -47,13 +119,17 @@
     "gistFile": "zerochat-sync.json",
     "workerEndpoint": "https://zerochat-sync.example.workers.dev",
     "lastSyncAt": 1760000001000,
-    "lastSyncStatus": "同步完成"
+    "lastSyncStatus": "Sync complete"
   },
   "preferences": {
     "firstRunDone": true,
     "theme": "system",
+    "language": "system",
     "compactMode": false,
-    "activeConversationId": "conversation-1"
+    "chatContextMessageLimit": 24,
+    "activeConversationId": "conversation-1",
+    "dismissedDangerWarnings": [],
+    "dismissedFeatureHints": []
   },
   "updatedAt": 1760000001000
 }

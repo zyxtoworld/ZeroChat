@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/zerochat_widget_description"
+    android:initialLayout="@layout/zerochat_quick_ask_widget"
+    android:minHeight="96dp"
+    android:minResizeHeight="96dp"
+    android:minResizeWidth="160dp"
+    android:minWidth="160dp"
+    android:resizeMode="horizontal|vertical"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen" />

@@ -2,6 +2,11 @@ openapi: 3.1.0
 info:
   title: ZeroChat Sync API
   version: 1.0.0
+x-zerochat-payload-limits:
+  legacySnapshotBytes: 900000
+  incrementalObjectBytes: 5000000
+  incrementalHeadBytes: 16384
+  clientErrorBodyBytes: 16384
 paths:
   /snapshot:
     get:
@@ -11,18 +16,42 @@ paths:
       responses:
         "200":
           description: Encrypted snapshot found
+          headers:
+            ETag:
+              $ref: "#/components/headers/SnapshotETag"
+            X-ZeroChat-Sync-Generation:
+              $ref: "#/components/headers/SyncGeneration"
           content:
             application/json:
               schema:
                 $ref: "./encrypted-snapshot.schema.json"
         "404":
           description: No snapshot exists yet
+          headers:
+            X-ZeroChat-Sync-Generation:
+              $ref: "#/components/headers/SyncGeneration"
         "401":
-          description: Missing or invalid sync token
+          description: Missing or invalid Cloudflare access key
+        "501":
+          description: Worker setup incomplete or KV binding zerochat_kv is required
     put:
       summary: Replace the current encrypted snapshot
       security:
         - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/SyncGeneration"
+        - name: If-Match
+          in: header
+          required: false
+          description: Strong ETag returned by the snapshot this write replaces.
+          schema:
+            type: string
+        - name: If-None-Match
+          in: header
+          required: false
+          description: Must be `*` for the first snapshot. Exactly one snapshot precondition is required.
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -32,21 +61,40 @@ paths:
       responses:
         "200":
           description: Snapshot saved
+          headers:
+            ETag:
+              $ref: "#/components/headers/SnapshotETag"
         "400":
           description: Invalid JSON
         "401":
-          description: Missing or invalid sync token
+          description: Missing or invalid Cloudflare access key
+        "409":
+          description: Snapshot ETag changed or the write would move backwards
+        "412":
+          description: Sync generation changed
         "413":
           description: Snapshot too large
+        "428":
+          description: Sync generation or exactly one snapshot precondition is required
+        "501":
+          description: Worker setup incomplete or KV binding zerochat_kv is required
     delete:
       summary: Delete the legacy encrypted snapshot after incremental migration
       security:
         - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/SyncGeneration"
       responses:
         "200":
           description: Snapshot deleted
         "401":
-          description: Missing or invalid sync token
+          description: Missing or invalid Cloudflare access key
+        "412":
+          description: Sync generation changed
+        "428":
+          description: Sync generation is required
+        "501":
+          description: Worker setup incomplete or KV binding zerochat_kv is required
   /sync/head:
     get:
       summary: Read the current incremental sync head
@@ -55,14 +103,38 @@ paths:
       responses:
         "200":
           description: Incremental head found
+          headers:
+            ETag:
+              description: Strong quoted manifest-key ETag for the current head.
+              schema:
+                type: string
+            X-ZeroChat-Sync-Generation:
+              $ref: "#/components/headers/SyncGeneration"
         "404":
           description: No incremental head exists yet
+          headers:
+            X-ZeroChat-Sync-Generation:
+              $ref: "#/components/headers/SyncGeneration"
         "501":
-          description: R2 binding is not configured
+          description: Worker setup incomplete, KV binding is missing, or R2 binding is not configured
     put:
-      summary: Replace the current incremental sync head
+      summary: Conditionally replace the current incremental sync head
       security:
         - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/SyncGeneration"
+        - name: If-Match
+          in: header
+          required: false
+          description: Quoted manifest key from the head that this write replaces.
+          schema:
+            type: string
+        - name: If-None-Match
+          in: header
+          required: false
+          description: Must be `*` for the first head. Exactly one head precondition is required.
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -83,9 +155,54 @@ paths:
         "200":
           description: Head saved
         "409":
-          description: Refused to move head backwards
+          description: Head precondition failed or the write would move backwards
+        "412":
+          description: Sync generation changed
+        "428":
+          description: Sync generation or exactly one head precondition is required
+        "413":
+          description: Incremental head too large
         "501":
-          description: R2 binding is not configured
+          description: Worker setup incomplete, KV binding is missing, or R2 binding is not configured
+    delete:
+      summary: Delete the current incremental sync head
+      security:
+        - bearerToken: []
+      parameters:
+        - $ref: "#/components/parameters/SyncGeneration"
+      responses:
+        "200":
+          description: Head deleted
+        "401":
+          description: Missing or invalid Cloudflare access key
+        "412":
+          description: Sync generation changed
+        "428":
+          description: Sync generation is required
+        "501":
+          description: Worker setup incomplete, KV binding is missing, or R2 binding is not configured
+  /sync/clear:
+    delete:
+      summary: Clear all ZeroChat cloud sync data
+      description: >
+        Deletes the legacy encrypted snapshot, the current incremental sync head,
+        and all R2 objects whose keys match ZeroChat incremental manifest,
+        message chunk, or Skill chunk object names. This does not delete AI
+        proxy allowlists or Worker settings.
+      security:
+        - bearerToken: []
+      responses:
+        "200":
+          description: Cloud sync data cleared
+          headers:
+            X-ZeroChat-Sync-Generation:
+              $ref: "#/components/headers/SyncGeneration"
+        "401":
+          description: Missing or invalid Cloudflare access key
+        "405":
+          description: Method not allowed
+        "501":
+          description: Worker setup incomplete or KV binding zerochat_kv is required
   /sync/object/{key}:
     get:
       summary: Read an encrypted incremental object from R2
@@ -102,11 +219,16 @@ paths:
           description: Encrypted object found
         "404":
           description: Object not found
+        "401":
+          description: Missing or invalid Cloudflare access key
+        "501":
+          description: Worker setup incomplete or R2 binding is not configured
     put:
       summary: Save an encrypted incremental object to R2
       security:
         - bearerToken: []
       parameters:
+        - $ref: "#/components/parameters/SyncGeneration"
         - name: key
           in: path
           required: true
@@ -117,13 +239,22 @@ paths:
           description: Object saved
         "400":
           description: Invalid encrypted object
+        "401":
+          description: Missing or invalid Cloudflare access key
+        "412":
+          description: Sync generation changed
         "413":
           description: Object too large
+        "428":
+          description: Sync generation is required
+        "501":
+          description: Worker setup incomplete or R2 binding is not configured
     delete:
       summary: Delete an obsolete encrypted incremental object
       security:
         - bearerToken: []
       parameters:
+        - $ref: "#/components/parameters/SyncGeneration"
         - name: key
           in: path
           required: true
@@ -132,10 +263,51 @@ paths:
       responses:
         "200":
           description: Object deleted
+        "401":
+          description: Missing or invalid Cloudflare access key
+        "412":
+          description: Sync generation changed
+        "428":
+          description: Sync generation is required
+        "501":
+          description: Worker setup incomplete or R2 binding is not configured
   /proxy:
+    x-zerochat-cors-allow-headers:
+      - anthropic-dangerous-direct-browser-access
+      - anthropic-version
+      - authorization
+      - content-type
+      - if-match
+      - if-none-match
+      - x-api-key
+      - x-zerochat-access-key
+      - x-zerochat-base-url
+      - x-zerochat-provider-kind
+      - x-zerochat-proxy-action
+      - x-zerochat-sync-generation
     get:
       summary: Optional AI provider proxy for model listing
       parameters:
+        - name: authorization
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: x-api-key
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: anthropic-version
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: anthropic-dangerous-direct-browser-access
+          in: header
+          required: false
+          schema:
+            type: string
         - name: x-zerochat-base-url
           in: header
           required: true
@@ -146,7 +318,7 @@ paths:
           required: true
           schema:
             enum: [openai-compatible, openai-responses, anthropic]
-        - name: x-zerochat-proxy-token
+        - name: x-zerochat-access-key
           in: header
           required: true
           schema:
@@ -161,11 +333,39 @@ paths:
           description: Provider model list JSON
         "400":
           description: Missing provider metadata
+        "401":
+          description: Invalid Worker access key or missing provider authorization
         "403":
           description: Provider host is not allowed
+        "405":
+          description: Proxy action must use the required HTTP method
+        "413":
+          description: Request body is too large
+        "501":
+          description: Worker setup incomplete because ZEROCHAT_ACCESS_KEY is missing
     post:
       summary: Optional AI provider proxy for clients blocked by CORS
       parameters:
+        - name: authorization
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: x-api-key
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: anthropic-version
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: anthropic-dangerous-direct-browser-access
+          in: header
+          required: false
+          schema:
+            type: string
         - name: x-zerochat-base-url
           in: header
           required: true
@@ -176,7 +376,7 @@ paths:
           required: true
           schema:
             enum: [openai-compatible, openai-responses, anthropic]
-        - name: x-zerochat-proxy-token
+        - name: x-zerochat-access-key
           in: header
           required: true
           schema:
@@ -185,15 +385,106 @@ paths:
           in: header
           required: false
           schema:
-            enum: [chat]
+            enum:
+              - chat
+              - image-generations
+              - image-edits
+              - image-responses
+              - audio-speech
+              - audio-transcriptions
+              - embeddings
+              - moderations
+              - realtime
+              - realtime-client-secrets
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: true
       responses:
         "200":
           description: Provider response stream or JSON
         "400":
           description: Missing provider metadata
+        "401":
+          description: Invalid Worker access key or missing provider authorization
         "403":
           description: Provider host is not allowed
+        "405":
+          description: Proxy action must use the required HTTP method
+        "413":
+          description: Request body is too large
+        "501":
+          description: Worker setup incomplete because ZEROCHAT_ACCESS_KEY is missing
+  /proxy/hosts:
+    put:
+      summary: Replace automatically learned custom relay hosts for the AI proxy
+      description: >
+        Replaces only the Worker learned custom relay host list. Built-in provider
+        hosts and hosts configured through ALLOWED_HOSTS are not changed. Sending
+        an empty list clears the learned custom relay hosts. The Worker accepts
+        host names or HTTPS Base URLs and stores host names only.
+      parameters:
+        - name: x-zerochat-access-key
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                baseUrls:
+                  type: array
+                  items:
+                    type: string
+                hosts:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Learned custom relay host list was replaced
+        "400":
+          description: Invalid JSON or unsafe host
+        "401":
+          description: Invalid Cloudflare access key
+        "403":
+          description: Automatic host learning is disabled
+        "413":
+          description: Request body is too large
+        "501":
+          description: Worker setup incomplete or KV binding zerochat_kv is required
 components:
+  headers:
+    SnapshotETag:
+      description: Strong opaque SHA-256 ETag for the encrypted snapshot body.
+      schema:
+        type: string
+        pattern: '^"snapshot-sha256-[0-9a-f]{64}"$'
+    SyncGeneration:
+      description: Opaque UUID v4 identifying the current remote sync generation.
+      schema:
+        type: string
+        format: uuid
+  parameters:
+    SyncGeneration:
+      name: x-zerochat-sync-generation
+      in: header
+      required: true
+      description: Generation returned by the read that started this sync attempt.
+      schema:
+        type: string
+        format: uuid
   securitySchemes:
     bearerToken:
       type: http

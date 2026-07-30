@@ -5,26 +5,308 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d">
-    <Grid ColumnDefinitions="280,*" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
-        <Border Grid.Column="0" BorderThickness="0,0,1,0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}">
-            <StackPanel Padding="16" Spacing="12">
-                <TextBlock Text="ZeroChat" FontSize="22" FontWeight="SemiBold" />
-                <Button Content="新对话" HorizontalAlignment="Stretch" />
-                <ListView x:Name="ConversationList" />
-            </StackPanel>
+    <Grid x:Name="FallbackRoot" RowDefinitions="Auto,*" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition x:Name="FallbackSidebarColumn" Width="300" />
+            <ColumnDefinition x:Name="FallbackMainColumn" Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="RootWidthStates">
+                <VisualState x:Name="RootWide">
+                    <VisualState.StateTriggers>
+                        <AdaptiveTrigger MinWindowWidth="820" />
+                    </VisualState.StateTriggers>
+                </VisualState>
+                <VisualState x:Name="RootCompact">
+                    <VisualState.StateTriggers>
+                        <AdaptiveTrigger MinWindowWidth="0" />
+                    </VisualState.StateTriggers>
+                    <VisualState.Setters>
+                        <Setter Target="FallbackSidebarColumn.Width" Value="*" />
+                        <Setter Target="FallbackMainColumn.Width" Value="0" />
+                        <Setter Target="FallbackSidebar.(Grid.RowSpan)" Value="1" />
+                        <Setter Target="FallbackMain.(Grid.Column)" Value="0" />
+                        <Setter Target="FallbackMain.(Grid.Row)" Value="1" />
+                        <Setter Target="FallbackMain.(Grid.RowSpan)" Value="1" />
+                        <Setter Target="ImageControls.Orientation" Value="Vertical" />
+                    </VisualState.Setters>
+                </VisualState>
+            </VisualStateGroup>
+            <VisualStateGroup x:Name="BodyWidthStates">
+                <VisualState x:Name="BodyWide">
+                    <VisualState.StateTriggers>
+                        <AdaptiveTrigger MinWindowWidth="1180" />
+                    </VisualState.StateTriggers>
+                </VisualState>
+                <VisualState x:Name="BodyStacked">
+                    <VisualState.StateTriggers>
+                        <AdaptiveTrigger MinWindowWidth="0" />
+                    </VisualState.StateTriggers>
+                    <VisualState.Setters>
+                        <Setter Target="FallbackSettingsColumn.Width" Value="0" />
+                        <Setter Target="FallbackSettingsRow.Height" Value="*" />
+                        <Setter Target="SettingsScroll.(Grid.Column)" Value="0" />
+                        <Setter Target="SettingsScroll.(Grid.Row)" Value="1" />
+                    </VisualState.Setters>
+                </VisualState>
+            </VisualStateGroup>
+        </VisualStateManager.VisualStateGroups>
+
+        <Border x:Name="FallbackSidebar" Grid.Column="0" Grid.RowSpan="2" BorderThickness="0,0,1,0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}">
+            <Grid RowDefinitions="Auto,Auto,*,Auto" Padding="16" RowSpacing="12">
+                <StackPanel Spacing="4">
+                    <TextBlock Text="ZeroChat" FontSize="24" FontWeight="SemiBold" />
+                    <TextBlock x:Name="LocalFirstText" Text="Local first. Turn on encrypted sync when you need more devices." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+
+                <Button x:Name="NewChatButton" Grid.Row="1" Content="New chat" HorizontalAlignment="Stretch" IsEnabled="False" />
+
+                <ListView Grid.Row="2" x:Name="ConversationList" SelectionMode="Single">
+                    <ListViewItem IsSelected="True">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                            <TextBlock x:Name="ConversationOneTitle" Text="New chat" TextTrimming="CharacterEllipsis" />
+                            <Button x:Name="ConversationOneDeleteButton" Grid.Column="1" Content="Delete" IsEnabled="False" />
+                        </Grid>
+                    </ListViewItem>
+                    <ListViewItem>
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                            <TextBlock x:Name="ConversationTwoTitle" Text="Image draft" TextTrimming="CharacterEllipsis" />
+                            <Button x:Name="ConversationTwoDeleteButton" Grid.Column="1" Content="Delete" IsEnabled="False" />
+                        </Grid>
+                    </ListViewItem>
+                </ListView>
+
+                <InfoBar x:Name="SidebarStatusBar" Grid.Row="3" IsOpen="True" Severity="Warning" Message="ZeroChat opened a read-only recovery screen because the full Windows app did not load. Rebuild or repair the bundled app files to restore chat, sync, backup, and settings changes." />
+            </Grid>
         </Border>
 
-        <Grid Grid.Column="1" RowDefinitions="Auto,*,Auto">
+        <Grid x:Name="FallbackMain" Grid.Column="1" Grid.RowSpan="2" RowDefinitions="Auto,*,Auto">
             <CommandBar Grid.Row="0" DefaultLabelPosition="Right">
-                <AppBarButton Icon="Sync" Label="同步" />
-                <AppBarButton Icon="Setting" Label="设置" />
+                <CommandBar.Content>
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                        <ComboBox x:Name="ProviderModelCombo" Header="Provider and model" SelectedIndex="1" HorizontalAlignment="Stretch" IsEnabled="False">
+                            <ComboBoxItem x:Name="ProviderModelCustomItem" Content="Custom OpenAI-compatible relay / Choose model" />
+                            <ComboBoxItem x:Name="ProviderModelOpenAiItem" Content="OpenAI / gpt-5.5 + gpt-image-2" />
+                            <ComboBoxItem x:Name="ProviderModelAnthropicItem" Content="Anthropic / Choose model" />
+                            <ComboBoxItem x:Name="ProviderModelGeminiItem" Content="Google Gemini / gemini-2.5-flash" />
+                        </ComboBox>
+                        <TextBlock x:Name="CurrentChatTitle" Grid.Column="1" Text="New chat" VerticalAlignment="Center" FontSize="18" FontWeight="SemiBold" />
+                    </Grid>
+                </CommandBar.Content>
+                <AppBarButton x:Name="NewCommand" Icon="Add" Label="New" IsEnabled="False" />
+                <AppBarButton x:Name="SettingsCommand" Icon="Setting" Label="Settings" IsEnabled="False" />
             </CommandBar>
 
-            <ListView Grid.Row="1" x:Name="MessageList" Padding="24" />
+            <Grid x:Name="FallbackBody" Grid.Row="1">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition x:Name="FallbackSettingsRow" Height="0" />
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition x:Name="FallbackSettingsColumn" Width="420" />
+                </Grid.ColumnDefinitions>
 
-            <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Padding="16" ColumnSpacing="8">
-                <TextBox x:Name="MessageBox" PlaceholderText="输入消息" AcceptsReturn="True" />
-                <Button Grid.Column="1" Content="发送" />
+                <ScrollViewer x:Name="ChatScroll" Grid.Column="0" Padding="24">
+                    <StackPanel Spacing="14">
+                        <InfoBar x:Name="ConfigureNoticeBar" IsOpen="True" Severity="Warning" Message="ZeroChat opened a read-only recovery screen because the full Windows app did not load. Rebuild or repair the bundled app files to restore chat, sync, backup, and settings changes." />
+
+                        <Border MaxWidth="760" HorizontalAlignment="Left" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="8" Padding="14">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="AI" FontWeight="SemiBold" />
+                                <TextBlock x:Name="AssistantSampleText" Text="AI messages are left aligned. Regenerate and delete are attached to the message." TextWrapping="Wrap" />
+                                <TextBlock x:Name="AssistantStatusText" Text="System date/time format" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="12" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button x:Name="AssistantRegenerateButton" Content="Regenerate" IsEnabled="False" />
+                                    <Button x:Name="AssistantDeleteButton" Content="Delete" IsEnabled="False" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Border MaxWidth="760" HorizontalAlignment="Right" Background="{ThemeResource AccentFillColorTertiaryBrush}" CornerRadius="8" Padding="14">
+                            <StackPanel Spacing="8">
+                                <TextBlock x:Name="UserAuthorText" Text="You" HorizontalAlignment="Right" FontWeight="SemiBold" />
+                                <TextBlock x:Name="UserSampleText" Text="User messages are right aligned. Editing sends the edited message and regenerates the AI reply." TextWrapping="Wrap" TextAlignment="Right" />
+                                <TextBlock x:Name="UserStatusText" Text="System date/time format" HorizontalAlignment="Right" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="12" />
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+                                    <Button x:Name="UserEditButton" Content="Edit and resend" IsEnabled="False" />
+                                    <Button x:Name="UserDeleteButton" Content="Delete" IsEnabled="False" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Border MaxWidth="760" HorizontalAlignment="Left" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="8" Padding="14">
+                            <StackPanel Spacing="8">
+                                <TextBlock x:Name="ImageResultTitle" Text="Image result" FontWeight="SemiBold" />
+                                <Rectangle Height="180" RadiusX="8" RadiusY="8" Fill="{ThemeResource ControlFillColorTertiaryBrush}" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button x:Name="ImageDownloadButton" Content="Download image" IsEnabled="False" />
+                                    <Button x:Name="ImageRegenerateButton" Content="Regenerate" IsEnabled="False" />
+                                    <Button x:Name="ImageDeleteButton" Content="Delete" IsEnabled="False" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <ScrollViewer x:Name="SettingsScroll" Grid.Column="1" Padding="18">
+                    <StackPanel Spacing="18">
+                        <TextBlock x:Name="SettingsHeading" Text="Settings" FontSize="22" FontWeight="SemiBold" />
+                        <TextBlock x:Name="SettingsDescription" Text="ZeroChat opened a read-only recovery screen because the full Windows app did not load. Rebuild or repair the bundled app files to restore chat, sync, backup, and settings changes." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                        <StackPanel Spacing="8">
+                            <TextBlock x:Name="AppearanceHeading" Text="Appearance" FontWeight="SemiBold" />
+                            <ComboBox x:Name="ThemeCombo" Header="Theme" SelectedIndex="0">
+                                <ComboBoxItem x:Name="ThemeSystemItem" Content="System" />
+                                <ComboBoxItem x:Name="ThemeLightItem" Content="Light" />
+                                <ComboBoxItem x:Name="ThemeDarkItem" Content="Dark" />
+                            </ComboBox>
+                            <ComboBox x:Name="LanguageCombo" Header="Language" SelectedIndex="0">
+                                <ComboBoxItem x:Name="LanguageSystemItem" Content="System" />
+                                <ComboBoxItem Content="zh-CN" />
+                                <ComboBoxItem Content="en-US" />
+                                <ComboBoxItem Content="es-ES" />
+                                <ComboBoxItem Content="hi-IN" />
+                                <ComboBoxItem Content="ar-SA" />
+                                <ComboBoxItem Content="pt-BR" />
+                                <ComboBoxItem Content="ru-RU" />
+                                <ComboBoxItem Content="ja-JP" />
+                                <ComboBoxItem Content="ko-KR" />
+                                <ComboBoxItem Content="fr-FR" />
+                            </ComboBox>
+                            <ToggleSwitch x:Name="CompactDisplaySwitch" Header="Compact display" IsOn="False" IsEnabled="False" />
+                        </StackPanel>
+
+                        <StackPanel Spacing="8">
+                            <TextBlock x:Name="ProvidersHeading" Text="AI providers" FontWeight="SemiBold" />
+                            <Button x:Name="AddProviderButton" Content="Add custom provider" HorizontalAlignment="Stretch" IsEnabled="False" />
+                            <TextBox x:Name="ProviderNameBox" Header="Name" Text="Custom OpenAI-compatible relay" IsEnabled="False" />
+                            <TextBlock x:Name="ProviderNameHintText" Text="Shown in chat headers, model pickers, and settings lists." TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <ToggleSwitch x:Name="ProviderEnabledSwitch" Header="Enabled" IsOn="True" IsEnabled="False" />
+                            <TextBlock x:Name="ProviderProtocolLabel" Text="OpenAI-compatible API" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="ProviderProtocolNote" Text="Protocol is fixed when added. Add another custom relay type to switch." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="ProviderCapabilitiesHeading" Text="Capabilities" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="ProviderCapabilitiesText" Text="Chat / Vision / Tools / Image generation / Image editing / Audio / Realtime / Embeddings / Moderation / Model list" TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="ProviderInterfacesHeading" Text="Interfaces" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="ProviderInterfacesText" Text="/chat/completions / /models" TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="ProviderCapabilityReadinessHeading" Text="Capability readiness" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="ProviderCapabilityReadinessText" Text="Missing: Embeddings / Moderation / Speech / Transcription / Realtime" TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="ProviderCapabilityReadinessNoteText" Text="Add models; Realtime needs server drill." TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="ProviderCapabilityNoteText" Text="Provider API capabilities. Chat uses chat models. Image endpoints need image models; declared audio, embeddings, moderation, and Realtime checks can use standard fallback model IDs when the catalog omits them." TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <ToggleSwitch x:Name="ProviderClientKeySwitch" Header="Client provides API key" IsOn="True" IsEnabled="False" />
+                            <TextBlock x:Name="ProviderClientKeyHintText" Text="Keep this on unless your relay injects the provider key server-side." TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <PasswordBox x:Name="ProviderKeyBox" Header="API Key" IsEnabled="False" />
+                            <TextBlock x:Name="ProviderKeyHintText" Text="Stored only on this device in secure storage and sent only when this provider needs it." TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBox x:Name="ProviderBaseUrlBox" Header="Base URL" PlaceholderText="https://relay.example.com/v1" IsEnabled="False" />
+                            <TextBlock x:Name="ProviderBaseUrlHintText" Text="Use the provider API root, usually ending in /v1; do not paste a Worker URL here." TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBox x:Name="ProviderProxyUrlBox" Header="Worker/proxy URL" IsEnabled="False" />
+                            <TextBlock x:Name="ProviderProxyUrlHintText" Text="Your Worker URL, not the provider Base URL. Leave empty to reuse the Cloudflare sync Worker; without a Worker, ZeroChat calls the provider directly." TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <ToggleSwitch x:Name="ProviderDirectSwitch" Header="Client-side direct request" IsOn="False" IsEnabled="False" />
+                            <TextBlock x:Name="ProviderDirectNote" Text="Direct mode skips the Worker. It is simpler, but this app sends the API key itself." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <Button x:Name="ProviderCheckButton" Content="Check connection" HorizontalAlignment="Stretch" IsEnabled="False" />
+                            <TextBlock x:Name="ProviderCheckNote" Text="Reads the model list only. No chat content is sent." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <Button x:Name="ProviderDeleteButton" Content="Delete provider" HorizontalAlignment="Stretch" IsEnabled="False" />
+                        </StackPanel>
+
+                        <StackPanel Spacing="8">
+                            <TextBlock x:Name="ModelsHeading" Text="Models" FontWeight="SemiBold" />
+                            <ComboBox x:Name="ModelsProviderCombo" Header="Provider" SelectedIndex="0" IsEnabled="False">
+                                <ComboBoxItem Content="Custom OpenAI-compatible relay" />
+                                <ComboBoxItem Content="OpenAI" />
+                                <ComboBoxItem Content="Anthropic" />
+                            </ComboBox>
+                            <Button x:Name="FetchModelsButton" Content="Fetch models from provider" HorizontalAlignment="Stretch" IsEnabled="False" />
+                            <TextBox x:Name="ModelListBox" Header="Model list" PlaceholderText="Type model names separated by spaces" IsEnabled="False" />
+                            <Button x:Name="AddModelButton" Content="Add model" HorizontalAlignment="Stretch" IsEnabled="False" />
+                            <TextBlock x:Name="ModelListNote" Text="Model chips can be deleted and moved up/down. Chat and image models are chosen from the configured list." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <ComboBox x:Name="DefaultModelCombo" Header="Default chat model" IsEnabled="False" />
+                            <ComboBox x:Name="ImageModelCombo" Header="Image model" IsEnabled="False" />
+                            <ComboBox x:Name="AudioSpeechModelCombo" Header="Speech model" IsEnabled="False" />
+                            <ComboBox x:Name="AudioTranscriptionModelCombo" Header="Transcription model" IsEnabled="False" />
+                            <ComboBox x:Name="EmbeddingModelCombo" Header="Embedding model" IsEnabled="False" />
+                            <ComboBox x:Name="ModerationModelCombo" Header="Moderation model" IsEnabled="False" />
+                            <ComboBox x:Name="RealtimeModelCombo" Header="Realtime model" IsEnabled="False" />
+                        </StackPanel>
+
+                            <StackPanel Spacing="8">
+                            <TextBlock x:Name="SkillsHeading" Text="Skills" FontWeight="SemiBold" />
+                            <TextBlock x:Name="SkillsHelpText" Text="Skills are encrypted with your data. Pinned skills are prioritized; automatic skills load only when relevant." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="SkillWebViewFallbackText" Text="Full Skill editing is available after the full Windows app loads. This read-only recovery screen keeps Skill edits disabled until the bundled app files are repaired." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <ToggleSwitch x:Name="SkillGlobalAutoSwitch" Header="Match relevant skills by default" IsOn="True" IsEnabled="False" />
+                            <TextBox x:Name="SkillContextBudgetBox" Header="Context budget" Text="2400" IsEnabled="False" />
+                            <TextBox x:Name="SkillAutoCountBox" Header="Auto-match count" Text="3" IsEnabled="False" />
+                            <TextBlock x:Name="SkillBudgetNoteText" Text="Only pinned skills and relevant snippets are injected when you send. Full files are not pushed into context." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <Button x:Name="ImportSkillButton" Content="Import skill" HorizontalAlignment="Stretch" IsEnabled="False" />
+                            <TextBox x:Name="SkillNameBox" Header="Skill name" PlaceholderText="For example: code review rules" IsEnabled="False" />
+                            <TextBox x:Name="SkillContentBox" Header="Skill content" PlaceholderText="Paste a workflow, rules, prompts, or project notes" AcceptsReturn="True" MinHeight="96" IsEnabled="False" />
+                            <Button x:Name="AddSkillButton" Content="Add skill" HorizontalAlignment="Stretch" IsEnabled="False" />
+                            <TextBlock x:Name="SkillMetaText" Text="0 chunks, about 0 tokens" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <ToggleSwitch x:Name="SkillEnabledSwitch" Header="Enabled" IsOn="True" IsEnabled="False" />
+                            <ToggleSwitch x:Name="SkillFixedSwitch" Header="Pinned" IsEnabled="False" />
+                            <ToggleSwitch x:Name="SkillAutoMatchSwitch" Header="Auto" IsOn="True" IsEnabled="False" />
+                            <Button x:Name="DeleteSkillButton" Content="Delete skill" HorizontalAlignment="Stretch" IsEnabled="False" />
+                        </StackPanel>
+
+                        <StackPanel Spacing="8">
+                            <TextBlock x:Name="SyncHeading" Text="Sync" FontWeight="SemiBold" />
+                            <TextBlock x:Name="SyncModeNote" Text="Choose exactly one mode. The selected mode is remembered locally." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <ComboBox x:Name="SyncModeCombo" Header="Mode" SelectedIndex="0" IsEnabled="False">
+                                <ComboBoxItem x:Name="SyncLocalItem" Content="Local" />
+                                <ComboBoxItem x:Name="SyncGistItem" Content="GitHub Gist" />
+                                <ComboBoxItem x:Name="SyncCloudflareItem" Content="Cloudflare" />
+                            </ComboBox>
+                            <TextBlock x:Name="SyncModeDescription" Text="Local is fastest. Gist is simple for small encrypted text sync. Cloudflare Worker fits long history, images, and AI proxying." TextWrapping="Wrap" />
+                            <ToggleSwitch x:Name="SyncAutoSyncSwitch" Header="Automatic sync" IsOn="False" IsEnabled="False" />
+                            <TextBlock x:Name="SyncAutoSyncNote" Text="When off, ZeroChat keeps this cloud setup and syncs only when you tap Sync now." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBox x:Name="GistIdBox" Header="Gist ID" IsEnabled="False" />
+                            <TextBlock x:Name="GistIdHintText" Text="Leave blank to create a private Gist on first sync, or paste an existing Gist ID to reuse one." TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBox x:Name="GistFileBox" Header="Gist file" Text="zerochat-sync.json" IsEnabled="False" />
+                            <TextBlock x:Name="GistFileHintText" Text="Encrypted sync payload file inside the Gist. Keep zerochat-sync.json unless you need another name." TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <PasswordBox x:Name="GithubTokenBox" Header="GitHub token" IsEnabled="False" />
+                            <TextBlock x:Name="GithubTokenHintText" Text="Stored only on this device. Needs Gist read/write permission to create and update private Gists." TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBox x:Name="CloudflareWorkerBox" Header="Cloudflare Worker URL" IsEnabled="False" />
+                            <TextBlock x:Name="CloudflareWorkerHintText" Text="Paste the HTTPS URL of your deployed ZeroChat Cloudflare Worker." TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBox x:Name="CloudflareAccessKeyBox" Header="Cloudflare access key" IsReadOnly="True" PlaceholderText="Auto-generated" IsEnabled="False" />
+                            <TextBlock x:Name="CloudflareAccessKeyHintText" Text="Derived from the data password. Copy it into the Worker secret as ZEROCHAT_ACCESS_KEY." TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="CloudflareAccessKeyNoteText" Text="Use this as ZEROCHAT_ACCESS_KEY when deploying the Worker. It cannot decrypt chats; update the Worker Secret after changing the data password." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+
+                        <StackPanel Spacing="8">
+                            <TextBlock x:Name="DataHeading" Text="Data" FontWeight="SemiBold" />
+                            <TextBlock x:Name="DataPasswordNote" Text="The data encryption password protects cloud sync and backups. Local storage is protected by this device." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <InfoBar x:Name="SyncPasswordWarning" Severity="Warning" IsOpen="True" Message="Changing the sync password is high risk: old cloud data and backups still need the old password. Reset only clears the password remembered on this device." />
+                            <PasswordBox x:Name="DataPasswordBox" Header="Data encryption password" IsEnabled="False" />
+                            <Button x:Name="SaveSyncPasswordButton" Content="Save sync password" HorizontalAlignment="Stretch" IsEnabled="False" />
+                            <Button x:Name="ResetSyncPasswordButton" Content="Reset sync password" HorizontalAlignment="Stretch" IsEnabled="False" />
+                            <InfoBar x:Name="BackupHandoffBar" Severity="Informational" IsOpen="True" Message="Encrypted backup import/export is available after the full Windows app loads. This read-only recovery screen keeps restore disabled so a partial UI cannot replace local data." />
+                            <Button x:Name="ExportBackupButton" Content="Export encrypted backup" HorizontalAlignment="Stretch" IsEnabled="False" />
+                            <Button x:Name="ImportBackupButton" Content="Import encrypted backup" HorizontalAlignment="Stretch" IsEnabled="False" />
+                            <Button x:Name="ResetLocalDataButton" Content="Reset local data" HorizontalAlignment="Stretch" IsEnabled="False" />
+                            <Button x:Name="ClearCloudDataButton" Content="Clear cloud data" HorizontalAlignment="Stretch" IsEnabled="False" />
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+
+            <Grid Grid.Row="2" RowDefinitions="Auto,Auto,Auto" Padding="16" RowSpacing="8">
+                <ComboBox x:Name="ComposeModeCombo" Header="Mode" SelectedIndex="0" Width="280">
+                    <ComboBoxItem x:Name="ComposeChatItem" Content="Chat" />
+                    <ComboBoxItem x:Name="ComposeImageItem" Content="Image" />
+                </ComboBox>
+                <StackPanel x:Name="ImageControls" Grid.Row="1" Orientation="Horizontal" Spacing="8">
+                    <ComboBox x:Name="ImageModeCombo" Header="Image mode" SelectedIndex="0" Width="220">
+                        <ComboBoxItem x:Name="ImageGenerateItem" Content="Text to image" AutomationProperties.Name="Text to image" ToolTipService.ToolTip="Text to image" />
+                        <ComboBoxItem x:Name="ImageEditItem" Content="Edit image" AutomationProperties.Name="Edit image" ToolTipService.ToolTip="Edit image" />
+                        <ComboBoxItem x:Name="ImageInpaintItem" Content="Inpaint" AutomationProperties.Name="Inpaint" ToolTipService.ToolTip="Inpaint" />
+                    </ComboBox>
+                    <Button x:Name="SourceImageButton" Content="Source image" IsEnabled="False" />
+                    <Button x:Name="MaskImageButton" Content="Mask image" IsEnabled="False" />
+                </StackPanel>
+                <Grid Grid.Row="2" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                    <TextBox x:Name="MessageBox" PlaceholderText="Message or image prompt" AcceptsReturn="True" MinHeight="48" IsEnabled="False" />
+                    <Button x:Name="SendButton" Grid.Column="1" Content="Send" IsEnabled="False" />
+                </Grid>
             </Grid>
         </Grid>
     </Grid>

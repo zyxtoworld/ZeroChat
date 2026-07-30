@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ZeroChat UI Prototype</title>
+<link rel="stylesheet" href="prototype.css">
+</head>
+<body>
+
+<div class="app-shell">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="brand">
+        <span class="brand-icon">Z</span>
+        <div class="brand-text">
+          <strong>ZeroChat</strong>
+          <span>Privacy-first AI Chat</span>
+        </div>
+      </div>
+      <button class="icon-btn" title="New Chat" aria-label="New Chat">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+    </div>
+
+    <div class="sidebar-search">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <input type="text" placeholder="搜索会话..." aria-label="搜索会话">
+    </div>
+
+    <nav class="conversation-list">
+      <div class="conversation-item active">
+        <span class="conversation-title">关于 ZeroChat 的架构设计</span>
+        <span class="conversation-time">刚刚</span>
+      </div>
+      <div class="conversation-item">
+        <span class="conversation-title">React 性能优化方案</span>
+        <span class="conversation-time">昨天</span>
+      </div>
+      <div class="conversation-item">
+        <span class="conversation-title">Rust GTK4 入门笔记</span>
+        <span class="conversation-time">3天前</span>
+      </div>
+      <div class="conversation-item">
+        <span class="conversation-title">端到端加密方案对比</span>
+        <span class="conversation-time">上周</span>
+      </div>
+      <div class="conversation-item">
+        <span class="conversation-title">Cloudflare Worker 部署</span>
+        <span class="conversation-time">上周</span>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <button class="sidebar-footer-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span>设置</span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main Chat Area -->
+  <main class="chat-pane">
+    <!-- Header -->
+    <header class="chat-header">
+      <div class="chat-title">
+        <h1>关于 ZeroChat 的架构设计</h1>
+      </div>
+      <button class="model-selector">
+        <div class="model-selector-text">
+          <strong>GPT-4o</strong>
+          <span>OpenAI</span>
+        </div>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+    </header>
+
+    <!-- Messages -->
+    <div class="message-list">
+      <div class="message user">
+        <div class="message-bubble">
+          <p>帮我分析一下 ZeroChat 项目的架构，有哪些可以改进的地方？</p>
+        </div>
+        <div class="message-avatar user-avatar">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        </div>
+      </div>
+
+      <div class="message assistant">
+        <div class="message-avatar ai-avatar">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2a4 4 0 0 0-4 4v2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2h-2V6a4 4 0 0 0-4-4z"/><circle cx="9" cy="14" r="1"/><circle cx="15" cy="14" r="1"/></svg>
+        </div>
+        <div class="message-bubble">
+          <p>从架构角度来看，ZeroChat 有几个值得改进的方向：</p>
+          <p><strong>1. 代码组织</strong></p>
+          <p>当前 Web 端的 <code>App.tsx</code> 文件超过 260KB，包含了所有业务逻辑。建议拆分为：</p>
+          <div class="code-block">
+            <div class="code-header">
+              <span>目录结构</span>
+              <button class="code-copy" title="复制">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              </button>
+            </div>
+            <pre><code>src/
+├── features/chat/       # 聊天功能
+├── features/settings/   # 设置页面
+├── features/sidebar/    # 侧边栏
+├── state/               # 状态管理
+├── services/            # 业务服务
+└── design-system/       # UI 组件库</code></pre>
+          </div>
+          <p><strong>2. 状态管理</strong></p>
+          <p>引入 Zustand 做全局状态，避免 prop drilling 和组件内直接操作 IndexedDB。</p>
+          <p><strong>3. 流式输出</strong></p>
+          <p>原生端（Android/iOS/Linux）目前没有流式响应，用户需要等待完整回复。这是体验上的最大短板。</p>
+        </div>
+      </div>
+
+      <div class="message user">
+        <div class="message-bubble">
+          <p>流式输出具体怎么实现？给个 Kotlin 的例子。</p>
+        </div>
+        <div class="message-avatar user-avatar">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        </div>
+      </div>
+
+      <div class="message assistant">
+        <div class="message-avatar ai-avatar">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2a4 4 0 0 0-4 4v2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2h-2V6a4 4 0 0 0-4-4z"/><circle cx="9" cy="14" r="1"/><circle cx="15" cy="14" r="1"/></svg>
+        </div>
+        <div class="message-bubble">
+          <div class="typing-indicator">
+            <span></span><span></span><span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Composer -->
+    <div class="composer-area">
+      <div class="composer">
+        <div class="composer-modes">
+          <button class="mode-btn active">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            聊天
+          </button>
+          <button class="mode-btn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+            图片
+          </button>
+        </div>
+        <textarea placeholder="输入消息... (Ctrl+Enter 发送)" rows="1"></textarea>
+        <button class="send-btn" aria-label="发送">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Theme Toggle (for demo) -->
+<button class="theme-toggle" onclick="toggleTheme()" title="切换主题">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+</button>
+
+<script>
+function toggleTheme() {
+  const html = document.documentElement;
+  const current = html.getAttribute('data-theme');
+  html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,203 @@
+name: Live Release Drills
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider_smoke:
+        description: Run disposable live provider smoke
+        required: true
+        type: boolean
+        default: false
+      provider_image_smoke:
+        description: Also prove disposable provider image generation/editing
+        required: true
+        type: boolean
+        default: false
+      provider_audio_smoke:
+        description: Also prove disposable provider audio speech/transcription
+        required: true
+        type: boolean
+        default: false
+      provider_low_cost_capability_smoke:
+        description: Also prove disposable provider embeddings/moderation
+        required: true
+        type: boolean
+        default: false
+      provider_realtime_smoke:
+        description: Also prove disposable provider realtime capability
+        required: true
+        type: boolean
+        default: false
+      sync_mode:
+        description: Run disposable live sync drill
+        required: true
+        type: choice
+        default: none
+        options:
+          - none
+          - cloudflare
+          - gist
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-drills-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  live-drills:
+    name: Disposable live release drills
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Check live drill safety guards
+        run: |
+          node scripts/live-provider-smoke-check.mjs
+          node scripts/live-sync-release-drill-check.mjs
+      - name: Run disposable provider API smoke
+        id: run-live-provider-api-smoke
+        if: ${{ inputs.provider_smoke == true }}
+        env:
+          ZEROCHAT_LIVE_PROVIDER_BASE_URL: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_BASE_URL }}
+          ZEROCHAT_LIVE_PROVIDER_API_KEY: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_API_KEY }}
+          ZEROCHAT_LIVE_PROVIDER_MODEL: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_MODEL }}
+          ZEROCHAT_LIVE_PROVIDER_UI_PROXY_URL: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_UI_PROXY_URL }}
+          ZEROCHAT_LIVE_PROVIDER_CONFIRM: SEND_ONE_TEST_MESSAGE
+          ZEROCHAT_LIVE_PROVIDER_IMAGE_CONFIRM: ${{ inputs.provider_image_smoke == true && 'GENERATE_ONE_TEST_IMAGE' || '' }}
+          ZEROCHAT_LIVE_PROVIDER_IMAGE_MODEL: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_IMAGE_MODEL }}
+          ZEROCHAT_LIVE_PROVIDER_IMAGE_TIMEOUT_MS: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_IMAGE_TIMEOUT_MS }}
+          ZEROCHAT_LIVE_PROVIDER_AUDIO_CONFIRM: ${{ inputs.provider_audio_smoke == true && 'RUN_ONE_AUDIO_ROUNDTRIP' || '' }}
+          ZEROCHAT_LIVE_PROVIDER_AUDIO_SPEECH_MODEL: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_AUDIO_SPEECH_MODEL }}
+          ZEROCHAT_LIVE_PROVIDER_AUDIO_TRANSCRIPTION_MODEL: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_AUDIO_TRANSCRIPTION_MODEL }}
+          ZEROCHAT_LIVE_PROVIDER_AUDIO_TIMEOUT_MS: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_AUDIO_TIMEOUT_MS }}
+          ZEROCHAT_LIVE_PROVIDER_CAPABILITY_CONFIRM: ${{ inputs.provider_low_cost_capability_smoke == true && 'CHECK_LOW_COST_CAPABILITIES' || '' }}
+          ZEROCHAT_LIVE_PROVIDER_EMBEDDING_MODEL: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_EMBEDDING_MODEL }}
+          ZEROCHAT_LIVE_PROVIDER_MODERATION_MODEL: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_MODERATION_MODEL }}
+          ZEROCHAT_LIVE_PROVIDER_CAPABILITY_TIMEOUT_MS: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_CAPABILITY_TIMEOUT_MS }}
+          ZEROCHAT_LIVE_PROVIDER_REALTIME_CONFIRM: ${{ inputs.provider_realtime_smoke == true && 'CHECK_ONE_REALTIME_SESSION' || '' }}
+          ZEROCHAT_LIVE_PROVIDER_REALTIME_MODEL: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_REALTIME_MODEL }}
+          ZEROCHAT_LIVE_PROVIDER_REALTIME_TIMEOUT_MS: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_REALTIME_TIMEOUT_MS }}
+          ZEROCHAT_LIVE_PROVIDER_REPORT: .manual-qa/live-provider-smoke.json
+        run: |
+          if [ -z "$ZEROCHAT_LIVE_PROVIDER_BASE_URL" ] || [ -z "$ZEROCHAT_LIVE_PROVIDER_API_KEY" ]; then
+            echo "::error::Set ZEROCHAT_LIVE_PROVIDER_BASE_URL and ZEROCHAT_LIVE_PROVIDER_API_KEY repository secrets before running provider_smoke."
+            exit 1
+          fi
+          node scripts/live-provider-smoke.mjs
+      - name: Validate live provider API smoke report
+        id: validate-live-provider-api-report
+        if: ${{ always() && inputs.provider_smoke == true }}
+        run: node scripts/runtime-smoke-artifact-check.mjs --only-live-provider-api-report --require-live-provider-api-report=.manual-qa/live-provider-smoke.json
+      - name: Validate full-capability live provider report
+        id: validate-live-provider-full-capability-report
+        if: ${{ always() && inputs.provider_smoke == true && inputs.provider_image_smoke == true && inputs.provider_audio_smoke == true && inputs.provider_low_cost_capability_smoke == true && inputs.provider_realtime_smoke == true && steps.validate-live-provider-api-report.outcome == 'success' }}
+        run: node scripts/runtime-smoke-artifact-check.mjs --only-live-provider-api-report --require-live-provider-full-capability-report=.manual-qa/live-provider-smoke.json
+      - name: Promote full-capability live provider report
+        id: promote-live-provider-full-capability-report
+        if: ${{ always() && steps.validate-live-provider-full-capability-report.outcome == 'success' }}
+        run: |
+          cp .manual-qa/live-provider-smoke.json .manual-qa/live-provider-smoke-full-current.json
+          node scripts/runtime-smoke-artifact-check.mjs --only-live-provider-api-report --require-live-provider-full-capability-report=.manual-qa/live-provider-smoke-full-current.json
+      - name: Upload live provider API smoke report
+        if: ${{ always() && inputs.provider_smoke == true && (steps.run-live-provider-api-smoke.outcome == 'success' || steps.run-live-provider-api-smoke.outcome == 'failure') && steps.validate-live-provider-api-report.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-provider-smoke-report
+          path: .manual-qa/live-provider-smoke.json
+          if-no-files-found: error
+      - name: Upload full-capability live provider report
+        if: ${{ always() && inputs.provider_smoke == true && inputs.provider_image_smoke == true && inputs.provider_audio_smoke == true && inputs.provider_low_cost_capability_smoke == true && inputs.provider_realtime_smoke == true && steps.promote-live-provider-full-capability-report.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-provider-full-capability-report
+          path: .manual-qa/live-provider-smoke-full-current.json
+          if-no-files-found: error
+      - name: Run disposable provider UI smoke
+        id: run-live-provider-ui-smoke
+        if: ${{ always() && inputs.provider_smoke == true && (steps.run-live-provider-api-smoke.outcome == 'success' || steps.run-live-provider-api-smoke.outcome == 'failure') && steps.validate-live-provider-api-report.outcome == 'success' }}
+        env:
+          ZEROCHAT_LIVE_PROVIDER_BASE_URL: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_BASE_URL }}
+          ZEROCHAT_LIVE_PROVIDER_API_KEY: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_API_KEY }}
+          ZEROCHAT_LIVE_PROVIDER_MODEL: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_MODEL }}
+          ZEROCHAT_LIVE_PROVIDER_UI_PROXY_URL: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_UI_PROXY_URL }}
+          ZEROCHAT_LIVE_PROVIDER_UI_SYNC_PASSPHRASE: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_UI_SYNC_PASSPHRASE }}
+          ZEROCHAT_LIVE_PROVIDER_UI_WORKER_HOSTS_KEY: ${{ secrets.ZEROCHAT_LIVE_PROVIDER_UI_WORKER_HOSTS_KEY }}
+          ZEROCHAT_LIVE_PROVIDER_UI_SCREENSHOT: .manual-qa/web-live-ui-provider-smoke.png
+          ZEROCHAT_LIVE_PROVIDER_UI_REPORT: .manual-qa/live-provider-ui-smoke-current.json
+          ZEROCHAT_LIVE_PROVIDER_UI_ATTEMPT_REPORT: .manual-qa/live-provider-ui-smoke-attempt-current.json
+          ZEROCHAT_LIVE_PROVIDER_CONFIRM: SEND_ONE_TEST_MESSAGE
+        run: |
+          node scripts/live-provider-ui-smoke.mjs
+      - name: Validate live provider UI smoke report
+        id: validate-live-provider-ui-report
+        if: ${{ always() && inputs.provider_smoke == true && (steps.run-live-provider-ui-smoke.outcome == 'success' || steps.run-live-provider-ui-smoke.outcome == 'failure') }}
+        run: node scripts/release-blocker-report.mjs --check-live-provider-ui-report --live-provider-ui-report=.manual-qa/live-provider-ui-smoke-current.json --live-provider-ui-attempt-report=.manual-qa/live-provider-ui-smoke-attempt-current.json
+      - name: Upload live provider UI smoke report
+        if: ${{ always() && inputs.provider_smoke == true && steps.validate-live-provider-ui-report.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-provider-ui-smoke-report
+          path: |
+            .manual-qa/live-provider-ui-smoke-current.json
+            .manual-qa/live-provider-ui-smoke-attempt-current.json
+          if-no-files-found: error
+      - name: Validate live provider UI smoke screenshot
+        id: validate-live-provider-ui-screenshot
+        if: ${{ always() && inputs.provider_smoke == true && steps.validate-live-provider-ui-report.outcome == 'success' }}
+        run: node scripts/runtime-smoke-artifact-check.mjs --only-live-provider-ui-screenshot --require-live-provider-ui-screenshot=.manual-qa/web-live-ui-provider-smoke.png
+      - name: Upload live provider UI smoke screenshot
+        if: ${{ always() && inputs.provider_smoke == true && steps.validate-live-provider-ui-screenshot.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-live-ui-provider-smoke
+          path: .manual-qa/web-live-ui-provider-smoke.png
+          if-no-files-found: error
+      - name: Run disposable Cloudflare sync drill
+        id: run-cloudflare-live-sync-drill
+        if: ${{ inputs.sync_mode == 'cloudflare' }}
+        env:
+          ZEROCHAT_LIVE_SYNC_MODE: cloudflare
+          ZEROCHAT_LIVE_SYNC_PASSPHRASE: ${{ secrets.ZEROCHAT_LIVE_SYNC_PASSPHRASE }}
+          ZEROCHAT_LIVE_WORKER_ENDPOINT: ${{ secrets.ZEROCHAT_LIVE_WORKER_ENDPOINT }}
+          ZEROCHAT_LIVE_SYNC_CONFIRM: DELETE_REMOTE_ZEROCHAT_TEST_DATA
+        run: node scripts/live-sync-release-drill.mjs
+      - name: Run disposable Gist sync drill
+        id: run-gist-live-sync-drill
+        if: ${{ inputs.sync_mode == 'gist' }}
+        env:
+          ZEROCHAT_LIVE_SYNC_MODE: gist
+          ZEROCHAT_LIVE_SYNC_PASSPHRASE: ${{ secrets.ZEROCHAT_LIVE_SYNC_PASSPHRASE }}
+          ZEROCHAT_LIVE_GITHUB_TOKEN: ${{ secrets.ZEROCHAT_LIVE_GITHUB_TOKEN }}
+          ZEROCHAT_LIVE_GIST_ID: ${{ secrets.ZEROCHAT_LIVE_GIST_ID }}
+          ZEROCHAT_LIVE_GIST_FILE: ${{ secrets.ZEROCHAT_LIVE_GIST_FILE }}
+          ZEROCHAT_LIVE_SYNC_CONFIRM: DELETE_REMOTE_ZEROCHAT_TEST_DATA
+        run: node scripts/live-sync-release-drill.mjs
+      - name: Validate live sync drill report
+        id: validate-live-sync-report
+        if: ${{ always() && inputs.sync_mode != 'none' }}
+        run: node scripts/runtime-smoke-artifact-check.mjs --only-live-sync-report --require-live-sync-report=.manual-qa/live-sync-release-drill.json
+      - name: Validate passing live sync drill report
+        id: validate-live-sync-passed-report
+        if: ${{ always() && inputs.sync_mode != 'none' && (steps.run-cloudflare-live-sync-drill.outcome == 'success' || steps.run-gist-live-sync-drill.outcome == 'success') }}
+        run: pnpm run check:live-sync-release-pass
+      - name: Upload live sync drill report
+        if: ${{ always() && inputs.sync_mode != 'none' && (steps.run-cloudflare-live-sync-drill.outcome == 'success' || steps.run-cloudflare-live-sync-drill.outcome == 'failure' || steps.run-gist-live-sync-drill.outcome == 'success' || steps.run-gist-live-sync-drill.outcome == 'failure') && steps.validate-live-sync-report.outcome == 'success' && (steps.validate-live-sync-passed-report.outcome == 'success' || steps.validate-live-sync-passed-report.outcome == 'skipped') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-sync-release-drill-report
+          path: .manual-qa/live-sync-release-drill.json
+          if-no-files-found: error
+      - name: Check local runtime cleanup
+        if: ${{ always() }}
+        run: pnpm run check:local-cleanup

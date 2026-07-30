@@ -1,0 +1,60 @@
+mod ai;
+mod ai_protocol;
+mod app_state;
+mod appearance_settings;
+mod application;
+mod auto_sync;
+mod auto_sync_state;
+mod background;
+mod backup;
+mod chat_composer;
+mod chat_image_controls;
+mod chat_mode_controls;
+mod chat_retry_policy;
+mod chat_send_actions;
+mod chat_view;
+mod conversations;
+mod crypto;
+mod data_settings;
+mod defaults;
+mod dialogs;
+mod i18n;
+mod image_request_policy;
+mod local_data_transition;
+mod local_file;
+mod media;
+mod message_actions;
+mod message_attachments;
+mod messages;
+mod model_settings;
+mod models;
+mod provider_settings;
+mod providers;
+mod secret_store;
+mod settings_window;
+mod sidebar;
+mod skill_list;
+mod skill_settings;
+mod skills;
+mod storage;
+mod sync;
+mod sync_cloudflare;
+mod sync_gist;
+mod sync_gist_protocol;
+mod sync_http_body;
+mod sync_incremental_engine;
+mod sync_incremental_helpers;
+mod sync_incremental_read;
+mod sync_incremental_remote;
+mod sync_incremental_upload;
+mod sync_merge;
+mod sync_settings;
+mod sync_vault_validation;
+mod ui_helpers;
+
+pub(crate) use app_state::{ImageTaskMode, LinuxAppState};
+pub(crate) use application::{APP_ID, STREAMING_UI_FRAME_MS, set_window_content};
+
+pub fn run() -> gtk::glib::ExitCode {
+    application::run()
+}

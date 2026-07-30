@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -8,6 +10,7 @@ namespace ZeroChat
     enum class ProviderKind
     {
         OpenAICompatible,
+        OpenAIResponses,
         Anthropic
     };
 
@@ -25,11 +28,69 @@ namespace ZeroChat
         ProviderKind kind{ ProviderKind::OpenAICompatible };
         std::wstring baseUrl;
         std::wstring proxyUrl;
+        bool clientRequestMode{ false };
         std::wstring model;
+        std::wstring imageModel;
+        std::wstring audioSpeechModel;
+        std::wstring audioTranscriptionModel;
+        std::wstring embeddingModel;
+        std::wstring moderationModel;
+        std::wstring realtimeModel;
+        std::vector<std::wstring> models;
+        std::vector<std::wstring> capabilities;
         bool enabled{ true };
         bool needsApiKey{ true };
+        bool custom{ false };
         int64_t createdAt{ 0 };
         int64_t updatedAt{ 0 };
+    };
+
+    struct MessageAttachment
+    {
+        std::wstring id;
+        std::wstring kind{ L"image" };
+        std::wstring purpose;
+        std::wstring mimeType{ L"image/png" };
+        std::wstring dataUrl;
+        std::wstring url;
+        std::wstring alt;
+        std::wstring model;
+        int64_t createdAt{ 0 };
+    };
+
+    struct GeneratedImage
+    {
+        std::wstring dataUrl;
+        std::wstring url;
+        std::wstring mimeType{ L"image/png" };
+        std::wstring revisedPrompt;
+    };
+
+    struct ImageUpload
+    {
+        std::vector<uint8_t> bytes;
+        std::wstring fileName{ L"image.png" };
+        std::wstring mimeType{ L"image/png" };
+    };
+
+    struct AudioUpload
+    {
+        std::vector<uint8_t> bytes;
+        std::wstring fileName{ L"audio.webm" };
+        std::wstring mimeType{ L"audio/webm" };
+    };
+
+    struct QueuedTextRequest
+    {
+        std::wstring providerId;
+        std::wstring model;
+        std::optional<std::wstring> promptMessageId;
+    };
+
+    struct OfflineReplayClaim
+    {
+        std::wstring claimId;
+        std::wstring owner;
     };
 
     struct ChatMessage
@@ -40,6 +101,9 @@ namespace ZeroChat
         int64_t createdAt{ 0 };
         std::wstring status{ L"done" };
         std::wstring error;
+        std::vector<MessageAttachment> attachments;
+        QueuedTextRequest queuedTextRequest;
+        std::optional<OfflineReplayClaim> offlineReplayClaim;
     };
 
     struct Conversation
@@ -69,9 +133,48 @@ namespace ZeroChat
     {
         bool firstRunDone{ false };
         std::wstring theme{ L"system" };
+        std::wstring language{ L"system" };
         bool compactMode{ false };
+        int chatContextMessageLimit{ 24 };
         std::wstring activeConversationId;
         std::vector<std::wstring> dismissedDangerWarnings;
+        std::vector<std::wstring> dismissedFeatureHints;
+    };
+
+    struct UserSkillChunk
+    {
+        std::wstring id;
+        std::wstring heading;
+        std::wstring content;
+        std::wstring contentRef;
+        std::wstring contentPreview;
+        std::vector<std::wstring> keywords;
+        int tokenEstimate{ 0 };
+    };
+
+    struct UserSkill
+    {
+        std::wstring id;
+        std::wstring name;
+        std::wstring description;
+        std::wstring fileName;
+        std::wstring contentType{ L"text" };
+        int sourceSize{ 0 };
+        std::wstring contentHash;
+        std::vector<std::wstring> keywords;
+        std::vector<UserSkillChunk> chunks;
+        bool fixed{ false };
+        bool enabled{ true };
+        bool autoMatch{ true };
+        int64_t createdAt{ 0 };
+        int64_t updatedAt{ 0 };
+    };
+
+    struct SkillSettings
+    {
+        bool autoMatch{ true };
+        int contextBudget{ 2400 };
+        int maxAutoSkills{ 3 };
     };
 
     struct AppSnapshot
@@ -79,6 +182,8 @@ namespace ZeroChat
         int version{ 1 };
         std::vector<ProviderConfig> providers;
         std::vector<Conversation> conversations;
+        std::vector<UserSkill> skills;
+        SkillSettings skillSettings;
         SyncConfig sync;
         Preferences preferences;
         int64_t updatedAt{ 0 };

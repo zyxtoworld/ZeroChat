@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ZeroChat</string>
+    <string name="zerochat_widget_description">Inicie uma nova conversa no ZeroChat.</string>
+    <string name="zerochat_widget_title">Nova conversa</string>
+    <string name="zerochat_widget_body">Local primeiro. Sincronize depois.</string>
+    <string name="zerochat_widget_action">Perguntar agora</string>
+    <string name="zerochat_widget_accessibility">ZeroChat Quick Ask. Nova conversa. Local primeiro. Sincronize depois. Perguntar agora.</string>
+</resources>

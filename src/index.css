@@ -1,25 +1,15 @@
+@import './design-system/tokens.css';
+@import './design-system/reset.css';
+@import './design-system/animations.css';
+
 :root {
-  --bg: #f6f4ef;
-  --side: #efeee7;
-  --surface: #fffefa;
-  --field: #f8f7f1;
-  --text: #26302b;
-  --text-strong: #121815;
-  --muted: #66716a;
-  --border: #d9ddd4;
-  --accent: #0f7f68;
-  --accent-border: #81bdae;
-  --accent-soft: #e0f2ec;
-  --focus: rgba(15, 127, 104, 0.18);
-  --user-surface: #eff7f4;
-  --user-border: #b9d8cf;
-  --danger: #a4483d;
-  --danger-border: #d9aaa2;
-  --danger-soft: #fae9e6;
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
   color-scheme: light;
-  font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
+  font-family: "Inter Variable", "SF Pro Display", -apple-system,
+    BlinkMacSystemFont, "Segoe UI Variable", sans-serif;
   font-size: 15px;
   line-height: 1.5;
   font-weight: 400;
@@ -32,69 +22,118 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    --bg: #141611;
-    --side: #191c16;
-    --surface: #20231d;
-    --field: #181b16;
-    --text: #dde3d9;
-    --text-strong: #f5f8f2;
-    --muted: #a5aea2;
-    --border: #3a4035;
-    --accent: #4fb89c;
-    --accent-border: #377e6c;
-    --accent-soft: #213d35;
-    --focus: rgba(79, 184, 156, 0.22);
-    --user-surface: #1d332d;
-    --user-border: #326657;
-    --danger: #ef9a8e;
-    --danger-border: #855248;
-    --danger-soft: #40251f;
-    color-scheme: dark;
-  }
-}
-
-:root[data-theme='dark'] {
-  --bg: #141611;
-  --side: #191c16;
-  --surface: #20231d;
-  --field: #181b16;
-  --text: #dde3d9;
-  --text-strong: #f5f8f2;
-  --muted: #a5aea2;
-  --border: #3a4035;
-  --accent: #4fb89c;
-  --accent-border: #377e6c;
-  --accent-soft: #213d35;
-  --focus: rgba(79, 184, 156, 0.22);
-  --user-surface: #1d332d;
-  --user-border: #326657;
-  --danger: #ef9a8e;
-  --danger-border: #855248;
-  --danger-soft: #40251f;
-  color-scheme: dark;
-}
-
 :root[data-compact='true'] {
   font-size: 14px;
 }
 
 * {
   box-sizing: border-box;
+  scrollbar-color: color-mix(in srgb, var(--muted) 42%, transparent)
+    transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 38%, transparent);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--muted) 56%, transparent);
+  background-clip: padding-box;
 }
 
 html,
 body,
 #root {
-  min-width: 320px;
+  min-width: 0;
   min-height: 100%;
+  height: 100%;
   margin: 0;
 }
 
 body {
   margin: 0;
   background: var(--bg);
+  overflow: hidden;
+}
+
+.initial-state {
+  min-height: 100svh;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  padding:
+    max(24px, var(--safe-area-top))
+    max(24px, var(--safe-area-right))
+    max(24px, var(--safe-area-bottom))
+    max(24px, var(--safe-area-left));
+  overflow: hidden;
+  text-align: center;
+}
+
+.initial-state h1 {
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 32px;
+  line-height: 1.12;
+  overflow-wrap: anywhere;
+}
+
+.initial-state p {
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.startup-failure-state button {
+  min-width: 0;
+  min-height: 44px;
+  max-width: 100%;
+  margin-top: 8px;
+  padding: 9px 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+  cursor: pointer;
+}
+
+.startup-failure-state button:hover {
+  background: color-mix(in srgb, var(--accent) 88%, var(--text-strong));
+}
+
+.startup-failure-state button svg {
+  flex: 0 0 auto;
 }
 
 button,
@@ -110,4 +149,23 @@ select:focus-visible,
 textarea:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+@media (max-width: 280px) {
+  .initial-state {
+    padding: 14px;
+    gap: 7px;
+  }
+
+  .initial-state h1 {
+    font-size: 26px;
+  }
+
+  .initial-state p {
+    font-size: 13px;
+  }
+
+  .startup-failure-state button {
+    width: 100%;
+  }
 }

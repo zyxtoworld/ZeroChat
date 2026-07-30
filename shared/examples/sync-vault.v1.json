@@ -1,0 +1,30 @@
+{
+  "data": {
+    "version": 1,
+    "providers": [],
+    "conversations": [],
+    "skills": [],
+    "skillSettings": {
+      "autoMatch": true,
+      "contextBudget": 2400,
+      "maxAutoSkills": 3
+    },
+    "sync": {
+      "mode": "cloudflare",
+      "autoSync": true,
+      "encryptionEnabled": true
+    },
+    "preferences": {
+      "firstRunDone": true,
+      "theme": "system",
+      "language": "system",
+      "compactMode": false
+    },
+    "updatedAt": 1760000001000
+  },
+  "secrets": {
+    "providerKeys": {
+      "provider-openai-responses": "example-provider-key"
+    }
+  }
+}

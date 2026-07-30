@@ -3,16 +3,46 @@ main = "sync-worker.js"
 compatibility_date = "2026-05-01"
 
 [vars]
-SYNC_TOKEN = "replace-with-a-long-random-token"
-PROXY_TOKEN = "replace-with-a-different-long-random-token"
-ALLOWED_HOSTS = "api.openai.com,api.anthropic.com,generativelanguage.googleapis.com,api.deepseek.com,api.x.ai,openrouter.ai,api.mistral.ai,api.groq.com,api.together.xyz,api.fireworks.ai,api.cerebras.ai,integrate.api.nvidia.com,api.deepinfra.com,api.novita.ai,api.siliconflow.cn,api-inference.modelscope.cn,dashscope.aliyuncs.com,api.moonshot.cn,open.bigmodel.cn,qianfan.baidubce.com,api.hunyuan.cloud.tencent.com,api.minimax.io,ark.cn-beijing.volces.com,gateway.ai.cloudflare.com"
-# Optional. Set this after deployment to the exact origins you use, for example:
+# This is not the raw data encryption password. ZeroChat derives it from the
+# password in Settings > Data and shows the value to paste here.
+# Leaving this placeholder unchanged will make the Worker report setup incomplete.
+ZEROCHAT_ACCESS_KEY = "replace-with-zerochat-derived-access-key"
+# Official/preconfigured AI provider hosts are allowed by default.
+# Custom relay hosts are learned automatically after the first valid access key request.
+# Web/PWA also replaces the learned custom host list after provider edits, deletes, imports, or sync changes.
+# Optional. Add custom relay hosts manually when you want a fixed list.
+# Host names and HTTPS Base URLs are accepted.
+# ALLOWED_HOSTS = "relay.example.com,https://another-relay.example.com/v1"
+# Optional. Disable the default provider host list for a stricter deployment:
+# ALLOW_DEFAULT_PROVIDER_HOSTS = "false"
+# Optional. Disable automatic custom relay host learning for a stricter deployment:
+# AUTO_ALLOWED_HOSTS = "false"
+# Browser origins are learned automatically after the first valid access key request.
+# Optional. For a locked-down deployment, disable automatic origin learning and set exact origins:
+# AUTO_ALLOWED_ORIGINS = "false"
 # ALLOWED_ORIGINS = "https://zerochat.pages.dev,http://localhost:5173"
+# REQUIRE_ALLOWED_ORIGINS = "true"
+# Optional. Limit how many browser origins can be learned automatically:
+# MAX_AUTO_ALLOWED_ORIGINS = "8"
+# Optional. Store provider keys in your own Worker so the browser does not send them.
+# A non-empty PROVIDER_KEYS exact-host JSON mapping enables this mode automatically.
+# Do not put real provider API keys in this file. Use:
+# pnpm dlx wrangler secret put PROVIDER_KEYS
+# Optional. Increase if image edit uploads are larger than 24 MB:
+# MAX_PROXY_BYTES = "24000000"
 
 [[kv_namespaces]]
-binding = "ZEROCHAT_SYNC"
+binding = "zerochat_kv"
 id = "replace-with-your-kv-namespace-id"
 
 [[r2_buckets]]
-binding = "ZEROCHAT_BLOBS"
-bucket_name = "zerochat-blobs"
+binding = "zerochat_r2"
+bucket_name = "zerochat"
+
+[[durable_objects.bindings]]
+name = "ZEROCHAT_SYNC_COORDINATOR"
+class_name = "ZeroChatSyncCoordinator"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ZeroChatSyncCoordinator"]

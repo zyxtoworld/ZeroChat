@@ -1,3 +1,6 @@
+import { rt } from '../i18n'
+import { abortIndexedDbTransactionOrReject } from './indexedDbAbortFailure'
+
 const LOCAL_CRYPTO_DB_NAME = 'zerochat-local-crypto'
 const LOCAL_CRYPTO_DB_VERSION = 1
 const LOCAL_CRYPTO_STORE = 'keys'
@@ -73,16 +76,123 @@ function keyTransaction<T>(
   return openLocalCryptoDatabase().then(
     (db) =>
       new Promise((resolve, reject) => {
-        const tx = db.transaction(LOCAL_CRYPTO_STORE, mode)
-        const store = tx.objectStore(LOCAL_CRYPTO_STORE)
-        const request = run(store)
+        let completed = false
+        let tx: IDBTransaction
+        let requestResult: T | undefined
+        let request: IDBRequest<T>
 
-        request.onerror = () => reject(request.error)
-        request.onsuccess = () => resolve(request.result)
-        tx.oncomplete = () => db.close()
-        tx.onerror = () => {
+        const rejectOnce = (error: unknown) => {
+          if (completed) {
+            return
+          }
+
+          completed = true
           db.close()
-          reject(tx.error)
+          reject(error)
+        }
+
+        try {
+          tx = db.transaction(LOCAL_CRYPTO_STORE, mode)
+          const store = tx.objectStore(LOCAL_CRYPTO_STORE)
+          request = run(store)
+        } catch (error: unknown) {
+          rejectOnce(error)
+          return
+        }
+
+        request.onerror = () => rejectOnce(request.error ?? tx.error)
+        request.onsuccess = () => {
+          requestResult = request.result
+        }
+        tx.oncomplete = () => {
+          if (completed) {
+            return
+          }
+
+          completed = true
+          db.close()
+          resolve(requestResult as T)
+        }
+        tx.onerror = () => {
+          rejectOnce(tx.error ?? request.error)
+        }
+        tx.onabort = () => {
+          rejectOnce(tx.error ?? request.error)
+        }
+      }),
+  )
+}
+
+function installLocalKeyIfMissing(candidate: CryptoKey): Promise<CryptoKey> {
+  return openLocalCryptoDatabase().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        let completed = false
+        let operationError: unknown
+        let selectedKey: CryptoKey | undefined
+        let tx: IDBTransaction | undefined
+        let getRequest: IDBRequest<CryptoKey | undefined> | undefined
+
+        const rejectOnce = (error: unknown) => {
+          if (completed) {
+            return
+          }
+
+          completed = true
+          db.close()
+          reject(error)
+        }
+
+        const abortWith = (error: unknown) => {
+          operationError = error
+          abortIndexedDbTransactionOrReject(tx, error, rejectOnce)
+        }
+
+        try {
+          tx = db.transaction(LOCAL_CRYPTO_STORE, 'readwrite')
+          tx.oncomplete = () => {
+            if (completed) {
+              return
+            }
+
+            if (!selectedKey) {
+              rejectOnce(
+                new Error('Local encryption key transaction completed without a key.'),
+              )
+              return
+            }
+
+            completed = true
+            db.close()
+            resolve(selectedKey)
+          }
+          tx.onerror = () =>
+            rejectOnce(operationError ?? tx?.error ?? getRequest?.error)
+          tx.onabort = () =>
+            rejectOnce(operationError ?? tx?.error ?? getRequest?.error)
+
+          const store = tx.objectStore(LOCAL_CRYPTO_STORE)
+          getRequest = store.get(LOCAL_CRYPTO_KEY)
+          getRequest.onerror = () => rejectOnce(getRequest?.error ?? tx?.error)
+          getRequest.onsuccess = () => {
+            if (getRequest?.result) {
+              selectedKey = getRequest.result
+              return
+            }
+
+            selectedKey = candidate
+
+            try {
+              const addRequest = store.add(candidate, LOCAL_CRYPTO_KEY)
+              addRequest.onerror = () => {
+                rejectOnce(addRequest.error ?? tx?.error)
+              }
+            } catch (error: unknown) {
+              abortWith(error)
+            }
+          }
+        } catch (error: unknown) {
+          abortWith(error)
         }
       }),
   )
@@ -106,8 +216,7 @@ async function loadLocalKey(): Promise<CryptoKey> {
     ['encrypt', 'decrypt'],
   )
 
-  await keyTransaction('readwrite', (store) => store.put(key, LOCAL_CRYPTO_KEY))
-  return key
+  return installLocalKeyIfMissing(key)
 }
 
 function getLocalKey(): Promise<CryptoKey> {
@@ -170,7 +279,7 @@ export async function decryptLocalString(
   const actualAad = base64ToBytes(record.aad)
 
   if (bytesToBase64(expectedAad) !== bytesToBase64(actualAad)) {
-    throw new Error('本机加密数据的认证信息不匹配')
+    throw new Error(rt('error.localDataBadAuth'))
   }
 
   const decrypted = await crypto.subtle.decrypt(

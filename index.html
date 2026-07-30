@@ -2,18 +2,49 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="manifest" href="/manifest.webmanifest" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0f7f68" />
+    <meta
+      data-zerochat-windows-csp
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; script-src 'self'; connect-src 'self' https: wss: ws:; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; media-src 'self' blob:; font-src 'self' data:; worker-src 'self' blob:"
+    />
+    <link rel="icon" href="./favicon.ico" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="apple-touch-icon" href="./icon-180.png" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#fafbfc" />
     <meta
       name="description"
-      content="ZeroChat 是本地优先的轻量 AI 聊天工具。"
+      content="隐私优先的 AI 聊天"
     />
+    <script src="%BASE_URL%zerochat-startup.js" defer vite-ignore></script>
     <title>ZeroChat</title>
   </head>
   <body>
-    <div id="root"></div>
+    <noscript>
+      <style>
+        body{margin:0;min-height:100vh;display:grid;place-items:center;background:#fafbfc;color:#111827;font-family:system-ui,sans-serif}
+        .noscript-shell{width:min(520px,calc(100% - 32px));border:1px solid #e5e7eb;border-radius:8px;background:#fff;padding:22px;text-align:center}
+        #root {
+          display: none;
+        }
+      </style>
+      <main class="noscript-shell">
+        <img src="./favicon.svg" width="64" height="64" alt="" aria-hidden="true" />
+        <h1>ZeroChat</h1>
+        <p>ZeroChat 需要 JavaScript。ZeroChat needs JavaScript.</p>
+      </main>
+    </noscript>
+    <div id="root">
+      <main class="initial-state" aria-live="polite">
+        <img class="app-logo app-logo-empty" src="./favicon.svg" alt="" aria-hidden="true" />
+        <h1>ZeroChat</h1>
+        <p data-initial-loading>正在载入... / Loading...</p>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

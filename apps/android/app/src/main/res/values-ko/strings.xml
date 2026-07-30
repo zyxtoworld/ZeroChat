@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ZeroChat</string>
+    <string name="zerochat_widget_description">ZeroChat 새 대화를 빠르게 시작합니다.</string>
+    <string name="zerochat_widget_title">새 채팅</string>
+    <string name="zerochat_widget_body">로컬 우선. 동기화는 나중에.</string>
+    <string name="zerochat_widget_action">지금 질문</string>
+    <string name="zerochat_widget_accessibility">ZeroChat Quick Ask. 새 채팅. 로컬 우선. 동기화는 나중에. 지금 질문.</string>
+</resources>

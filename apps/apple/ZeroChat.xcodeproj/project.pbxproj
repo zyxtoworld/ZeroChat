@@ -1,0 +1,790 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		2D6F4D0A2A3E4C1900010001 /* ZeroChatApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010011 /* ZeroChatApp.swift */; };
+		2D6F4D0A2A3E4C1900010002 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010012 /* ChatView.swift */; };
+		2D6F4D0A2A3E4C1900010003 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010013 /* SettingsView.swift */; };
+		2D6F4D0A2A3E4C1900010004 /* NativeI18n.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010014 /* NativeI18n.swift */; };
+		2D6F4D0A2A3E4C1900010080 /* MessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010081 /* MessageBubble.swift */; };
+		2D6F4D0A2A3E4C1900010082 /* ComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010083 /* ComposerView.swift */; };
+		2D6F4D0A2A3E4C1900010084 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010085 /* OnboardingView.swift */; };
+		2D6F4D0A2A3E4C1900010086 /* SkillHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010087 /* SkillHelpers.swift */; };
+		2D6F4D0A2A3E4C1900010088 /* ProviderEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010089 /* ProviderEditor.swift */; };
+		2D6F4D0A2A3E4C1900010090 /* SkillEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010091 /* SkillEditor.swift */; };
+		2D6F4D0A2A3E4C1900010092 /* SettingsTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010093 /* SettingsTab.swift */; };
+		2D6F4D0A2A3E4C1900010094 /* SettingsSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010095 /* SettingsSupport.swift */; };
+		2D6F4D0A2A3E4C1900010096 /* ModelSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010097 /* ModelSettingsView.swift */; };
+		2D6F4D0A2A3E4C1900010098 /* SyncSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010099 /* SyncSettingsView.swift */; };
+		2D6F4D0A2A3E4C190001009A /* SkillSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C190001009B /* SkillSettingsView.swift */; };
+		2D6F4D0A2A3E4C190001009C /* DataSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C190001009D /* DataSettingsView.swift */; };
+		2D6F4D0A2A3E4C190001009E /* AppearanceSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C190001009F /* AppearanceSettingsView.swift */; };
+		2D6F4D0A2A3E4C19000100A0 /* ProviderSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100A1 /* ProviderSettingsView.swift */; };
+		2D6F4D0A2A3E4C19000100A2 /* AppleCloudSyncStatusStrip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100A3 /* AppleCloudSyncStatusStrip.swift */; };
+		2D6F4D0A2A3E4C19000100A4 /* ChatHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100A5 /* ChatHeaderView.swift */; };
+		2D6F4D0A2A3E4C19000100A6 /* AppNoticeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100A7 /* AppNoticeView.swift */; };
+		2D6F4D0A2A3E4C19000100A8 /* ApplePlatformServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100A9 /* ApplePlatformServices.swift */; };
+		2D6F4D0A2A3E4C19000100AA /* AppleChatTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100AB /* AppleChatTypes.swift */; };
+		2D6F4D0A2A3E4C19000100AC /* AppleWindowActivationReporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100AD /* AppleWindowActivationReporter.swift */; };
+		2D6F4D0A2A3E4C19000100AE /* AppleChatHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100AF /* AppleChatHelpers.swift */; };
+		2D6F4D0A2A3E4C19000100B0 /* AppleModelCatalogHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100B1 /* AppleModelCatalogHelpers.swift */; };
+		2D6F4D0A2A3E4C19000100B2 /* AppleChatReadinessHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100B3 /* AppleChatReadinessHelpers.swift */; };
+		2D6F4D0A2A3E4C19000100B4 /* AppleImageRequestPreflight.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100B5 /* AppleImageRequestPreflight.swift */; };
+		2D6F4D0A2A3E4C19000100B6 /* AppleChatRequestPreflight.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100B7 /* AppleChatRequestPreflight.swift */; };
+		2D6F4D0A2A3E4C19000100B8 /* AppleChatMessageStateHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100B9 /* AppleChatMessageStateHelpers.swift */; };
+		2D6F4D0A2A3E4C19000100BA /* AppleConversationStateHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100BB /* AppleConversationStateHelpers.swift */; };
+		2D6F4D0A2A3E4C19000100BC /* AppleProviderModelSelectionHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100BD /* AppleProviderModelSelectionHelpers.swift */; };
+		2D6F4D0A2A3E4C19000100BE /* AppleSyncStateHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100BF /* AppleSyncStateHelpers.swift */; };
+		2D6F4D0A2A3E4C19000100C0 /* AppleConversationSidebar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100C1 /* AppleConversationSidebar.swift */; };
+		2D6F4D0A2A3E4C19000100C2 /* AppleChatConversationPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100C3 /* AppleChatConversationPane.swift */; };
+		2D6F4D0A2A3E4C19000100C4 /* AppleChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100C5 /* AppleChatViewModel.swift */; };
+		2D6F4D0A2A3E4C19000100C6 /* AppleConversationModelState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100C7 /* AppleConversationModelState.swift */; };
+		2D6F4D0A2A3E4C19000100C8 /* AppleChatInputState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100C9 /* AppleChatInputState.swift */; };
+		2D6F4D0A2A3E4C19000100CA /* AppleProviderRequestState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100CB /* AppleProviderRequestState.swift */; };
+		2D6F4D0A2A3E4C19000100CC /* AppleChatReadinessState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100CD /* AppleChatReadinessState.swift */; };
+		2D6F4D0A2A3E4C19000100CE /* AppleDefaultSnapshotState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100CF /* AppleDefaultSnapshotState.swift */; };
+		2D6F4D0A2A3E4C19000100D0 /* AppleCloudSyncStatusState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100D1 /* AppleCloudSyncStatusState.swift */; };
+		2D6F4D0A2A3E4C19000100D2 /* AppleSpotlightIndexState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100D3 /* AppleSpotlightIndexState.swift */; };
+		2D6F4D0A2A3E4C19000100D4 /* AppleBackupState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100D5 /* AppleBackupState.swift */; };
+		2D6F4D0A2A3E4C1900010005 /* ZeroChatCore in Frameworks */ = {isa = PBXBuildFile; productRef = 2D6F4D0A2A3E4C1900010031 /* ZeroChatCore */; };
+		2D6F4D0A2A3E4C1900010036 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010037 /* Assets.xcassets */; };
+		2D6F4D0A2A3E4C1900010040 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010045 /* ShareViewController.swift */; };
+		2D6F4D0A2A3E4C1900010041 /* ZeroChatShareExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010048 /* ZeroChatShareExtension.appex */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		2D6F4D0A2A3E4C1900010060 /* QuickAskWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010065 /* QuickAskWidget.swift */; };
+		2D6F4D0A2A3E4C1900010061 /* ZeroChatQuickAskWidgetExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010068 /* ZeroChatQuickAskWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		2D6F4D0A2A3E4C1900010051 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 2D6F4D0A2A3E4C1900010029 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 2D6F4D0A2A3E4C190001004C;
+			remoteInfo = ZeroChatShareExtension;
+		};
+		2D6F4D0A2A3E4C1900010071 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 2D6F4D0A2A3E4C1900010029 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 2D6F4D0A2A3E4C190001006C;
+			remoteInfo = ZeroChatQuickAskWidgetExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		2D6F4D0A2A3E4C1900010049 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				2D6F4D0A2A3E4C1900010041 /* ZeroChatShareExtension.appex in Embed App Extensions */,
+				2D6F4D0A2A3E4C1900010061 /* ZeroChatQuickAskWidgetExtension.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		2D6F4D0A2A3E4C1900010011 /* ZeroChatApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZeroChatApp.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010012 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010013 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010014 /* NativeI18n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeI18n.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010081 /* MessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubble.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010083 /* ComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerView.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010085 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010087 /* SkillHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillHelpers.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010089 /* ProviderEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderEditor.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010091 /* SkillEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillEditor.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010093 /* SettingsTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTab.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010095 /* SettingsSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSupport.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010097 /* ModelSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSettingsView.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010099 /* SyncSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncSettingsView.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C190001009B /* SkillSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillSettingsView.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C190001009D /* DataSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataSettingsView.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C190001009F /* AppearanceSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppearanceSettingsView.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100A1 /* ProviderSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderSettingsView.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100A3 /* AppleCloudSyncStatusStrip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleCloudSyncStatusStrip.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100A5 /* ChatHeaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHeaderView.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100A7 /* AppNoticeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppNoticeView.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100A9 /* ApplePlatformServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplePlatformServices.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100AB /* AppleChatTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleChatTypes.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100AD /* AppleWindowActivationReporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleWindowActivationReporter.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100AF /* AppleChatHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleChatHelpers.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100B1 /* AppleModelCatalogHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleModelCatalogHelpers.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100B3 /* AppleChatReadinessHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleChatReadinessHelpers.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100B5 /* AppleImageRequestPreflight.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleImageRequestPreflight.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100B7 /* AppleChatRequestPreflight.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleChatRequestPreflight.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100B9 /* AppleChatMessageStateHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleChatMessageStateHelpers.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100BB /* AppleConversationStateHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleConversationStateHelpers.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100BD /* AppleProviderModelSelectionHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleProviderModelSelectionHelpers.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100BF /* AppleSyncStateHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSyncStateHelpers.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100C1 /* AppleConversationSidebar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleConversationSidebar.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100C3 /* AppleChatConversationPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleChatConversationPane.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100C5 /* AppleChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleChatViewModel.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100C7 /* AppleConversationModelState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleConversationModelState.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100C9 /* AppleChatInputState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleChatInputState.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100CB /* AppleProviderRequestState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleProviderRequestState.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100CD /* AppleChatReadinessState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleChatReadinessState.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100CF /* AppleDefaultSnapshotState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleDefaultSnapshotState.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100D1 /* AppleCloudSyncStatusState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleCloudSyncStatusState.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100D3 /* AppleSpotlightIndexState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSpotlightIndexState.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100D5 /* AppleBackupState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleBackupState.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010015 /* Package.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Package.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010016 /* ZeroChat.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ZeroChat.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		2D6F4D0A2A3E4C1900010037 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010042 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010043 /* ZeroChat.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ZeroChat.entitlements; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010045 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010046 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010047 /* ZeroChatShareExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ZeroChatShareExtension.entitlements; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010048 /* ZeroChatShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ZeroChatShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		2D6F4D0A2A3E4C1900010065 /* QuickAskWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickAskWidget.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010066 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010067 /* ZeroChatQuickAskWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ZeroChatQuickAskWidget.entitlements; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C1900010068 /* ZeroChatQuickAskWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ZeroChatQuickAskWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		2D6F4D0A2A3E4C1900010021 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2D6F4D0A2A3E4C1900010005 /* ZeroChatCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		2D6F4D0A2A3E4C190001004A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		2D6F4D0A2A3E4C190001006A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		2D6F4D0A2A3E4C1900010022 = {
+			isa = PBXGroup;
+			children = (
+				2D6F4D0A2A3E4C1900010023 /* App */,
+				2D6F4D0A2A3E4C1900010044 /* ShareExtension */,
+				2D6F4D0A2A3E4C1900010064 /* QuickAskWidget */,
+				2D6F4D0A2A3E4C1900010015 /* Package.swift */,
+				2D6F4D0A2A3E4C1900010024 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		2D6F4D0A2A3E4C1900010023 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				2D6F4D0A2A3E4C1900010042 /* Info.plist */,
+				2D6F4D0A2A3E4C1900010043 /* ZeroChat.entitlements */,
+				2D6F4D0A2A3E4C1900010011 /* ZeroChatApp.swift */,
+				2D6F4D0A2A3E4C1900010012 /* ChatView.swift */,
+				2D6F4D0A2A3E4C19000100C5 /* AppleChatViewModel.swift */,
+				2D6F4D0A2A3E4C19000100C7 /* AppleConversationModelState.swift */,
+				2D6F4D0A2A3E4C19000100C9 /* AppleChatInputState.swift */,
+				2D6F4D0A2A3E4C19000100CB /* AppleProviderRequestState.swift */,
+				2D6F4D0A2A3E4C19000100CD /* AppleChatReadinessState.swift */,
+				2D6F4D0A2A3E4C19000100CF /* AppleDefaultSnapshotState.swift */,
+				2D6F4D0A2A3E4C19000100D1 /* AppleCloudSyncStatusState.swift */,
+				2D6F4D0A2A3E4C19000100D3 /* AppleSpotlightIndexState.swift */,
+				2D6F4D0A2A3E4C19000100D5 /* AppleBackupState.swift */,
+				2D6F4D0A2A3E4C19000100C1 /* AppleConversationSidebar.swift */,
+				2D6F4D0A2A3E4C19000100C3 /* AppleChatConversationPane.swift */,
+				2D6F4D0A2A3E4C19000100A5 /* ChatHeaderView.swift */,
+				2D6F4D0A2A3E4C19000100A7 /* AppNoticeView.swift */,
+				2D6F4D0A2A3E4C19000100A9 /* ApplePlatformServices.swift */,
+				2D6F4D0A2A3E4C19000100AB /* AppleChatTypes.swift */,
+				2D6F4D0A2A3E4C19000100AD /* AppleWindowActivationReporter.swift */,
+				2D6F4D0A2A3E4C19000100AF /* AppleChatHelpers.swift */,
+				2D6F4D0A2A3E4C19000100B1 /* AppleModelCatalogHelpers.swift */,
+				2D6F4D0A2A3E4C19000100B3 /* AppleChatReadinessHelpers.swift */,
+				2D6F4D0A2A3E4C19000100B5 /* AppleImageRequestPreflight.swift */,
+				2D6F4D0A2A3E4C19000100B7 /* AppleChatRequestPreflight.swift */,
+				2D6F4D0A2A3E4C19000100B9 /* AppleChatMessageStateHelpers.swift */,
+				2D6F4D0A2A3E4C19000100BB /* AppleConversationStateHelpers.swift */,
+				2D6F4D0A2A3E4C19000100BD /* AppleProviderModelSelectionHelpers.swift */,
+				2D6F4D0A2A3E4C19000100BF /* AppleSyncStateHelpers.swift */,
+				2D6F4D0A2A3E4C1900010081 /* MessageBubble.swift */,
+				2D6F4D0A2A3E4C1900010083 /* ComposerView.swift */,
+				2D6F4D0A2A3E4C19000100A3 /* AppleCloudSyncStatusStrip.swift */,
+				2D6F4D0A2A3E4C1900010085 /* OnboardingView.swift */,
+				2D6F4D0A2A3E4C1900010013 /* SettingsView.swift */,
+				2D6F4D0A2A3E4C1900010093 /* SettingsTab.swift */,
+				2D6F4D0A2A3E4C1900010095 /* SettingsSupport.swift */,
+				2D6F4D0A2A3E4C190001009F /* AppearanceSettingsView.swift */,
+				2D6F4D0A2A3E4C19000100A1 /* ProviderSettingsView.swift */,
+				2D6F4D0A2A3E4C1900010097 /* ModelSettingsView.swift */,
+				2D6F4D0A2A3E4C1900010099 /* SyncSettingsView.swift */,
+				2D6F4D0A2A3E4C1900010087 /* SkillHelpers.swift */,
+				2D6F4D0A2A3E4C190001009B /* SkillSettingsView.swift */,
+				2D6F4D0A2A3E4C1900010091 /* SkillEditor.swift */,
+				2D6F4D0A2A3E4C190001009D /* DataSettingsView.swift */,
+				2D6F4D0A2A3E4C1900010089 /* ProviderEditor.swift */,
+				2D6F4D0A2A3E4C1900010014 /* NativeI18n.swift */,
+				2D6F4D0A2A3E4C1900010037 /* Assets.xcassets */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		2D6F4D0A2A3E4C1900010044 /* ShareExtension */ = {
+			isa = PBXGroup;
+			children = (
+				2D6F4D0A2A3E4C1900010046 /* Info.plist */,
+				2D6F4D0A2A3E4C1900010047 /* ZeroChatShareExtension.entitlements */,
+				2D6F4D0A2A3E4C1900010045 /* ShareViewController.swift */,
+			);
+			path = ShareExtension;
+			sourceTree = "<group>";
+		};
+		2D6F4D0A2A3E4C1900010064 /* QuickAskWidget */ = {
+			isa = PBXGroup;
+			children = (
+				2D6F4D0A2A3E4C1900010066 /* Info.plist */,
+				2D6F4D0A2A3E4C1900010067 /* ZeroChatQuickAskWidget.entitlements */,
+				2D6F4D0A2A3E4C1900010065 /* QuickAskWidget.swift */,
+			);
+			path = QuickAskWidget;
+			sourceTree = "<group>";
+		};
+		2D6F4D0A2A3E4C1900010024 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				2D6F4D0A2A3E4C1900010016 /* ZeroChat.app */,
+				2D6F4D0A2A3E4C1900010048 /* ZeroChatShareExtension.appex */,
+				2D6F4D0A2A3E4C1900010068 /* ZeroChatQuickAskWidgetExtension.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		2D6F4D0A2A3E4C1900010025 /* ZeroChat */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2D6F4D0A2A3E4C1900010026 /* Build configuration list for PBXNativeTarget "ZeroChat" */;
+			buildPhases = (
+				2D6F4D0A2A3E4C1900010027 /* Sources */,
+				2D6F4D0A2A3E4C1900010021 /* Frameworks */,
+				2D6F4D0A2A3E4C1900010028 /* Resources */,
+				2D6F4D0A2A3E4C1900010049 /* Embed App Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				2D6F4D0A2A3E4C1900010050 /* PBXTargetDependency */,
+				2D6F4D0A2A3E4C1900010070 /* PBXTargetDependency */,
+			);
+			name = ZeroChat;
+			packageProductDependencies = (
+				2D6F4D0A2A3E4C1900010031 /* ZeroChatCore */,
+			);
+			productName = ZeroChat;
+			productReference = 2D6F4D0A2A3E4C1900010016 /* ZeroChat.app */;
+			productType = "com.apple.product-type.application";
+		};
+		2D6F4D0A2A3E4C190001004C /* ZeroChatShareExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2D6F4D0A2A3E4C190001004D /* Build configuration list for PBXNativeTarget "ZeroChatShareExtension" */;
+			buildPhases = (
+				2D6F4D0A2A3E4C190001004B /* Sources */,
+				2D6F4D0A2A3E4C190001004A /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ZeroChatShareExtension;
+			packageProductDependencies = (
+			);
+			productName = ZeroChatShareExtension;
+			productReference = 2D6F4D0A2A3E4C1900010048 /* ZeroChatShareExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		2D6F4D0A2A3E4C190001006C /* ZeroChatQuickAskWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2D6F4D0A2A3E4C190001006D /* Build configuration list for PBXNativeTarget "ZeroChatQuickAskWidgetExtension" */;
+			buildPhases = (
+				2D6F4D0A2A3E4C190001006B /* Sources */,
+				2D6F4D0A2A3E4C190001006A /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ZeroChatQuickAskWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = ZeroChatQuickAskWidgetExtension;
+			productReference = 2D6F4D0A2A3E4C1900010068 /* ZeroChatQuickAskWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		2D6F4D0A2A3E4C1900010029 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					2D6F4D0A2A3E4C1900010025 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					2D6F4D0A2A3E4C190001004C = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					2D6F4D0A2A3E4C190001006C = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = 2D6F4D0A2A3E4C190001002A /* Build configuration list for PBXProject "ZeroChat" */;
+			compatibilityVersion = "Xcode 16.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 2D6F4D0A2A3E4C1900010022;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				2D6F4D0A2A3E4C1900010030 /* XCLocalSwiftPackageReference "." */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 2D6F4D0A2A3E4C1900010024 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				2D6F4D0A2A3E4C1900010025 /* ZeroChat */,
+				2D6F4D0A2A3E4C190001004C /* ZeroChatShareExtension */,
+				2D6F4D0A2A3E4C190001006C /* ZeroChatQuickAskWidgetExtension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		2D6F4D0A2A3E4C1900010028 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2D6F4D0A2A3E4C1900010036 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		2D6F4D0A2A3E4C1900010027 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2D6F4D0A2A3E4C1900010001 /* ZeroChatApp.swift in Sources */,
+				2D6F4D0A2A3E4C1900010002 /* ChatView.swift in Sources */,
+				2D6F4D0A2A3E4C19000100A4 /* ChatHeaderView.swift in Sources */,
+				2D6F4D0A2A3E4C19000100A6 /* AppNoticeView.swift in Sources */,
+				2D6F4D0A2A3E4C19000100A8 /* ApplePlatformServices.swift in Sources */,
+				2D6F4D0A2A3E4C19000100AA /* AppleChatTypes.swift in Sources */,
+				2D6F4D0A2A3E4C19000100AC /* AppleWindowActivationReporter.swift in Sources */,
+				2D6F4D0A2A3E4C19000100AE /* AppleChatHelpers.swift in Sources */,
+				2D6F4D0A2A3E4C19000100B0 /* AppleModelCatalogHelpers.swift in Sources */,
+				2D6F4D0A2A3E4C19000100B2 /* AppleChatReadinessHelpers.swift in Sources */,
+				2D6F4D0A2A3E4C19000100B4 /* AppleImageRequestPreflight.swift in Sources */,
+				2D6F4D0A2A3E4C19000100B6 /* AppleChatRequestPreflight.swift in Sources */,
+				2D6F4D0A2A3E4C19000100B8 /* AppleChatMessageStateHelpers.swift in Sources */,
+				2D6F4D0A2A3E4C19000100BA /* AppleConversationStateHelpers.swift in Sources */,
+				2D6F4D0A2A3E4C19000100BC /* AppleProviderModelSelectionHelpers.swift in Sources */,
+				2D6F4D0A2A3E4C19000100BE /* AppleSyncStateHelpers.swift in Sources */,
+				2D6F4D0A2A3E4C19000100C0 /* AppleConversationSidebar.swift in Sources */,
+				2D6F4D0A2A3E4C19000100C2 /* AppleChatConversationPane.swift in Sources */,
+				2D6F4D0A2A3E4C19000100C4 /* AppleChatViewModel.swift in Sources */,
+				2D6F4D0A2A3E4C19000100C6 /* AppleConversationModelState.swift in Sources */,
+				2D6F4D0A2A3E4C19000100C8 /* AppleChatInputState.swift in Sources */,
+				2D6F4D0A2A3E4C19000100CA /* AppleProviderRequestState.swift in Sources */,
+				2D6F4D0A2A3E4C19000100CC /* AppleChatReadinessState.swift in Sources */,
+				2D6F4D0A2A3E4C19000100CE /* AppleDefaultSnapshotState.swift in Sources */,
+				2D6F4D0A2A3E4C19000100D0 /* AppleCloudSyncStatusState.swift in Sources */,
+				2D6F4D0A2A3E4C19000100D2 /* AppleSpotlightIndexState.swift in Sources */,
+				2D6F4D0A2A3E4C19000100D4 /* AppleBackupState.swift in Sources */,
+				2D6F4D0A2A3E4C1900010080 /* MessageBubble.swift in Sources */,
+				2D6F4D0A2A3E4C1900010082 /* ComposerView.swift in Sources */,
+				2D6F4D0A2A3E4C19000100A2 /* AppleCloudSyncStatusStrip.swift in Sources */,
+				2D6F4D0A2A3E4C1900010084 /* OnboardingView.swift in Sources */,
+				2D6F4D0A2A3E4C1900010003 /* SettingsView.swift in Sources */,
+				2D6F4D0A2A3E4C1900010092 /* SettingsTab.swift in Sources */,
+				2D6F4D0A2A3E4C1900010094 /* SettingsSupport.swift in Sources */,
+				2D6F4D0A2A3E4C190001009E /* AppearanceSettingsView.swift in Sources */,
+				2D6F4D0A2A3E4C19000100A0 /* ProviderSettingsView.swift in Sources */,
+				2D6F4D0A2A3E4C1900010096 /* ModelSettingsView.swift in Sources */,
+				2D6F4D0A2A3E4C1900010098 /* SyncSettingsView.swift in Sources */,
+				2D6F4D0A2A3E4C1900010086 /* SkillHelpers.swift in Sources */,
+				2D6F4D0A2A3E4C190001009A /* SkillSettingsView.swift in Sources */,
+				2D6F4D0A2A3E4C1900010090 /* SkillEditor.swift in Sources */,
+				2D6F4D0A2A3E4C190001009C /* DataSettingsView.swift in Sources */,
+				2D6F4D0A2A3E4C1900010088 /* ProviderEditor.swift in Sources */,
+				2D6F4D0A2A3E4C1900010004 /* NativeI18n.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		2D6F4D0A2A3E4C190001004B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2D6F4D0A2A3E4C1900010040 /* ShareViewController.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		2D6F4D0A2A3E4C190001006B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2D6F4D0A2A3E4C1900010060 /* QuickAskWidget.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		2D6F4D0A2A3E4C1900010050 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			platformFilter = ios;
+			target = 2D6F4D0A2A3E4C190001004C /* ZeroChatShareExtension */;
+			targetProxy = 2D6F4D0A2A3E4C1900010051 /* PBXContainerItemProxy */;
+		};
+		2D6F4D0A2A3E4C1900010070 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 2D6F4D0A2A3E4C190001006C /* ZeroChatQuickAskWidgetExtension */;
+			targetProxy = 2D6F4D0A2A3E4C1900010071 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		2D6F4D0A2A3E4C1900010032 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		2D6F4D0A2A3E4C1900010033 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		2D6F4D0A2A3E4C1900010034 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/ZeroChat.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = ZeroChat;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = app.zerochat.client;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		2D6F4D0A2A3E4C1900010035 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/ZeroChat.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = ZeroChat;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = app.zerochat.client;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		2D6F4D0A2A3E4C190001004E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ShareExtension/ZeroChatShareExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ShareExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MARKETING_VERSION = 0.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = app.zerochat.client.ShareExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		2D6F4D0A2A3E4C190001004F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ShareExtension/ZeroChatShareExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ShareExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MARKETING_VERSION = 0.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = app.zerochat.client.ShareExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		2D6F4D0A2A3E4C190001006E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = QuickAskWidget/ZeroChatQuickAskWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = QuickAskWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = app.zerochat.client.QuickAskWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		2D6F4D0A2A3E4C190001006F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = QuickAskWidget/ZeroChatQuickAskWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = QuickAskWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = app.zerochat.client.QuickAskWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		2D6F4D0A2A3E4C190001002A /* Build configuration list for PBXProject "ZeroChat" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2D6F4D0A2A3E4C1900010032 /* Debug */,
+				2D6F4D0A2A3E4C1900010033 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		2D6F4D0A2A3E4C1900010026 /* Build configuration list for PBXNativeTarget "ZeroChat" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2D6F4D0A2A3E4C1900010034 /* Debug */,
+				2D6F4D0A2A3E4C1900010035 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		2D6F4D0A2A3E4C190001004D /* Build configuration list for PBXNativeTarget "ZeroChatShareExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2D6F4D0A2A3E4C190001004E /* Debug */,
+				2D6F4D0A2A3E4C190001004F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		2D6F4D0A2A3E4C190001006D /* Build configuration list for PBXNativeTarget "ZeroChatQuickAskWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2D6F4D0A2A3E4C190001006E /* Debug */,
+				2D6F4D0A2A3E4C190001006F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		2D6F4D0A2A3E4C1900010030 /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		2D6F4D0A2A3E4C1900010031 /* ZeroChatCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 2D6F4D0A2A3E4C1900010030 /* XCLocalSwiftPackageReference "." */;
+			productName = ZeroChatCore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 2D6F4D0A2A3E4C1900010029 /* Project object */;
+}

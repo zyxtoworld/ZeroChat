@@ -1,0 +1,36 @@
+app-id: app.zerochat.client
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+command: zerochat-linux
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --filesystem=xdg-download
+  - --talk-name=org.freedesktop.secrets
+
+cleanup:
+  - /include
+  - /lib/debug
+  - /share/man
+
+modules:
+  - name: zerochat-linux
+    buildsystem: simple
+    build-options:
+      env:
+        CARGO_HOME: /run/build/zerochat-linux/cargo
+    build-commands:
+      - cargo build --manifest-path apps/linux/Cargo.toml --release --locked
+      - install -Dm755 apps/linux/target/release/zerochat-linux /app/bin/zerochat-linux
+      - install -Dm644 apps/linux/data/app.zerochat.client.desktop /app/share/applications/app.zerochat.client.desktop
+      - install -Dm644 apps/linux/data/app.zerochat.client.metainfo.xml /app/share/metainfo/app.zerochat.client.metainfo.xml
+      - install -Dm644 apps/linux/data/icons/hicolor/scalable/apps/app.zerochat.client.svg /app/share/icons/hicolor/scalable/apps/app.zerochat.client.svg
+      - install -Dm644 apps/linux/data/icons/hicolor/symbolic/apps/app.zerochat.client-symbolic.svg /app/share/icons/hicolor/symbolic/apps/app.zerochat.client-symbolic.svg
+    sources:
+      - type: dir
+        path: ../../../..

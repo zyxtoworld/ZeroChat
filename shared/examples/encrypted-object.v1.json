@@ -1,0 +1,17 @@
+{
+  "kind": "zerochat.encryptedObject",
+  "version": 1,
+  "objectType": "manifest",
+  "encryptedAt": 1760000002000,
+  "updatedAt": 1760000001000,
+  "crypto": {
+    "cipher": "AES-256-GCM",
+    "kdf": "PBKDF2-SHA256",
+    "iterations": 600000,
+    "salt": "AAAAAAAAAAAAAAAAAAAAAA==",
+    "iv": "AAAAAAAAAAAAAAAA",
+    "aad": "emVyb2NoYXQ6b2JqZWN0OnYxOm1hbmlmZXN0OjE3NjAwMDAwMDEwMDA=",
+    "compression": "none"
+  },
+  "payload": "ZXhhbXBsZS1jaXBoZXJ0ZXh0"
+}

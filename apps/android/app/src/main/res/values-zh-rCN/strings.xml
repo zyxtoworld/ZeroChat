@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ZeroChat</string>
+    <string name="zerochat_widget_description">快速发起 ZeroChat 新对话。</string>
+    <string name="zerochat_widget_title">新建对话</string>
+    <string name="zerochat_widget_body">本地优先，需要时再同步。</string>
+    <string name="zerochat_widget_action">立即提问</string>
+    <string name="zerochat_widget_accessibility">ZeroChat 快捷提问。新建对话。本地优先，需要时再同步。立即提问。</string>
+</resources>

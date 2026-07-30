@@ -8,6 +8,8 @@
     "version",
     "providers",
     "conversations",
+    "skills",
+    "skillSettings",
     "sync",
     "preferences",
     "updatedAt"
@@ -27,6 +29,15 @@
       "items": {
         "$ref": "#/$defs/conversation"
       }
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/skill"
+      }
+    },
+    "skillSettings": {
+      "$ref": "#/$defs/skillSettings"
     },
     "sync": {
       "$ref": "#/$defs/sync"
@@ -64,7 +75,7 @@
           "minLength": 1
         },
         "kind": {
-          "enum": ["openai-compatible", "anthropic"]
+          "enum": ["openai-compatible", "openai-responses", "anthropic"]
         },
         "baseUrl": {
           "type": "string",
@@ -73,13 +84,64 @@
         "proxyUrl": {
           "type": "string"
         },
+        "clientRequestMode": {
+          "type": "boolean"
+        },
         "model": {
           "type": "string"
+        },
+        "imageModel": {
+          "type": "string"
+        },
+        "audioSpeechModel": {
+          "type": "string"
+        },
+        "audioTranscriptionModel": {
+          "type": "string"
+        },
+        "embeddingModel": {
+          "type": "string"
+        },
+        "moderationModel": {
+          "type": "string"
+        },
+        "realtimeModel": {
+          "type": "string"
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "chat",
+              "vision",
+              "tools",
+              "image-generation",
+              "image-editing",
+              "audio",
+              "realtime",
+              "embeddings",
+              "moderation",
+              "video",
+              "model-list"
+            ]
+          },
+          "uniqueItems": true
         },
         "enabled": {
           "type": "boolean"
         },
         "needsApiKey": {
+          "type": "boolean"
+        },
+        "custom": {
           "type": "boolean"
         },
         "createdAt": {
@@ -155,10 +217,226 @@
           "minimum": 0
         },
         "status": {
-          "enum": ["streaming", "done", "error"]
+          "enum": ["queued", "streaming", "done", "error"]
         },
         "error": {
           "type": "string"
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/messageAttachment"
+          }
+        },
+        "queuedTextRequest": {
+          "$ref": "#/$defs/queuedTextRequest"
+        },
+        "offlineReplayClaim": {
+          "$ref": "#/$defs/offlineReplayClaim"
+        }
+      }
+    },
+    "queuedTextRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["providerId", "model"],
+      "properties": {
+        "providerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "promptMessageId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "offlineReplayClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claimId", "owner"],
+      "properties": {
+        "claimId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "messageAttachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "mimeType", "createdAt"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "image"
+        },
+        "purpose": {
+          "enum": ["generated", "source", "mask"]
+        },
+        "mimeType": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dataUrl": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "alt": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "skillChunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "heading", "keywords", "tokenEstimate"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "heading": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contentRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contentPreview": {
+          "type": "string"
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "tokenEstimate": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "skill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "description",
+        "contentType",
+        "sourceSize",
+        "contentHash",
+        "keywords",
+        "chunks",
+        "fixed",
+        "enabled",
+        "autoMatch",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "fileName": {
+          "type": "string"
+        },
+        "contentType": {
+          "enum": ["markdown", "text", "json"]
+        },
+        "sourceSize": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "contentHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "chunks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/skillChunk"
+          }
+        },
+        "fixed": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "autoMatch": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "updatedAt": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "skillSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["autoMatch", "contextBudget", "maxAutoSkills"],
+      "properties": {
+        "autoMatch": {
+          "type": "boolean"
+        },
+        "contextBudget": {
+          "type": "integer",
+          "minimum": 600,
+          "maximum": 8000
+        },
+        "maxAutoSkills": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
         }
       }
     },
@@ -197,7 +475,7 @@
     "preferences": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["firstRunDone", "theme", "compactMode"],
+      "required": ["firstRunDone", "theme", "language", "compactMode"],
       "properties": {
         "firstRunDone": {
           "type": "boolean"
@@ -205,8 +483,28 @@
         "theme": {
           "enum": ["system", "light", "dark"]
         },
+        "language": {
+          "enum": [
+            "system",
+            "zh-CN",
+            "en-US",
+            "es-ES",
+            "hi-IN",
+            "ar-SA",
+            "pt-BR",
+            "ru-RU",
+            "ja-JP",
+            "ko-KR",
+            "fr-FR"
+          ]
+        },
         "compactMode": {
           "type": "boolean"
+        },
+        "chatContextMessageLimit": {
+          "type": "integer",
+          "minimum": 4,
+          "maximum": 200
         },
         "activeConversationId": {
           "type": "string"
@@ -219,7 +517,27 @@
               "delete-conversation",
               "delete-provider",
               "import-backup-overwrite",
-              "reset-local-data"
+              "clear-cloud-data",
+              "reset-local-data",
+              "rotate-sync-passphrase",
+              "reset-sync-passphrase"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "dismissedFeatureHints": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "chat",
+              "provider-model",
+              "image",
+              "appearance",
+              "providers",
+              "models",
+              "skills",
+              "sync",
+              "data"
             ]
           },
           "uniqueItems": true

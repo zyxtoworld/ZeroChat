@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ZeroChat</string>
+    <string name="zerochat_widget_description">ZeroChat の新しい会話をすばやく開始します。</string>
+    <string name="zerochat_widget_title">新規チャット</string>
+    <string name="zerochat_widget_body">まずローカル。同期は後で。</string>
+    <string name="zerochat_widget_action">今すぐ質問</string>
+    <string name="zerochat_widget_accessibility">ZeroChat Quick Ask。新規チャット。まずローカル。同期は後で。今すぐ質問。</string>
+</resources>
