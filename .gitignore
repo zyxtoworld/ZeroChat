@@ -8,11 +8,15 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+node_modules/
 dist
+dist/
 dist-ssr
 *.local
 .visual-audit/
 .manual-qa*/
+.manual-qa/
+*.cpuprofile
 .i18n-qa/
 .codex-*/
 .codex-chrome-responsive-profile*/
@@ -41,6 +45,8 @@ apps/**/*.exe
 .claude/
 .pi/
 tmp/
+!/.local/
+/.local/codex/
 
 # Editor directories and files
 .vscode/*
