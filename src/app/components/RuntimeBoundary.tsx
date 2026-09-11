@@ -14,6 +14,17 @@ export class RuntimeBoundary extends Component<
 > {
   state: BoundaryState = { failed: false }
 
+  private readonly focusReloadButton = (
+    button: HTMLButtonElement | null,
+  ): void => {
+    if (!button) return
+    try {
+      button.focus()
+    } catch {
+      // Recovery focus must not prevent the fallback from rendering.
+    }
+  }
+
   static getDerivedStateFromError(): BoundaryState {
     return { failed: true }
   }
@@ -40,6 +51,7 @@ export class RuntimeBoundary extends Component<
               type="button"
               className="zc-btn primary"
               autoFocus
+              ref={this.focusReloadButton}
               onClick={() => reloadRuntimePage(() => window.location.reload())}
             >
               {reloadLabel}

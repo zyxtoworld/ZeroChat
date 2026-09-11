@@ -86,13 +86,20 @@ export const currentWebAppShellContractMarkers = Object.freeze({
     '<AppTooltip />',
   ],
   appTooltipSource: [
+    'type TooltipRuntime = ComponentType',
+    "void import('./AppTooltipRuntime').then(({ AppTooltipRuntime }) =>",
+    'if (Runtime) return <Runtime />',
+    'className="zc-app-tooltip-layer"',
+    'role="tooltip"',
+  ],
+  appTooltipRuntimeSource: [
     "import { installAppTooltipListeners } from '../appTooltipSubscriptions'",
-    'if (!nextPosition) {',
+    'if (!next) return',
     'setActive(null)',
     'const onPointerOver: EventListener = (event) => {',
     'const onFocusOut: EventListener = (event) => {',
-    'const reposition: EventListener = () =>',
-    'return installAppTooltipListeners({',
+    'const reposition = () => setActive((value) =>',
+    'const cleanup = installAppTooltipListeners({',
   ],
   appTooltipPositionSource: [
     'export function tooltipPositionFromDom(',
@@ -119,6 +126,9 @@ export const currentWebAppShellContractMarkers = Object.freeze({
   runtimeBoundarySource: [
     "import { reloadRuntimePage } from '../../services/startupFatalError'",
     'reloadRuntimePage(() => window.location.reload())',
+    'private readonly focusReloadButton = (',
+    'button.focus()',
+    'ref={this.focusReloadButton}',
     "console.error('[app] render failed')",
   ],
   runtimeRecoveryAuthorityTestSource: [
@@ -1838,7 +1848,6 @@ export const currentWebAppShellContractMarkers = Object.freeze({
 
 export const currentWebAppShellForbiddenMarkers = Object.freeze({
   appShellSource: [
-    '<Suspense fallback={null}>',
     'appEscapeController',
     'appMessageController',
     'settingsViewportController',

@@ -333,6 +333,9 @@ export function findUiAccessibilityContractFailures({
   )
   const appRootSource = app('src/app/App.tsx')
   const appTooltipSource = app('src/app/components/AppTooltip.tsx')
+  const appTooltipRuntimeSource = app(
+    'src/app/components/AppTooltipRuntime.tsx',
+  )
   const appTooltipPositionSource = app('src/app/tooltipPosition.ts')
   const appTooltipSubscriptionsSource = app(
     'src/app/appTooltipSubscriptions.ts',
@@ -341,9 +344,11 @@ export function findUiAccessibilityContractFailures({
     failures,
     appRootSource.includes("from './components/AppTooltip'") &&
       appRootSource.includes('<AppTooltip />') &&
-      appTooltipSource.includes("closest<HTMLElement>('[data-tooltip]')") &&
-      appTooltipSource.includes('role="tooltip"') &&
-      appTooltipSource.includes('if (!nextPosition) {') &&
+      appTooltipSource.includes("void import('./AppTooltipRuntime')") &&
+      appTooltipSource.includes('className="zc-app-tooltip-layer"') &&
+      appTooltipRuntimeSource.includes("closest<HTMLElement>('[data-tooltip]')") &&
+      appTooltipRuntimeSource.includes('role="tooltip"') &&
+      appTooltipRuntimeSource.includes('if (!next) return') &&
       appTooltipPositionSource.includes('export function tooltipPositionFromDom(') &&
       appTooltipPositionSource.includes(
         'if (values.some((value) => !Number.isFinite(value))) return null',

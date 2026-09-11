@@ -18,6 +18,10 @@ async function liveSources() {
       'src/app/components/AppTooltip.tsx',
       'utf8',
     ),
+    appTooltipRuntimeSource: await readFile(
+      'src/app/components/AppTooltipRuntime.tsx',
+      'utf8',
+    ),
     appTooltipPositionSource: await readFile(
       'src/app/tooltipPosition.ts',
       'utf8',

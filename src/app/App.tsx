@@ -502,9 +502,7 @@ export function App() {
         </SettingsOverlayBoundary>
       )}
       <Toasts />
-      <Suspense fallback={null}>
-        <AppTooltip />
-      </Suspense>
+      <AppTooltip />
     </div>
   )
 }
