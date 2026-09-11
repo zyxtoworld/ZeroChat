@@ -11,10 +11,11 @@ import app.zerochat.security.SecretStore
 import app.zerochat.sync.FirstSyncStrategy
 import app.zerochat.sync.SyncClient
 import app.zerochat.ui.NativeI18n
+import app.zerochat.ui.chat.GenerationTaskOwner
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatSettingsSheet(
+internal fun ChatSettingsSheet(
     snapshot: AppSnapshot,
     initialTabName: String,
     noticeContent: @Composable () -> Unit,
@@ -27,7 +28,7 @@ fun ChatSettingsSheet(
     onSaveGithubToken: suspend (String) -> Result<Unit>,
     onSaveSyncPassphrase: suspend (String) -> Result<Unit>,
     onLocalSnapshotChange: (AppSnapshot) -> Unit,
-    onSnapshotImport: suspend (AppSnapshot, Map<String, String>) -> Result<Unit>,
+    backupTaskViewModel: BackupTaskViewModel,
     onResetLocalData: suspend (AppSnapshot) -> Result<Unit>,
     onFirstSyncStrategy: (FirstSyncStrategy) -> Unit,
     secretStore: SecretStore,
@@ -40,6 +41,7 @@ fun ChatSettingsSheet(
     providerDisplayName: (ProviderConfig) -> String,
     providerRequest: (ProviderConfig, AppSnapshot) -> ProviderConfig,
     i18n: NativeI18n,
+    generationTasks: GenerationTaskOwner,
 ) {
     val settingsSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -87,6 +89,7 @@ fun ChatSettingsSheet(
                     onNotice,
                     i18n,
                     requestContentScrollTop,
+                    generationTasks,
                 )
                 SettingsTab.Sync -> SyncSettings(
                     snapshot,
@@ -104,7 +107,7 @@ fun ChatSettingsSheet(
                 SettingsTab.Data -> DataSettings(
                     snapshot,
                     onSaveSyncPassphrase,
-                    onSnapshotImport,
+                    backupTaskViewModel,
                     onResetLocalData,
                     secretStore,
                     syncClient,

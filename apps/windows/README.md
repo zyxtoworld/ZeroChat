@@ -62,7 +62,8 @@ App SDK and C++ workloads installed:
 
 The checked-in project file is intentional: users should not have to recreate a
 WinUI project manually in Visual Studio just to build the Windows app.
-The project writes build outputs to `C:\ZeroChatWindowsBuild` by default so
+The project writes build outputs to the ignored project-local
+`.local/codex/artifacts/windows-build` directory by default so
 C++/WinRT metadata tools keep working even when the repository path contains
 non-ASCII characters.
 
@@ -150,13 +151,18 @@ implementation.
 If the local host blocks `Add-AppxPackage` before ZeroChat can complete that
 install/update/uninstall proof, the same helper writes
 `.manual-qa\windows-msix-current-trusted-install-update-qa.failure.json` as
-diagnostic-only host AppX evidence with `releaseEvidence: false`. The current
-known host blocker is
+diagnostic-only host AppX evidence with `releaseEvidence: false`; older failed
+runs are historical diagnostic evidence. Historical diagnostic reports can classify
 `windows-appx-deployment-deleted-package-cleanup-access-denied` under
-`C:\Program Files\WindowsApps\Deleted`; use a fresh disposable Windows profile
-or VM, or repair the external AppX cleanup state, before rerunning the trusted
-QA wrapper. To inspect the host without importing certificates or installing
-packages, run `pnpm run report:windows-msix-host-preflight` and then
+`C:\Program Files\WindowsApps\Deleted`, but the latest historical failure report
+remains diagnostic-only. Current host status is report-derived, never hard-coded
+in this guide: inspect `.manual-qa/windows-msix-host-preflight.json`. A blocked
+host must be repaired or replaced before trusted QA; a clear non-elevated host
+must run `pnpm run qa:windows-msix-trusted:elevated` from an elevated disposable
+Windows profile. If preflight reports the Deleted cleanup classifier, use a
+fresh disposable profile or VM, or repair the external AppX cleanup state,
+before rerunning the trusted QA wrapper. To inspect the host without importing certificates or
+installing packages, run `pnpm run report:windows-msix-host-preflight` and then
 `pnpm run check:windows-msix-host-preflight`; the report records recent
 AppXDeploymentServer cleanup events, service state, and sanitized Windows
 Restart Manager lock-holder evidence as diagnostic-only host evidence. If a
@@ -164,10 +170,10 @@ deleted target is still held by an application, close or restart the reported
 lock-holder first, rerun the preflight, and only then repair the wider AppX
 state or move to a disposable profile/VM if unlocked targets remain. When that
 holder is Codex itself, do not interrupt an active Codex work session; use a
-fresh disposable profile/VM or rerun the preflight after Codex exits. When that
-current failure report is present, the trusted QA helper
-fails fast before starting another install/update run; after a verified host
-repair, run
+fresh disposable profile/VM or rerun the preflight after Codex exits. When a
+current failure report is present and the preflight still classifies the known
+host blocker, the trusted QA helper fails fast before starting another
+install/update run; after a verified host repair, run
 `pnpm run qa:windows-msix-trusted:elevated -- -SkipKnownHostBlockerPreflight`
 only to bypass the historical-report preflight. `pnpm run
 check:windows-msix-trusted-report` validates only the current trusted-MSIX
@@ -201,8 +207,8 @@ while merging generated metadata, keep the repo path unchanged and make sure the
 ASCII build root is still being used:
 
 ```powershell
-msbuild apps\windows\ZeroChat.sln /restore /p:Configuration=Debug /p:Platform=x64 /p:ZeroChatBuildRoot=C:\ZeroChatWindowsBuild
-msbuild apps\windows\ZeroChat.sln /restore /p:Configuration=Release /p:Platform=x64 /p:ZeroChatBuildRoot=C:\ZeroChatWindowsBuild
+msbuild apps\windows\ZeroChat.sln /restore /p:Configuration=Debug /p:Platform=x64 /p:ZeroChatBuildRoot=.local\codex\artifacts\windows-build
+msbuild apps\windows\ZeroChat.sln /restore /p:Configuration=Release /p:Platform=x64 /p:ZeroChatBuildRoot=.local\codex\artifacts\windows-build
 ```
 
 MSIX signing and install/update/uninstall QA now has a repeatable helper path,
@@ -232,7 +238,7 @@ package with a trusted certificate before installing or distributing it.
 For local signing QA, pass a PFX certificate explicitly:
 
 ```powershell
-.\scripts\package-windows-msix.ps1 -BuildRoot C:\ZeroChatWindowsBuild -Configuration Release -Platform x64 -CertificatePath .manual-qa\ZeroChat.DevSign.pfx -CertificatePassword "<password>"
+.\scripts\package-windows-msix.ps1 -BuildRoot .local\codex\artifacts\windows-build -Configuration Release -Platform x64 -CertificatePath .local\codex\private\ZeroChat.DevSign.pfx -CertificatePassword "<password>"
 ```
 
 The repository never stores signing certificates or passwords. Production
@@ -251,15 +257,17 @@ the previous signed build in a disposable profile, then run the helper with
 installed package version after `Add-AppxPackage`. When no `-PackagePath` is
 passed, the helper inspects the newest `.manual-qa\ZeroChat_*.msix`, including a
 fresh unsigned package, so stale signed artifacts cannot hide the current build.
-It imports a certificate only when
-`-TrustCertificate -TrustedCertificatePath <public .cer>` is passed. For
-disposable self-signed install/update QA, run from an elevated PowerShell and add
-`-TrustMachineCertificate -TrustSigningRoot`; the helper imports the certificate
-into Current User Trusted People, Local Machine Trusted People, and Local
-Machine Root, then rechecks trust before calling `Add-AppxPackage`. Keep machine
-trust outside normal daily-use profiles. Cleanup should pass the three remove
-switches with `-Uninstall`: `-RemoveTrustedCertificate`,
-`-RemoveTrustedMachineCertificate`, and `-RemoveTrustedSigningRoot`. Unsigned packages produce
+For disposable self-signed install/update QA, run from an elevated PowerShell
+and pass `-TrustMachineCertificate -TrustedCertificatePath <public .cer>`; the
+helper imports the leaf certificate only into Local Machine Trusted People,
+then rechecks trust before calling `Add-AppxPackage`. App Installer does not use
+Current User trust for this path, and a package-signing leaf must not be placed
+in Local Machine Root. The optional `-TrustSigningRoot` switch accepts only an
+actual CA root according to X509 Basic Constraints. Keep machine trust outside
+normal daily-use profiles. The install helper no longer exposes ineffective
+Current User trust switches; only the outer QA cleanup checks that store for
+historical residue. Cleanup should pass
+`-RemoveTrustedMachineCertificate` with `-Uninstall`. Unsigned packages produce
 a dry-run report that says to sign first; they are still rejected for install or
 update actions. Signed dry runs also show `SignatureTrusted` and `TrustRequired`
 so an untrusted local certificate is obvious before install/update QA.

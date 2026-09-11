@@ -62,6 +62,41 @@ describe('writeClipboardText', () => {
     expect(clipboard.execCommand).not.toHaveBeenCalled()
   })
 
+  it('serializes concurrent writes so the latest copy intent settles last', async () => {
+    let clipboardValue = ''
+    const pending: Array<{ value: string; resolve: () => void }> = []
+    const writeText = vi.fn(
+      (value: string) =>
+        new Promise<void>((resolve) => {
+          pending.push({
+            value,
+            resolve: () => {
+              clipboardValue = value
+              resolve()
+            },
+          })
+        }),
+    )
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+
+    const first = writeClipboardText('old message')
+    await Promise.resolve()
+    const latest = writeClipboardText('latest message')
+    await Promise.resolve()
+
+    expect(writeText).toHaveBeenCalledTimes(1)
+    expect(pending[0]?.value).toBe('old message')
+
+    pending[0]?.resolve()
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledTimes(2))
+    expect(pending[1]?.value).toBe('latest message')
+    pending[1]?.resolve()
+
+    await expect(first).resolves.toBeUndefined()
+    await expect(latest).resolves.toBeUndefined()
+    expect(clipboardValue).toBe('latest message')
+  })
+
   it('falls back to a temporary textarea when the Clipboard API rejects', async () => {
     const clipboard = stubTextareaClipboard({
       execResult: true,
@@ -113,6 +148,43 @@ describe('writeClipboardText', () => {
     expect(clipboard.writeText).toHaveBeenCalledWith('fallback text')
     expect(clipboard.execCommand).toHaveBeenCalledWith('copy')
     expect(clipboard.textarea.remove).toHaveBeenCalledTimes(1)
+  })
+
+  it('restores the original focused element after fallback selection', async () => {
+    class FakeHTMLElement {}
+    const activeElement = Object.setPrototypeOf(
+      { focus: vi.fn() },
+      FakeHTMLElement.prototype,
+    ) as unknown as HTMLElement
+    const textarea = {
+      remove: vi.fn(),
+      select: vi.fn(),
+      setAttribute: vi.fn(),
+      style: {} as Record<string, string>,
+      value: '',
+    }
+
+    vi.stubGlobal('HTMLElement', FakeHTMLElement)
+    vi.stubGlobal('navigator', {
+      clipboard: {
+        writeText: vi.fn(async () => {
+          throw new Error('permission denied')
+        }),
+      },
+    })
+    vi.stubGlobal('document', {
+      activeElement,
+      body: { append: vi.fn() },
+      contains: vi.fn((value: unknown) => value === activeElement),
+      createElement: vi.fn(() => textarea),
+      execCommand: vi.fn(() => true),
+    })
+
+    await expect(writeClipboardText('fallback text')).resolves.toBeUndefined()
+
+    expect(textarea.select).toHaveBeenCalledTimes(1)
+    expect(textarea.remove).toHaveBeenCalledTimes(1)
+    expect(activeElement.focus).toHaveBeenCalledWith({ preventScroll: true })
   })
 
   it('rejects when every clipboard path fails and removes the textarea', async () => {

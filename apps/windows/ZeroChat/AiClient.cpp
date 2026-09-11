@@ -40,6 +40,8 @@ namespace ZeroChat
         constexpr uint64_t WindowsAiAudioResponseMaxBytes = 32'000'000;
         constexpr uint64_t WindowsAiStreamResponseMaxBytes = 8'000'000;
         constexpr HRESULT ProviderTimeoutHresult = HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+        constexpr HRESULT ProviderEmptyResponseHresult =
+            MAKE_HRESULT(SEVERITY_ERROR, FACILITY_ITF, 0x201);
         constexpr uint32_t WindowsAiGenerationAutoRetries = 3;
 
         HttpClient CreateCredentialBoundHttpClient()
@@ -493,7 +495,8 @@ namespace ZeroChat
             hresult_error const& error,
             uint32_t httpStatus)
         {
-            if (error.code() == ProviderTimeoutHresult)
+            if (error.code() == ProviderTimeoutHresult ||
+                error.code() == ProviderEmptyResponseHresult)
             {
                 return true;
             }
@@ -758,7 +761,10 @@ namespace ZeroChat
             auto delta = ChatDeltaFromSseData(data);
             if (!delta.empty())
             {
-                emittedToken = true;
+                if (!Trim(delta).empty())
+                {
+                    emittedToken = true;
+                }
                 if (onToken)
                 {
                     onToken(delta);
@@ -1091,6 +1097,12 @@ namespace ZeroChat
                 }
 
                 co_await ReadSseWithTimeoutAsync(response.Content(), onToken, emittedToken);
+                if (!emittedToken)
+                {
+                    throw hresult_error(
+                        ProviderEmptyResponseHresult,
+                        L"The provider returned an empty response.");
+                }
                 co_return;
             }
             catch (hresult_error const& error)

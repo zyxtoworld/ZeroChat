@@ -1,15 +1,13 @@
 const CACHE_PREFIX = 'zerochat-shell-'
 const CACHE_NAME = `${CACHE_PREFIX}__ZEROCHAT_CACHE_VERSION__`
 const MAX_CACHE_ENTRIES = 64
-const scopeUrl = self.registration.scope
-const shellUrl = (path) => new URL(path, scopeUrl).href
+const shellUrl = (path) => new URL(path, self.registration.scope).href
 const indexUrl = shellUrl('index.html')
-const staticAssetPaths = JSON.parse('__ZEROCHAT_STATIC_ASSET_PATHS__')
+const staticAssetPaths = ['__ZEROCHAT_STATIC_ASSET_PATHS__']
 const staticAssetUrls = staticAssetPaths.map(shellUrl)
 const staticAssetUrlSet = new Set(staticAssetUrls)
 const cacheableDestinations =
-  /^(document|font|image|manifest|script|style|worker)$/
-const sameOrigin = (url) => new URL(url).origin === location.origin
+  /^(document|font|image|manifest|script|style|worker)/
 
 function reportServiceWorkerCacheFailure(operation) {
   try {
@@ -45,45 +43,37 @@ async function pruneRuntimeCache(cache) {
   const keys = await cache.keys()
   let overflow = keys.length - MAX_CACHE_ENTRIES
 
-  if (overflow <= 0) {
-    return
-  }
-
-  const preservedUrls = new Set(staticAssetUrls)
-
   for (const request of keys) {
     if (overflow <= 0) {
       break
     }
 
-    if (!preservedUrls.has(request.url)) {
+    if (!staticAssetUrlSet.has(request.url)) {
       await cache.delete(request)
       overflow -= 1
     }
   }
 }
 
-async function cacheRuntimeResponse(cache, request, response) {
-  if (!response.ok || !sameOrigin(request.url)) {
-    return
-  }
-
-  try {
-    await cache.put(request, response.clone())
-    await pruneRuntimeCache(cache)
-  } catch {
-    reportServiceWorkerCacheFailure('runtime-cache')
-  }
-}
-
 function staleWhileRevalidate(event, request) {
   const networkResponse = caches.open(CACHE_NAME).then(async (cache) => {
     const response = await fetch(request)
-    await cacheRuntimeResponse(cache, request, response)
+    if (response.ok && new URL(request.url).origin === location.origin) {
+      try {
+        const cacheNames = await zeroChatCacheNames()
+        if (!cacheNames.includes(CACHE_NAME)) {
+          return response
+        }
+        await cache.put(request, response.clone())
+        await pruneRuntimeCache(cache)
+      } catch {
+        reportServiceWorkerCacheFailure('runtime-cache')
+      }
+    }
     return response
   })
 
-  event.waitUntil(networkResponse.then(() => undefined, () => undefined))
+  event.waitUntil(networkResponse.catch(() => undefined))
   return matchVersionedAsset(request).then(
     (cachedResponse) => cachedResponse ?? networkResponse,
   )
@@ -95,7 +85,7 @@ addEventListener('install', (event) => {
       .open(CACHE_NAME)
       .then((cache) => cache.addAll(staticAssetUrls))
       .catch((error) => {
-        reportServiceWorkerCacheFailure('install-static')
+        reportServiceWorkerCacheFailure('install-shell')
         throw error
       }),
   )
@@ -126,32 +116,23 @@ addEventListener('fetch', (event) => {
   const request = event.request
 
   if (
-    request.method !== 'GET' ||
-    !cacheableDestinations.test(request.destination)
+    request.method === 'GET' &&
+    cacheableDestinations.test(request.destination)
   ) {
-    return
-  }
+    const cacheRequest =
+      request.mode === 'navigate'
+        ? indexUrl
+        : staticAssetUrlSet.has(request.url) &&
+            !request.url.includes('/assets/')
+          ? request
+          : undefined
 
-  if (request.mode === 'navigate') {
     event.respondWith(
-      matchVersionedAsset(indexUrl).then(
-        (cachedResponse) => cachedResponse ?? fetch(request),
-      ),
+      cacheRequest
+        ? matchVersionedAsset(cacheRequest).then(
+            (cachedResponse) => cachedResponse ?? fetch(request),
+          )
+        : staleWhileRevalidate(event, request),
     )
-    return
   }
-
-  if (
-    staticAssetUrlSet.has(request.url) &&
-    !new URL(request.url).pathname.includes('/assets/')
-  ) {
-    event.respondWith(
-      matchVersionedAsset(request).then(
-        (cachedResponse) => cachedResponse ?? fetch(request),
-      ),
-    )
-    return
-  }
-
-  event.respondWith(staleWhileRevalidate(event, request))
 })

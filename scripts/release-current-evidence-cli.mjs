@@ -12,6 +12,16 @@ Modes:
   --help, -h       Show this help without reading evidence or writing documents.`
 }
 
+export function shouldAllowStaleVerifyReleaseCheckpointForWriteDocs({
+  mode = 'report',
+  environment = {},
+} = {}) {
+  return (
+    mode === 'write-docs' &&
+    environment.ZEROCHAT_ALLOW_STALE_VERIFY_RELEASE_CHECKPOINT === '1'
+  )
+}
+
 export function parseCurrentEvidenceCliArgs(args) {
   const cliArgs = (Array.isArray(args) ? args : []).filter((arg) => arg !== '--')
 

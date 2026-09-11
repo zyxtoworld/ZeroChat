@@ -50,11 +50,14 @@ export function composerTextareaLayout(
     numericCssPixels(metrics.borderBottomWidth)
   const minHeight = Math.ceil(lineHeight * minRows + chrome)
   const maxHeight = Math.ceil(lineHeight * maxRows + chrome)
-  const height = Math.min(Math.max(scrollHeight, minHeight), maxHeight)
+  const measuredHeight = Number.isFinite(scrollHeight)
+    ? Math.max(0, scrollHeight)
+    : 0
+  const height = Math.min(Math.max(measuredHeight, minHeight), maxHeight)
 
   return {
     height,
-    overflowY: scrollHeight > maxHeight + 1 ? 'auto' : 'hidden',
+    overflowY: measuredHeight > maxHeight + 1 ? 'auto' : 'hidden',
   }
 }
 

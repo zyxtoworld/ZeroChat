@@ -1,26 +1,49 @@
 import assert from 'node:assert/strict'
-import { spawn, spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
 import { access, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { spawn, spawnSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
-import { inflateSync } from 'node:zlib'
+
 import { resolveFetchSafeLoopbackPort } from './fetch-safe-loopback-port.mjs'
 import { startViteDevLoopbackServer } from './vite-loopback-server.mjs'
 import {
   connectCdp,
-  readJson as readCdpJson,
-  waitForChrome as waitForCdpChrome,
+  waitForMainFrameLoadCompletion,
+  waitForCdpPageTarget,
+  waitForChrome,
 } from './browser-cdp.mjs'
+import { runActionWithExpectedConfirm } from './browser-confirm-dialog.mjs'
 import {
   removeBrowserProfileWithRetry,
+  settleBrowserRuntimeCleanup,
   stopChildProcessTree,
 } from './browser-runtime-cleanup.mjs'
+import {
+  analyzePngScreenshot,
+  writeVisualContactSheet,
+  writeVisualGallery,
+} from './visual-audit-artifacts.mjs'
+import {
+  renderedActionTargetMeetsMinimum,
+  renderedButtonContentIsCentered,
+  renderedControlOverlap,
+  renderedElementClipsContent,
+  renderedPlaceholderFits,
+  renderedSurfaceIsClosed,
+  renderedTouchTargetMeetsMinimum,
+  renderedVisibleRect,
+} from './visual-geometry-contract.mjs'
 
 const rawArgs = process.argv.slice(2)
-const visualAuditSummaryOnly =
+const summaryOnly =
   rawArgs.includes('--summary') || process.env.ZEROCHAT_VISUAL_SUMMARY_ONLY === '1'
+const outputDir = path.resolve(process.env.ZEROCHAT_VISUAL_DIR ?? '.visual-audit')
+const providedAppUrl = process.env.ZEROCHAT_VISUAL_URL ?? ''
+const visualAuditBaseScreenshotCount = 69
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 async function executableExists(value) {
   if (!value.includes('\\') && !value.includes('/')) {
@@ -57,244 +80,17 @@ async function resolveChromePath() {
   ].filter(Boolean)
 
   for (const candidate of candidates) {
-    if (await executableExists(candidate)) {
-      return candidate
-    }
+    if (await executableExists(candidate)) return candidate
   }
 
   throw new Error('Chrome or Chromium was not found. Set CHROME_PATH to run visual audit.')
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms)
-  })
-}
-
-function escapeHtml(value) {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-}
-
-function paethPredictor(left, up, upperLeft) {
-  const estimate = left + up - upperLeft
-  const leftDistance = Math.abs(estimate - left)
-  const upDistance = Math.abs(estimate - up)
-  const upperLeftDistance = Math.abs(estimate - upperLeft)
-
-  if (leftDistance <= upDistance && leftDistance <= upperLeftDistance) return left
-  if (upDistance <= upperLeftDistance) return up
-  return upperLeft
-}
-
-function pngChannels(colorType) {
-  switch (colorType) {
-    case 0:
-    case 3:
-      return 1
-    case 2:
-      return 3
-    case 4:
-      return 2
-    case 6:
-      return 4
-    default:
-      throw new Error(`Unsupported PNG color type: ${colorType}`)
-  }
-}
-
-function parsePng(buffer) {
-  const signature = '89504e470d0a1a0a'
-
-  if (buffer.subarray(0, 8).toString('hex') !== signature) {
-    throw new Error('Screenshot is not a PNG')
-  }
-
-  let offset = 8
-  let ihdr = null
-  let palette = null
-  const idatParts = []
-
-  while (offset < buffer.length) {
-    const length = buffer.readUInt32BE(offset)
-    const type = buffer.subarray(offset + 4, offset + 8).toString('ascii')
-    const chunkStart = offset + 8
-    const chunkEnd = chunkStart + length
-
-    if (chunkEnd + 4 > buffer.length) {
-      throw new Error(`PNG chunk is truncated: ${type}`)
-    }
-
-    const data = buffer.subarray(chunkStart, chunkEnd)
-
-    if (type === 'IHDR') {
-      ihdr = {
-        width: data.readUInt32BE(0),
-        height: data.readUInt32BE(4),
-        bitDepth: data[8],
-        colorType: data[9],
-      }
-    } else if (type === 'PLTE') {
-      palette = data
-    } else if (type === 'IDAT') {
-      idatParts.push(data)
-    } else if (type === 'IEND') {
-      break
-    }
-
-    offset = chunkEnd + 4
-  }
-
-  if (!ihdr) throw new Error('PNG is missing IHDR')
-  if (idatParts.length === 0) throw new Error('PNG is missing IDAT')
-
-  return {
-    ...ihdr,
-    idat: Buffer.concat(idatParts),
-    palette,
-  }
-}
-
-function samplePngPixel(row, x, channels, colorType, palette) {
-  const offset = x * channels
-
-  if (colorType === 0) {
-    const value = row[offset]
-    return `${value},${value},${value},255`
-  }
-
-  if (colorType === 2) {
-    return `${row[offset]},${row[offset + 1]},${row[offset + 2]},255`
-  }
-
-  if (colorType === 3) {
-    const paletteOffset = row[offset] * 3
-    if (!palette || paletteOffset + 2 >= palette.length) return '0,0,0,255'
-    return `${palette[paletteOffset]},${palette[paletteOffset + 1]},${palette[paletteOffset + 2]},255`
-  }
-
-  if (colorType === 4) {
-    const value = row[offset]
-    return `${value},${value},${value},${row[offset + 1]}`
-  }
-
-  return `${row[offset]},${row[offset + 1]},${row[offset + 2]},${row[offset + 3]}`
-}
-
-function analyzePngScreenshot(buffer, expectedViewport, name) {
-  const png = parsePng(buffer)
-
-  assert.equal(
-    png.width,
-    expectedViewport.width,
-    `${name} screenshot width should match the audited viewport`,
-  )
-  assert.equal(
-    png.height,
-    expectedViewport.height,
-    `${name} screenshot height should match the audited viewport`,
-  )
-  assert.equal(png.bitDepth, 8, `${name} screenshot should use 8-bit PNG samples`)
-
-  const channels = pngChannels(png.colorType)
-  const bytesPerPixel = channels
-  const rowLength = png.width * channels
-  const inflated = inflateSync(png.idat)
-  const expectedLength = (rowLength + 1) * png.height
-
-  assert.ok(
-    inflated.length >= expectedLength,
-    `${name} screenshot pixel payload is shorter than expected`,
-  )
-
-  const sampleStep = Math.max(1, Math.floor((png.width * png.height) / 8000))
-  const colors = new Set()
-  let previousRow = Buffer.alloc(rowLength)
-  let offset = 0
-  let pixelIndex = 0
-
-  for (let y = 0; y < png.height; y += 1) {
-    const filterType = inflated[offset]
-    offset += 1
-    const source = inflated.subarray(offset, offset + rowLength)
-    offset += rowLength
-    const row = Buffer.alloc(rowLength)
-
-    for (let x = 0; x < rowLength; x += 1) {
-      const left = x >= bytesPerPixel ? row[x - bytesPerPixel] : 0
-      const up = previousRow[x] ?? 0
-      const upperLeft = x >= bytesPerPixel ? previousRow[x - bytesPerPixel] : 0
-
-      if (filterType === 0) {
-        row[x] = source[x]
-      } else if (filterType === 1) {
-        row[x] = (source[x] + left) & 0xff
-      } else if (filterType === 2) {
-        row[x] = (source[x] + up) & 0xff
-      } else if (filterType === 3) {
-        row[x] = (source[x] + Math.floor((left + up) / 2)) & 0xff
-      } else if (filterType === 4) {
-        row[x] = (source[x] + paethPredictor(left, up, upperLeft)) & 0xff
-      } else {
-        throw new Error(`${name} screenshot uses unsupported PNG filter: ${filterType}`)
-      }
-    }
-
-    for (let x = 0; x < png.width; x += 1) {
-      if (pixelIndex % sampleStep === 0) {
-        colors.add(samplePngPixel(row, x, channels, png.colorType, png.palette))
-      }
-      pixelIndex += 1
-
-      if (colors.size >= 256) break
-    }
-
-    previousRow = row
-  }
-
-  assert.ok(
-    colors.size >= 16,
-    `${name} screenshot appears blank or visually collapsed (${colors.size} sampled colors)`,
-  )
-
-  return {
-    bytes: buffer.length,
-    colorType: png.colorType,
-    distinctSampledColors: colors.size,
-  }
-}
-
-async function readJson(url, init) {
-  return readCdpJson(url, init)
-}
-
-function connect(wsUrl) {
-  return connectCdp(wsUrl)
-}
-
-async function waitForChrome(port, chromeProcess) {
-  return waitForCdpChrome(port, {
-    childProcess: chromeProcess,
-    timeoutMs: 30_000,
-  })
-}
-
 function extractSupportedLocales(source) {
   const match = source.match(/const supportedLocales:\s*Locale\[\]\s*=\s*\[([\s\S]*?)\]/)
-
-  if (!match) {
-    throw new Error('Unable to find supportedLocales in src/i18n.ts.')
-  }
-
+  if (!match) throw new Error('Unable to find supportedLocales in src/i18n.ts.')
   const locales = [...match[1].matchAll(/'([^']+)'/g)].map((item) => item[1])
-
-  if (locales.length === 0) {
-    throw new Error('src/i18n.ts supportedLocales is empty.')
-  }
-
+  if (locales.length === 0) throw new Error('src/i18n.ts supportedLocales is empty.')
   return locales
 }
 
@@ -302,2702 +98,1765 @@ function localeDirection(locale) {
   return locale === 'ar-SA' ? 'rtl' : 'ltr'
 }
 
-const i18nSourceText = await readFile('src/i18n.ts', 'utf8')
-const supportedLocales = extractSupportedLocales(i18nSourceText)
-const compactLanguageLocales = supportedLocales.map((locale) => [
-  locale,
-  localeDirection(locale),
-])
-const visualAuditBaseScreenshotCount = 108
-const expectedScreenshotCount =
-  visualAuditBaseScreenshotCount + compactLanguageLocales.length
-const chromePath = await resolveChromePath()
-const cdpPort = await resolveFetchSafeLoopbackPort(
-  process.env.ZEROCHAT_VISUAL_CDP_PORT,
-  'Visual audit Chrome remote debugging',
-)
-const providedAppUrl = process.env.ZEROCHAT_VISUAL_URL
-let appUrl = providedAppUrl ?? ''
-const profileDir = path.join(os.tmpdir(), `zerochat-visual-audit-${Date.now()}`)
-const outputDir = path.resolve(process.env.ZEROCHAT_VISUAL_DIR ?? '.visual-audit')
-let screenshotIndex = 1
-let currentViewport = { width: 1440, height: 900 }
-const screenshotRecords = []
-
-async function cleanOutputScreenshots(directory) {
+async function cleanOutput(directory) {
   await mkdir(directory, { recursive: true })
   const entries = await readdir(directory, { withFileTypes: true })
-
   await Promise.all(
     entries
       .filter(
         (entry) =>
           entry.isFile() &&
-          (entry.name.toLowerCase().endsWith('.png') ||
-            entry.name === 'visual-audit-contact-sheet.jpg' ||
+          (entry.name.endsWith('.png') ||
             entry.name === 'visual-audit-gallery.html' ||
+            entry.name === 'visual-audit-contact-sheet.jpg' ||
             entry.name === 'visual-audit-manifest.json'),
       )
       .map((entry) => rm(path.join(directory, entry.name), { force: true })),
   )
 }
 
-async function writeVisualGallery(directory, records) {
-  const cards = records
-    .map((record) => {
-      const title = `${String(record.index).padStart(2, '0')}. ${record.name}`
-      const size = `${record.viewport.width}x${record.viewport.height}`
-      const quality = `${record.analysis.distinctSampledColors} colors · ${Math.round(
-        record.analysis.bytes / 1024,
-      )} KB`
-
-      return `
-        <figure class="shot">
-          <a href="${escapeHtml(record.file)}" target="_blank" rel="noreferrer">
-            <img src="${escapeHtml(record.file)}" alt="${escapeHtml(title)}" loading="lazy">
-          </a>
-          <figcaption>
-            <strong>${escapeHtml(title)}</strong>
-            <span>${escapeHtml(`${size} · ${quality}`)}</span>
-          </figcaption>
-        </figure>`
-    })
-    .join('\n')
-
-  await writeFile(
-    path.join(directory, 'visual-audit-gallery.html'),
-    `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ZeroChat Visual Audit</title>
-  <style>
-    :root {
-      color-scheme: dark;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #101511;
-      color: #e5ece5;
+function visualSmokeScript() {
+  return `(() => {
+    const textOf = (element) =>
+      (element?.textContent || element?.getAttribute('aria-label') || element?.title || '')
+        .replace(/\\s+/g, ' ')
+        .trim()
+    const visible = (element) => {
+      if (!element) return false
+      const box = element.getBoundingClientRect()
+      const style = getComputedStyle(element)
+      return box.width > 0 && box.height > 0 && style.display !== 'none' &&
+        style.visibility !== 'hidden' && style.opacity !== '0'
     }
-
-    body {
-      margin: 0;
-      padding: 24px;
-    }
-
-    header {
-      max-width: 1120px;
-      margin: 0 auto 20px;
-    }
-
-    h1 {
-      margin: 0 0 6px;
-      font-size: 22px;
-      letter-spacing: 0;
-    }
-
-    p {
-      margin: 0;
-      color: #aeb8ad;
-      line-height: 1.5;
-    }
-
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 18px;
-      max-width: 1900px;
-      margin: 0 auto;
-    }
-
-    .shot {
-      margin: 0;
-      border: 1px solid #283229;
-      border-radius: 8px;
-      background: #151b16;
-      overflow: hidden;
-    }
-
-    .shot a {
-      display: block;
-      background: #0b0f0c;
-    }
-
-    .shot img {
-      display: block;
-      width: 100%;
-      height: 300px;
-      object-fit: contain;
-    }
-
-    figcaption {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 10px 12px;
-      font-size: 13px;
-      line-height: 1.35;
-    }
-
-    figcaption span {
-      color: #9aa699;
-      white-space: nowrap;
-    }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>ZeroChat Visual Audit</h1>
-    <p>Open each thumbnail to inspect the full-resolution screenshot. Review alignment, clipping, density, language expansion, RTL, sidebars, dialogs, and compact mobile states before release.</p>
-  </header>
-  <main class="grid">
-${cards}
-  </main>
-</body>
-</html>
-`,
-    'utf8',
-  )
-}
-
-async function writeVisualContactSheet(cdp, directory, evaluate) {
-  const galleryUrl = pathToFileURL(path.join(directory, 'visual-audit-gallery.html')).href
-  await cdp.send('Emulation.setDeviceMetricsOverride', {
-    width: 1960,
-    height: 1100,
-    deviceScaleFactor: 1,
-    mobile: false,
-  })
-  await cdp.send('Page.navigate', { url: galleryUrl })
-  await evaluate(
-    `new Promise((resolve) => {
-      const done = () => resolve(document.readyState)
-      if (document.readyState === 'complete') done()
-      else window.addEventListener('load', done, { once: true })
-    })`,
-    true,
-  )
-  await evaluate(
-    `Promise.race([
-      Promise.all(Array.from(document.images).map((image) => {
-        image.loading = 'eager'
-        if (image.complete && image.naturalWidth > 0) return true
-        return new Promise((resolve, reject) => {
-          image.addEventListener('load', () => resolve(true), { once: true })
-          image.addEventListener('error', () => reject(new Error('Contact sheet image failed to load: ' + image.src)), { once: true })
-        })
-      })),
-      new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Timed out while loading visual audit contact sheet images')), 10000)
+    const controls = (root = document) =>
+      [...root.querySelectorAll('button, [role="button"], label')].filter(visible)
+    const find = (names, root = document) => {
+      const values = Array.isArray(names) ? names : [names]
+      return controls(root).find((element) => {
+        const text = textOf(element)
+        return values.some((value) => text.includes(value))
       })
-    ])`,
-    true,
-  )
-  const metrics = await cdp.send('Page.getLayoutMetrics')
-  const { width, height } = metrics.cssContentSize
-  const result = await cdp.send('Page.captureScreenshot', {
-    format: 'jpeg',
-    quality: 82,
-    fromSurface: true,
-    captureBeyondViewport: true,
-    clip: {
-      x: 0,
-      y: 0,
-      width: Math.ceil(width),
-      height: Math.ceil(height),
-      scale: 1,
-    },
-  })
-  const contactSheetPath = path.join(directory, 'visual-audit-contact-sheet.jpg')
-  const contactSheet = Buffer.from(result.data, 'base64')
-  await writeFile(contactSheetPath, contactSheet)
-
-  return {
-    path: path.resolve(contactSheetPath),
-    bytes: contactSheet.length,
-    sha256: createHash('sha256').update(contactSheet).digest('hex').toUpperCase(),
-    width: Math.ceil(width),
-    height: Math.ceil(height),
-  }
+    }
+    const setNativeValue = (element, value) => {
+      const prototype = element instanceof HTMLSelectElement
+        ? HTMLSelectElement.prototype
+        : element instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype
+      const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value')
+      descriptor?.set?.call(element, value)
+      element.dispatchEvent(new Event('input', { bubbles: true }))
+      element.dispatchEvent(new Event('change', { bubbles: true }))
+    }
+    window.__zeroChatVisual = {
+      textOf,
+      visible,
+      click(names, root = document) {
+        const element = find(names, root)
+        if (!element) {
+          throw new Error('Missing production control: ' + valuesToText(names))
+        }
+        element.click()
+        return textOf(element)
+      },
+      clickSelector(selector) {
+        const element = document.querySelector(selector)
+        if (!element || !visible(element)) throw new Error('Missing production selector: ' + selector)
+        element.click()
+        return true
+      },
+      async clickFirstConversationDelete() {
+        const row = document.querySelector('.zc-conv-item')
+        if (!(row instanceof HTMLElement)) {
+          throw new Error('Missing conversation row')
+        }
+        row.focus({ preventScroll: true })
+        await new Promise((resolve) => requestAnimationFrame(resolve))
+        const element = document.querySelector('.zc-conv-item .zc-conv-actions button:last-child:not([disabled])')
+        if (!(element instanceof HTMLButtonElement) || !visible(element)) {
+          throw new Error('Missing enabled conversation delete action')
+        }
+        element.click()
+        return true
+      },
+      clickTab(id) {
+        const element = document.querySelector('#settings-tab-' + id)
+        if (!element || !visible(element)) throw new Error('Missing settings tab: ' + id)
+        element.click()
+        return true
+      },
+      setSelectValue(value) {
+        const element = [...document.querySelectorAll('select')]
+          .find((candidate) => [...candidate.options].some((option) => option.value === value))
+        if (!element) throw new Error('Missing select option: ' + value)
+        setNativeValue(element, value)
+        return element.value
+      },
+      setCompact(value) {
+        const element = document.querySelector('.zc-settings [role="switch"]')
+        if (!element) throw new Error('Missing compact-mode switch')
+        if ((element.getAttribute('aria-checked') === 'true') !== value) element.click()
+        return element.getAttribute('aria-checked')
+      },
+      setProviderKey(value) {
+        const element = document.querySelector('.zc-provider-card input[type="password"]')
+        if (!element) throw new Error('Missing provider credential field')
+        element.focus()
+        element.select()
+        document.execCommand?.('insertText', false, value)
+        setNativeValue(element, value)
+        return element.value
+      },
+      focusProviderKey() {
+        const element = document.querySelector('.zc-provider-card input[type="password"]')
+        if (!element) throw new Error('Missing provider credential field')
+        element.focus()
+        element.select()
+        return true
+      },
+      async saveProviderKey() {
+        const card = document.querySelector('.zc-provider-card')
+        const element = [...(card?.querySelectorAll('button.zc-btn') ?? [])]
+          .find((candidate) => ['保存', 'Save'].some((value) => textOf(candidate).includes(value)))
+        if (!element) throw new Error('Missing provider credential save control')
+        element.click()
+        for (let attempt = 0; attempt < 80; attempt += 1) {
+          const input = card?.querySelector('input[type="password"]')
+          const fieldShowsSavedState = Boolean(
+            input?.placeholder?.includes('保存') ||
+            input?.placeholder?.includes('saved'),
+          )
+          if (element.disabled || fieldShowsSavedState) {
+            return {
+              saveDisabled: Boolean(element.disabled),
+              fieldHasValue: Boolean(input?.value),
+              fieldShowsSavedState,
+            }
+          }
+          await new Promise((resolve) => setTimeout(resolve, 25))
+        }
+        const input = card?.querySelector('input[type="password"]')
+        return {
+          saveDisabled: Boolean(element.disabled),
+          fieldHasValue: Boolean(input?.value),
+          fieldShowsSavedState: Boolean(
+            input?.placeholder?.includes('保存') ||
+            input?.placeholder?.includes('saved'),
+          ),
+        }
+      },
+      async saveDataPassphrase(value) {
+        const input = document.querySelector('[data-zc-sync-passphrase="true"]')
+        if (!(input instanceof HTMLInputElement)) {
+          throw new Error('Missing current data passphrase field')
+        }
+        setNativeValue(input, value)
+        const row = input.closest('.zc-credential-row')
+        const save = row?.querySelector('button.zc-btn')
+        if (!(save instanceof HTMLButtonElement)) {
+          throw new Error('Missing current data passphrase save control')
+        }
+        for (let attempt = 0; attempt < 80 && save.disabled; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 25))
+        }
+        if (save.disabled) {
+          throw new Error('Current data passphrase save control did not become enabled')
+        }
+        save.click()
+        for (let attempt = 0; attempt < 80; attempt += 1) {
+          if (input.value === '' && save.disabled) {
+            return { fieldCleared: true, saveDisabled: true }
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50))
+        }
+        return { fieldCleared: input.value === '', saveDisabled: save.disabled }
+      },
+      setSidebarCollapsed(value) {
+        const sidebar = document.querySelector('.zc-sidebar')
+        if (!sidebar) throw new Error('Missing sidebar')
+        if (sidebar.classList.contains('collapsed') !== value) {
+          const button = document.querySelector('.zc-chat-header .zc-icon-btn')
+          if (!button) throw new Error('Missing sidebar toggle')
+          button.click()
+        }
+        return sidebar.classList.contains('collapsed')
+      },
+      scrollSettings(position) {
+        const element = document.querySelector('.zc-settings-scroll')
+        if (!element) throw new Error('Missing settings scroll area')
+        element.scrollTop = position === 'top' ? 0 : element.scrollHeight
+        element.dispatchEvent(new Event('scroll', { bubbles: true }))
+        return element.scrollTop
+      },
+      dismissToast() {
+        document.querySelector('.zc-toast button')?.click()
+      },
+      async sendOfflineProbe(value) {
+        const textarea = document.querySelector('.zc-composer textarea')
+        if (!textarea) throw new Error('Missing production composer')
+        setNativeValue(textarea, value)
+        document.querySelector('.zc-send-btn:not([disabled])')?.click()
+        for (let attempt = 0; attempt < 80; attempt += 1) {
+          const queued = document.querySelectorAll('.zc-msg.message.queued').length
+          const toast = document.querySelector('.zc-toast')
+          if (queued > 0 && toast) return { queued, toast: textOf(toast) }
+          await new Promise((resolve) => setTimeout(resolve, 50))
+        }
+        return {
+          queued: document.querySelectorAll('.zc-msg.message.queued').length,
+          toast: textOf(document.querySelector('.zc-toast')),
+        }
+      },
+      focusComposer() {
+        const textarea = document.querySelector('.zc-composer textarea')
+        if (!textarea) throw new Error('Missing production composer')
+        textarea.focus()
+        textarea.select()
+        return true
+      },
+      async submitOfflineProbe() {
+        document.querySelector('.zc-send-btn:not([disabled])')?.click()
+        for (let attempt = 0; attempt < 80; attempt += 1) {
+          const queued = document.querySelectorAll('.zc-msg.message.queued').length
+          const toast = document.querySelector('.zc-toast')
+          if (queued > 0 && toast) return { queued, toast: textOf(toast) }
+          await new Promise((resolve) => setTimeout(resolve, 50))
+        }
+        return {
+          queued: document.querySelectorAll('.zc-msg.message.queued').length,
+          toast: textOf(document.querySelector('.zc-toast')),
+        }
+      },
+    }
+    function valuesToText(value) {
+      return (Array.isArray(value) ? value : [value]).join(' / ')
+    }
+    return true
+  })()`
 }
-
-await mkdir(profileDir, { recursive: true })
-await cleanOutputScreenshots(outputDir)
-
-let devServer = null
-if (!providedAppUrl) {
-  devServer = await startViteDevLoopbackServer({
-    configuredPort: process.env.ZEROCHAT_VISUAL_APP_PORT,
-    serverLabel: 'Visual audit app server',
-  })
-  appUrl = devServer.url
-}
-
-const chrome = spawn(
-  chromePath,
-  [
-    '--headless=new',
-    `--remote-debugging-port=${cdpPort}`,
-    `--user-data-dir=${profileDir}`,
-    '--disable-gpu',
-    '--disable-extensions',
-    '--no-first-run',
-    '--no-default-browser-check',
-    'about:blank',
-  ],
-  {
-    stdio: 'ignore',
-    windowsHide: true,
-  },
-)
 
 async function main() {
-  await waitForChrome(cdpPort, chrome)
-
-  const target = await readJson(
-    `http://127.0.0.1:${cdpPort}/json/new?${encodeURIComponent(appUrl)}`,
-    { method: 'PUT' },
+  const supportedLocales = extractSupportedLocales(await readFile('src/i18n.ts', 'utf8'))
+  const expectedScreenshotCount = visualAuditBaseScreenshotCount + supportedLocales.length
+  const chromePath = await resolveChromePath()
+  const cdpPort = await resolveFetchSafeLoopbackPort(
+    process.env.ZEROCHAT_VISUAL_CDP_PORT,
+    'Visual audit Chrome remote debugging',
   )
-  const cdp = await connect(target.webSocketDebuggerUrl)
-  const screenshots = []
-  const errors = []
+  const profileDir = path.join(os.tmpdir(), `zerochat-visual-audit-${Date.now()}`)
+  await mkdir(profileDir, { recursive: true })
+  await cleanOutput(outputDir)
 
-  const evaluate = async (expression, awaitPromise = false) => {
-    const result = await cdp.send('Runtime.evaluate', {
-      expression,
-      awaitPromise,
-      returnByValue: true,
+  let appUrl = providedAppUrl
+  let devServer = null
+  if (!appUrl) {
+    devServer = await startViteDevLoopbackServer({
+      configuredPort: process.env.ZEROCHAT_VISUAL_APP_PORT,
+      serverLabel: 'Visual audit app server',
+    })
+    appUrl = devServer.url
+  }
+
+  const chrome = spawn(
+    chromePath,
+    [
+      '--headless=new',
+      `--remote-debugging-port=${cdpPort}`,
+      `--user-data-dir=${profileDir}`,
+      '--disable-gpu',
+      '--disable-extensions',
+      '--no-first-run',
+      '--no-default-browser-check',
+      'about:blank',
+    ],
+    { detached: process.platform !== 'win32', stdio: 'ignore', windowsHide: true },
+  )
+  chrome.zerochatProcessGroupLeader = process.platform !== 'win32'
+
+  let cdp = null
+  try {
+    await waitForChrome(cdpPort, { childProcess: chrome, timeoutMs: 30_000 })
+    const target = await waitForCdpPageTarget(cdpPort, { timeoutMs: 30_000 })
+    cdp = await connectCdp(target.webSocketDebuggerUrl)
+    const screenshots = []
+    const errors = []
+    let viewport = { width: 1440, height: 900 }
+    let screenshotIndex = 1
+
+    cdp.on('Runtime.exceptionThrown', (params) => {
+      errors.push(params.exceptionDetails?.text ?? 'Runtime exception')
     })
 
-    if (result.exceptionDetails) {
-      throw new Error(
-        result.exceptionDetails.exception?.description ??
-          result.exceptionDetails.text ??
-          'Browser evaluation failed',
+    const evaluate = async (expression, awaitPromise = false) => {
+      const result = await cdp.send('Runtime.evaluate', {
+        expression,
+        awaitPromise,
+        returnByValue: true,
+      })
+      if (result.exceptionDetails) {
+        throw new Error(
+          result.exceptionDetails.exception?.description ??
+            result.exceptionDetails.text ??
+            'Browser evaluation failed',
+        )
+      }
+      return result.result.value
+    }
+
+    const waitForPaint = async () => {
+      await evaluate(
+        'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))',
+        true,
       )
     }
 
-    return result.result.value
-  }
-
-  const waitForPaint = async () => {
-    await evaluate(
-      `new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`,
-      true,
-    )
-  }
-  const waitForDeferredSettingsScroll = async () => {
-    await evaluate(`new Promise((resolve) => setTimeout(resolve, 0))`, true)
-    await waitForPaint()
-  }
-
-  const setViewport = async (width, height, mobile = false) => {
-    currentViewport = { width, height }
-    await cdp.send('Emulation.setDeviceMetricsOverride', {
-      width,
-      height,
-      deviceScaleFactor: 1,
-      mobile,
-    })
-    await sleep(180)
-    await waitForPaint()
-  }
-
-  const assertViewportFit = async (name) => {
-    const metrics = await evaluate(`(() => {
-      const modal = document.querySelector('.modal')
-      const modalBox = modal?.getBoundingClientRect()
-      const scope = modal ?? document
-      const actionSelector = [
-        'button',
-        '[role="button"]',
-        'label.file-button',
-        '.ghost-button',
-        '.primary-button',
-        '.danger-button',
-        '.send-button',
-        '.danger-skip',
-      ].join(',')
-      const fieldSelector = [
-        'input:not([type="file"]):not([type="checkbox"]):not([type="radio"]):not([type="range"])',
-        'select',
-        'textarea',
-      ].join(',')
-      const groupSelector = [
-        '.composer-toolbar',
-        '.image-mode-tabs',
-        '.segmented',
-        '.mode-grid',
-        '.modal-actions',
-      ].join(',')
-      const centeredControlSelector = [
-        '.primary-button',
-        '.ghost-button',
-        '.danger-button',
-        '.send-button',
-        'label.file-button',
-        '.composer-toolbar button',
-        '.image-mode-tabs button',
-        '.segmented button',
-      ].join(',')
-      const visibleRectFor = (element) => {
-        const base = element.getBoundingClientRect()
-        let rect = {
-          left: base.left,
-          right: base.right,
-          top: base.top,
-          bottom: base.bottom,
-          width: base.width,
-          height: base.height,
-        }
-        let parent = element.parentElement
-
-        while (parent && parent !== document.documentElement) {
-          const style = getComputedStyle(parent)
-          const clips =
-            ['auto', 'scroll', 'hidden', 'clip'].includes(style.overflowX) ||
-            ['auto', 'scroll', 'hidden', 'clip'].includes(style.overflowY)
-
-          if (clips) {
-            const parentBox = parent.getBoundingClientRect()
-            const left = Math.max(rect.left, parentBox.left)
-            const right = Math.min(rect.right, parentBox.right)
-            const top = Math.max(rect.top, parentBox.top)
-            const bottom = Math.min(rect.bottom, parentBox.bottom)
-
-            rect = {
-              left,
-              right,
-              top,
-              bottom,
-              width: right - left,
-              height: bottom - top,
-            }
-
-            if (rect.width <= 1 || rect.height <= 1) {
-              return null
-            }
+    const waitFor = async (expression, timeout = 8000) => {
+      const value = await evaluate(
+        `(async () => {
+          const started = Date.now()
+          while (Date.now() - started < ${timeout}) {
+            const value = (${expression})
+            if (value) return value
+            await new Promise((resolve) => setTimeout(resolve, 50))
           }
-
-          parent = parent.parentElement
-        }
-
-        return rect
-      }
-      const isVisible = (element) => {
-        const box = visibleRectFor(element)
-        const style = getComputedStyle(element)
-        const stickyBox = document.querySelector('.settings-sticky')?.getBoundingClientRect()
-        const hiddenBehindSticky =
-          Boolean(stickyBox) &&
-          Boolean(box) &&
-          box.bottom <= stickyBox.bottom + 1 &&
-          box.top < stickyBox.bottom
-        return (
-          Boolean(box) &&
-          box.width > 0 &&
-          box.height > 0 &&
-          style.display !== 'none' &&
-          style.visibility !== 'hidden' &&
-          style.opacity !== '0' &&
-          !hiddenBehindSticky
-        )
-      }
-      const textOf = (element) =>
-        (element.textContent ?? '')
-          .replace(/\\s+/g, ' ')
-          .trim()
-      const labelFor = (element) =>
-        (
-          textOf(element) ||
-          element.getAttribute('aria-label') ||
-          element.getAttribute('title') ||
-          (typeof element.className === 'string' ? element.className : '') ||
-          element.tagName.toLowerCase()
-        )
-          .replace(/\\s+/g, ' ')
-          .trim()
-          .slice(0, 80)
-      const clipsContent = (element) => {
-        const style = getComputedStyle(element)
-        const clipsX =
-          (style.overflowX === 'hidden' || style.overflowX === 'clip') &&
-          element.scrollWidth > element.clientWidth + 1
-        const clipsY =
-          (style.overflowY === 'hidden' || style.overflowY === 'clip') &&
-          element.scrollHeight > element.clientHeight + 1
-        return clipsX || clipsY
-      }
-      const placeholderTooWide = (element) => {
-        const placeholder = element.getAttribute('placeholder')?.trim()
-        if (!placeholder || element.value) return false
-
-        const style = getComputedStyle(element)
-        const canvas = document.createElement('canvas')
-        const context = canvas.getContext('2d')
-        if (!context) return false
-
-        context.font = [
-          style.fontStyle,
-          style.fontVariant,
-          style.fontWeight,
-          style.fontSize,
-          style.fontFamily,
-        ].join(' ')
-
-        const padding =
-          Number.parseFloat(style.paddingLeft || '0') +
-          Number.parseFloat(style.paddingRight || '0')
-        const available = element.clientWidth - padding - 2
-        const measured = context.measureText(placeholder).width
-
-        return measured > available + 1
-      }
-      const clippedControls = Array.from(scope.querySelectorAll(actionSelector))
-        .filter((element) => isVisible(element) && !element.classList.contains('sidebar-backdrop'))
-        .filter((element) => textOf(element) && !element.classList.contains('icon-button'))
-        .filter(clipsContent)
-        .map(labelFor)
-      const clippedGroups = Array.from(scope.querySelectorAll(groupSelector))
-        .filter(isVisible)
-        .filter(clipsContent)
-        .map(labelFor)
-      const clippedPlaceholders = Array.from(
-        scope.querySelectorAll(
-          'input[placeholder]:not([type="file"]):not([type="checkbox"]):not([type="radio"]), textarea[placeholder]',
-        ),
+          return (${expression})
+        })()`,
+        true,
       )
-        .filter(isVisible)
-        .filter(placeholderTooWide)
-        .map((element) => {
-          const placeholder = element.getAttribute('placeholder')?.trim() ?? ''
-          const box = element.getBoundingClientRect()
-          return (
-            labelFor(element) +
-            ' placeholder "' +
-            placeholder +
-            '" in ' +
-            Math.round(box.width) +
-            'px'
-          )
-        })
-      const measuredActions = Array.from(scope.querySelectorAll(actionSelector)).filter(
-        (element) =>
-          isVisible(element) &&
-          !element.classList.contains('sidebar-backdrop') &&
-          !element.closest('[aria-hidden="true"]'),
-      )
-      const measuredControls = Array.from(
-        scope.querySelectorAll(actionSelector + ',' + fieldSelector),
-      ).filter(
-        (element) =>
-          isVisible(element) &&
-          !element.classList.contains('sidebar-backdrop') &&
-          !element.closest('[aria-hidden="true"]'),
-      )
-      const smallTargets = measuredActions
-        .filter((element) => {
-          const visibleBox = visibleRectFor(element)
-          const rawBox = element.getBoundingClientRect()
-          const clippedByScrollableAncestor =
-            Boolean(visibleBox) &&
-            (visibleBox.width < rawBox.width - 1 ||
-              visibleBox.height < rawBox.height - 1)
-          return (
-            Boolean(visibleBox) &&
-            !clippedByScrollableAncestor &&
-            (rawBox.width < 28 || rawBox.height < 28)
-          )
-        })
-        .map((element) => {
-          const box = element.getBoundingClientRect()
-          return (
-            labelFor(element) +
-            ' (' +
-            Math.round(box.width * 10) / 10 +
-            'x' +
-            Math.round(box.height * 10) / 10 +
-            'px)'
-          )
-        })
-      const overlappingControls = []
-      const controlBoxes = measuredControls.map((element) => ({
-        element,
-        label: labelFor(element),
-        rect: visibleRectFor(element),
-      })).filter((item) => item.rect)
-
-      for (let leftIndex = 0; leftIndex < controlBoxes.length; leftIndex += 1) {
-        for (let rightIndex = leftIndex + 1; rightIndex < controlBoxes.length; rightIndex += 1) {
-          const left = controlBoxes[leftIndex]
-          const right = controlBoxes[rightIndex]
-
-          if (left.element.contains(right.element) || right.element.contains(left.element)) {
-            continue
-          }
-
-          const xOverlap =
-            Math.min(left.rect.right, right.rect.right) - Math.max(left.rect.left, right.rect.left)
-          const yOverlap =
-            Math.min(left.rect.bottom, right.rect.bottom) - Math.max(left.rect.top, right.rect.top)
-
-          if (xOverlap > 2 && yOverlap > 2) {
-            overlappingControls.push(
-              left.label +
-                ' <> ' +
-                right.label +
-                ' (' +
-                Math.round(xOverlap * 10) / 10 +
-                'x' +
-                Math.round(yOverlap * 10) / 10 +
-                'px)',
-            )
-          }
-        }
+      if (!value) {
+        throw new Error(`Timed out waiting for visual-audit expression: ${expression}`)
       }
-      const contentRectsFor = (node) => {
-        if (node.nodeType === Node.TEXT_NODE) {
-          if (!node.textContent?.trim() || typeof document.createRange !== 'function') return []
-
-          const range = document.createRange()
-          range.selectNodeContents(node)
-          return Array.from(range.getClientRects()).filter(
-            (rect) => rect.width > 0 && rect.height > 0,
-          )
-        }
-
-        if (node.nodeType !== Node.ELEMENT_NODE) return []
-
-        const element = node
-        if (element.matches('input, textarea, select')) return []
-
-        const style = getComputedStyle(element)
-        if (
-          style.display === 'none' ||
-          style.visibility === 'hidden' ||
-          style.opacity === '0'
-        ) {
-          return []
-        }
-
-        const directContent = Array.from(element.childNodes).flatMap(contentRectsFor)
-        if (directContent.length) return directContent
-
-        const box = element.getBoundingClientRect()
-        return box.width > 0 && box.height > 0 ? [box] : []
-      }
-      const unionRects = (rects) =>
-        rects.reduce(
-          (acc, rect) => ({
-            left: Math.min(acc.left, rect.left),
-            right: Math.max(acc.right, rect.right),
-            top: Math.min(acc.top, rect.top),
-            bottom: Math.max(acc.bottom, rect.bottom),
-          }),
-          { left: Infinity, right: -Infinity, top: Infinity, bottom: -Infinity },
-        )
-      const offCenterControls = Array.from(scope.querySelectorAll(centeredControlSelector))
-        .filter((element) => isVisible(element) && textOf(element))
-        .filter((element) => !element.classList.contains('icon-button'))
-        .map((element) => {
-          const box = element.getBoundingClientRect()
-          const contentRects = contentRectsFor(element)
-          if (!contentRects.length) return null
-
-          const content = unionRects(contentRects)
-          const dx = Math.abs((content.left + content.right) / 2 - (box.left + box.right) / 2)
-          const dy = Math.abs((content.top + content.bottom) / 2 - (box.top + box.bottom) / 2)
-          const maxDx = Math.max(3, box.width * 0.08)
-          const maxDy = Math.max(3, box.height * 0.12)
-
-          return dx > maxDx || dy > maxDy
-            ? labelFor(element) +
-                ' (' +
-                Math.round(dx * 10) / 10 +
-                'px x, ' +
-                Math.round(dy * 10) / 10 +
-                'px y)'
-            : null
-        })
-        .filter(Boolean)
-
-      return {
-        innerWidth: window.innerWidth,
-        innerHeight: window.innerHeight,
-        rootScrollWidth: document.documentElement.scrollWidth,
-        bodyScrollWidth: document.body?.scrollWidth ?? 0,
-        horizontalOverflow:
-          document.documentElement.scrollWidth > window.innerWidth + 1 ||
-          (document.body?.scrollWidth ?? 0) > window.innerWidth + 1,
-        modalOutOfBounds: modalBox
-          ? modalBox.left < -1 ||
-            modalBox.right > window.innerWidth + 1 ||
-            modalBox.top < -1 ||
-            modalBox.bottom > window.innerHeight + 1
-          : false,
-        clippedControls,
-        clippedGroups,
-        clippedPlaceholders,
-        smallTargets,
-        overlappingControls,
-        offCenterControls,
-        modalBackgroundIsolated: (() => {
-          if (!modal) return true
-
-          const main = document.querySelector('.chat-pane')
-          const sidebar = document.querySelector('.sidebar')
-
-          return Boolean(
-            main?.getAttribute('aria-hidden') === 'true' &&
-              main.hasAttribute('inert') &&
-              sidebar?.getAttribute('aria-hidden') === 'true' &&
-              sidebar.hasAttribute('inert'),
-          )
-        })(),
-        guideSyncModeButtonsReachable: (() => {
-          const guide = document.querySelector('.guide-modal')
-          if (!guide) return true
-
-          const buttons = Array.from(guide.querySelectorAll('.mode-grid button'))
-          const layout = guide.querySelector('.guide-layout')
-          const syncPanel = guide.querySelector('.guide-sync-panel')
-          if (buttons.length !== 3 || !layout || !syncPanel) return false
-
-          const layoutBox = layout.getBoundingClientRect()
-          const syncBox = syncPanel.getBoundingClientRect()
-          const syncBottomInScrollArea =
-            syncBox.bottom - layoutBox.top + layout.scrollTop
-
-          return (
-            buttons.every((button) => {
-              const box = button.getBoundingClientRect()
-              const style = getComputedStyle(button)
-              return (
-                style.display !== 'none' &&
-                style.visibility !== 'hidden' &&
-                box.width >= 28 &&
-                box.height >= 28
-              )
-            }) &&
-            syncBottomInScrollArea <= layout.scrollHeight + 1
-          )
-        })(),
-        guideProviderBeforeSync: (() => {
-          const guide = document.querySelector('.guide-modal')
-          if (!guide || window.innerWidth > 520) return true
-
-          const providerFields = guide.querySelector('.guide-provider-fields')
-          const syncPanel = guide.querySelector('.guide-sync-panel')
-          if (!providerFields || !syncPanel) return false
-
-          const providerBeforeSyncInDom = Boolean(
-            providerFields.compareDocumentPosition(syncPanel) &
-              Node.DOCUMENT_POSITION_FOLLOWING,
-          )
-
-          return (
-            providerBeforeSyncInDom &&
-            providerFields.getBoundingClientRect().top <=
-              syncPanel.getBoundingClientRect().top
-          )
-        })(),
-        guideProviderChoicesReachable: (() => {
-          const guide = document.querySelector('.guide-modal')
-          if (!guide) return true
-
-          const layout = guide.querySelector('.guide-layout')
-          const select = guide.querySelector('.guide-provider-select-row select')
-          const customRelayStrip = guide.querySelector('.guide-custom-relays')
-          const selectValues = Array.from(select?.options ?? []).map(
-            (option) => option.value,
-          )
-          if (!layout || !select || customRelayStrip !== null) return false
-
-          const layoutBox = layout.getBoundingClientRect()
-          const selectBox = select.getBoundingClientRect()
-          const selectStyle = getComputedStyle(select)
-          const selectBottomInScrollArea =
-            selectBox.bottom - layoutBox.top + layout.scrollTop
-
-          return (
-            selectStyle.display !== 'none' &&
-            selectStyle.visibility !== 'hidden' &&
-            selectBox.width >= 28 &&
-            selectBox.height >= 28 &&
-            selectBottomInScrollArea <= layout.scrollHeight + 1 &&
-            selectValues.length >= 20 &&
-            selectValues.includes('custom-openai-relay')
-          )
-        })(),
-        guideActionsInsideViewport: (() => {
-          const actions = document
-            .querySelector('.guide-modal .modal-actions')
-            ?.getBoundingClientRect()
-
-          return actions ? actions.top >= -1 && actions.bottom <= window.innerHeight + 1 : true
-        })(),
-        guideActionsStackOnMicroViewport: (() => {
-          if (window.innerWidth > 300) return true
-
-          const actionsElement = document.querySelector('.guide-modal .modal-actions')
-          if (!actionsElement) return true
-
-          const actionBox = actionsElement.getBoundingClientRect()
-          const buttons = Array.from(
-            actionsElement.querySelectorAll('button, label.file-button'),
-          ).filter(isVisible)
-
-          if (buttons.length < 2) return true
-
-          const buttonBoxes = buttons.map((button) => button.getBoundingClientRect())
-          const fullWidth = buttonBoxes.every((box) => box.width >= actionBox.width - 2)
-          const stacked = buttonBoxes.every((box, index) => {
-            if (index === 0) return true
-
-            return box.top >= buttonBoxes[index - 1].bottom - 1
-          })
-
-          return fullWidth && stacked
-        })(),
-        guideLayoutContentTightOnMicroViewport: (() => {
-          if (window.innerWidth > 300) return true
-
-          const layout = document.querySelector('.guide-modal .guide-layout')
-          if (!layout || !isVisible(layout)) return true
-
-          if (layout.scrollHeight > layout.clientHeight + 2) return true
-
-          const childBoxes = Array.from(layout.children)
-            .filter(isVisible)
-            .map((child) => child.getBoundingClientRect())
-          if (childBoxes.length === 0) return true
-
-          const layoutBox = layout.getBoundingClientRect()
-          const contentBottom = Math.max(...childBoxes.map((box) => box.bottom))
-          const trailingGap = layoutBox.bottom - contentBottom
-
-          return trailingGap <= 96
-        })(),
-        guideRequiredFieldsVisible: (() => {
-          const guide = document.querySelector('.guide-modal')
-          const requirement = document.querySelector('.guide-modal .guide-requirement')
-
-          if (!guide || !requirement) return true
-
-          const requirementText = textOf(requirement).toLowerCase()
-          const requiredSelectors = []
-          if (requirementText.includes('base url')) {
-            requiredSelectors.push("[data-provider-base-url-field='true']")
-          }
-          if (requirementText.includes('api key')) {
-            requiredSelectors.push("label[data-provider-api-key-field='true'] input")
-          }
-          if (
-            requirementText.includes('数据加密密码') ||
-            requirementText.includes('data encryption password') ||
-            requirementText.includes('sync password') ||
-            requirementText.includes('passphrase')
-          ) {
-            requiredSelectors.push('#guide-sync-passphrase')
-          }
-          if (requirementText.includes('模型') || requirementText.includes('model')) {
-            requiredSelectors.push('[data-provider-default-model-field="true"]')
-          }
-
-          if (!requiredSelectors.length) return true
-
-          const fieldVisible = (element) => {
-            const box = visibleRectFor(element)
-            return (
-              Boolean(box) &&
-              box.top >= -1 &&
-              box.bottom <= window.innerHeight + 1 &&
-              box.width >= 28 &&
-              box.height >= 28
-            )
-          }
-
-          return requiredSelectors.every((selector) =>
-            Array.from(guide.querySelectorAll(selector)).some(fieldVisible),
-          )
-        })(),
-        dangerActionsInsideViewport: (() => {
-          const dangerModal = document.querySelector('.danger-modal')
-          if (!dangerModal) return true
-
-          const actionsElement = dangerModal.querySelector('.modal-actions')
-          const actions = actionsElement?.getBoundingClientRect()
-
-          return Boolean(
-            actionsElement &&
-              isVisible(actionsElement) &&
-              actions &&
-              actions.top >= -1 &&
-              actions.bottom <= window.innerHeight + 1,
-          )
-        })(),
-        dangerModalClosesMobileSidebar: (() => {
-          if (!document.querySelector('.danger-modal') || window.innerWidth > 860) {
-            return true
-          }
-
-          return !document.querySelector('.sidebar.open')
-        })(),
-        providerMenuAvoidsWelcomeOverlap: (() => {
-          const menu = document.querySelector('.provider-model-menu')
-          const welcome = document.querySelector('.welcome-panel')
-
-          if (!menu || !welcome || window.innerWidth > 520) {
-            return true
-          }
-
-          const menuBox = menu.getBoundingClientRect()
-          const welcomeBox = welcome.getBoundingClientRect()
-          const separated =
-            menuBox.bottom <= welcomeBox.top - 6 ||
-            menuBox.top >= welcomeBox.bottom + 6 ||
-            menuBox.right <= welcomeBox.left - 6 ||
-            menuBox.left >= welcomeBox.right + 6
-
-          return separated
-        })(),
-        chatHeaderContainsProviderTrigger: (() => {
-          const header = document.querySelector('.chat-header')
-          const trigger = document.querySelector('.provider-model-trigger')
-
-          if (!header || !trigger || !isVisible(trigger)) return true
-
-          const headerBox = header.getBoundingClientRect()
-          const triggerBox = trigger.getBoundingClientRect()
-
-          return (
-            triggerBox.top >= headerBox.top - 1 &&
-            triggerBox.bottom <= headerBox.bottom + 1
-          )
-        })(),
-        compactChatTitleDefaultVisible: (() => {
-          if (window.innerWidth > 300) return true
-
-          const titleText = document.querySelector('.conversation-title-button span')
-          const text = titleText?.textContent?.trim() ?? ''
-
-          if (!titleText || !isVisible(titleText) || text.length > 8) return true
-
-          return titleText.scrollWidth <= titleText.clientWidth + 1
-        })(),
-        imageToolHintClearsHeader: (() => {
-          if (!document.querySelector('.chat-pane-image-tools')) return true
-
-          const header = document.querySelector('.chat-header')
-          const trigger = document.querySelector('.provider-model-trigger')
-          const hint = document.querySelector('.feature-hint-chat')
-
-          if (!header || !hint || !isVisible(hint)) return true
-
-          const headerBox = header.getBoundingClientRect()
-          const triggerBox = trigger?.getBoundingClientRect()
-          const hintBox = hint.getBoundingClientRect()
-          const chromeBottom = Math.max(headerBox.bottom, triggerBox?.bottom ?? 0)
-
-          return hintBox.top >= chromeBottom + 6
-        })(),
-        audioComposerSubmissionVisible: (() => {
-          const composer = document.querySelector('.composer-audio')
-
-          if (!composer || window.innerWidth > 300 || window.innerHeight > 580) return true
-
-          const textarea = composer.querySelector('textarea')
-          const sendButton = composer.querySelector('.send-button')
-          const controls = [textarea, sendButton].filter(Boolean)
-
-          return (
-            controls.length === 2 &&
-            controls.every((element) => {
-              const box = visibleRectFor(element)
-
-              return (
-                Boolean(box) &&
-                box.top >= -1 &&
-                box.bottom <= window.innerHeight + 1 &&
-                box.width >= 28 &&
-                box.height >= 28
-              )
-            })
-          )
-        })(),
-      }
-    })()`)
-
-    assert.equal(
-      metrics.horizontalOverflow,
-      false,
-      `${name} should not overflow horizontally: viewport ${metrics.innerWidth}x${metrics.innerHeight}, root scroll ${metrics.rootScrollWidth}, body scroll ${metrics.bodyScrollWidth}`,
-    )
-    assert.equal(
-      metrics.modalOutOfBounds,
-      false,
-      `${name} modal should stay inside the ${metrics.innerWidth}x${metrics.innerHeight} viewport`,
-    )
-    assert.deepEqual(
-      metrics.clippedControls,
-      [],
-      `${name} visible controls should not clip labels: ${metrics.clippedControls.join(', ')}`,
-    )
-    assert.deepEqual(
-      metrics.clippedGroups,
-      [],
-      `${name} control groups should not clip labels: ${metrics.clippedGroups.join(', ')}`,
-    )
-    assert.deepEqual(
-      metrics.clippedPlaceholders,
-      [],
-      `${name} input placeholders should fit their fields: ${metrics.clippedPlaceholders.join(', ')}`,
-    )
-    assert.deepEqual(
-      metrics.smallTargets,
-      [],
-      `${name} visible action targets should be at least 28px: ${metrics.smallTargets.join(', ')}`,
-    )
-    assert.deepEqual(
-      metrics.overlappingControls,
-      [],
-      `${name} visible controls should not overlap: ${metrics.overlappingControls.join(', ')}`,
-    )
-    assert.deepEqual(
-      metrics.offCenterControls,
-      [],
-      `${name} button content should stay visually centered: ${metrics.offCenterControls.join(', ')}`,
-    )
-    assert.equal(
-      metrics.modalBackgroundIsolated,
-      true,
-      `${name} modals should isolate the chat pane and sidebar from assistive technology`,
-    )
-    assert.equal(
-      metrics.guideSyncModeButtonsReachable,
-      true,
-      `${name} first-run sync choices should remain reachable in the setup scroll area`,
-    )
-    assert.equal(
-      metrics.guideProviderBeforeSync,
-      true,
-      `${name} first-run Provider setup should precede optional sync in mobile visual and DOM order`,
-    )
-    assert.equal(
-      metrics.guideProviderChoicesReachable,
-      true,
-      `${name} first-run guide should keep the complete Provider menu reachable without a clipped mobile shortcut strip`,
-    )
-    assert.equal(
-      metrics.guideActionsInsideViewport,
-      true,
-      `${name} first-run actions should stay fully inside the viewport`,
-    )
-    assert.equal(
-      metrics.guideActionsStackOnMicroViewport,
-      true,
-      `${name} first-run actions should stack as full-width rows on micro viewports`,
-    )
-    assert.equal(
-      metrics.guideLayoutContentTightOnMicroViewport,
-      true,
-      `${name} first-run content should not leave a large trailing blank gap on micro viewports`,
-    )
-    assert.equal(
-      metrics.guideRequiredFieldsVisible,
-      true,
-      `${name} first-run blocking requirement should keep its required field visible in the current viewport`,
-    )
-    assert.equal(
-      metrics.dangerActionsInsideViewport,
-      true,
-      `${name} danger dialog actions should stay visible inside the viewport`,
-    )
-    assert.equal(
-      metrics.dangerModalClosesMobileSidebar,
-      true,
-      `${name} mobile sidebar should close before showing a danger dialog`,
-    )
-    assert.equal(
-      metrics.providerMenuAvoidsWelcomeOverlap,
-      true,
-      `${name} provider/model menu should not cover the welcome panel on compact screens`,
-    )
-    assert.equal(
-      metrics.chatHeaderContainsProviderTrigger,
-      true,
-      `${name} sticky header should contain the Provider/Model trigger instead of letting it overflow`,
-    )
-    assert.equal(
-      metrics.compactChatTitleDefaultVisible,
-      true,
-      `${name} compact chat header should keep short default conversation titles fully visible`,
-    )
-    assert.equal(
-      metrics.imageToolHintClearsHeader,
-      true,
-      `${name} image tool feature hint should not be covered by the sticky header`,
-    )
-    assert.equal(
-      metrics.audioComposerSubmissionVisible,
-      true,
-      `${name} audio composer textarea and transcribe action should stay visible in the short viewport`,
-    )
-  }
-
-  const capture = async (name) => {
-    await assertViewportFit(name)
-    await waitForPaint()
-    await sleep(120)
-    const index = screenshotIndex
-    const result = await cdp.send('Page.captureScreenshot', {
-      format: 'png',
-      fromSurface: true,
-      captureBeyondViewport: false,
-    })
-    const fileName = `${String(index).padStart(2, '0')}-${name}-${currentViewport.width}x${currentViewport.height}.png`
-    screenshotIndex += 1
-    const filePath = path.join(outputDir, fileName)
-    const pngBuffer = Buffer.from(result.data, 'base64')
-    const analysis = analyzePngScreenshot(pngBuffer, currentViewport, name)
-    await writeFile(filePath, pngBuffer)
-    screenshots.push(filePath)
-    screenshotRecords.push({
-      index,
-      name,
-      file: fileName,
-      viewport: { ...currentViewport },
-      analysis,
-    })
-    if (!visualAuditSummaryOnly) {
-      console.log(filePath)
+      return value
     }
-  }
 
-  const captureStartupLoadingFixture = async (
-    name,
-    width,
-    loadingText = '正在载入...',
-    direction = 'ltr',
-  ) => {
-    await setViewport(width, 560, false)
-    await evaluate(`(() => {
-      document.querySelector('[data-visual-loading-fixture]')?.remove()
-      const main = document.createElement('main')
-      main.className = 'empty-state'
-      main.dataset.visualLoadingFixture = 'true'
-      main.dir = ${JSON.stringify(direction)}
-      Object.assign(main.style, {
-        position: 'fixed',
-        inset: '0',
-        zIndex: '2147483647',
-        background: 'var(--bg)',
-      })
-      const title = document.createElement('h1')
-      title.textContent = 'ZeroChat'
-      const message = document.createElement('p')
-      message.textContent = ${JSON.stringify(loadingText)}
-      main.append(title, message)
-      document.body.append(main)
-      return true
-    })()`)
-    const state = await evaluate(`(() => {
-      const title = document.querySelector('[data-visual-loading-fixture] h1')
-      const message = document.querySelector('[data-visual-loading-fixture] p')
-      const titleBox = title?.getBoundingClientRect()
-      const messageBox = message?.getBoundingClientRect()
-      return {
-        innerWidth: window.innerWidth,
-        rootScrollWidth: document.documentElement.scrollWidth,
-        bodyScrollWidth: document.body?.scrollWidth ?? 0,
-        titleInside: titleBox
-          ? titleBox.left >= -1 && titleBox.right <= window.innerWidth + 1
-          : false,
-        messageInside: messageBox
-          ? messageBox.left >= -1 && messageBox.right <= window.innerWidth + 1
-          : false,
-      }
-    })()`)
-
-    assert.equal(
-      state.titleInside && state.messageInside,
-      true,
-      `${name} loading text should stay inside the ${state.innerWidth}px viewport: ${JSON.stringify(
-        state,
-      )}`,
-    )
-
-    await capture(name)
-    await evaluate(`document.querySelector('[data-visual-loading-fixture]')?.remove()`)
-  }
-
-  const captureProviderEmptyStateFixture = async (name, width, height) => {
-    await setViewport(width, height, width <= 520)
-    await evaluate(`(() => {
-      document.querySelector('[data-visual-provider-empty-fixture]')?.remove()
-      const main = document.createElement('main')
-      main.className = 'empty-state provider-empty-state'
-      main.dataset.visualProviderEmptyFixture = 'true'
-      Object.assign(main.style, {
-        position: 'fixed',
-        inset: '0',
-        zIndex: '2147483647',
-        background: 'var(--bg)',
-      })
-      const logo = document.createElement('img')
-      logo.className = 'app-logo app-logo-empty'
-      logo.src = '/icon-192.png'
-      logo.alt = ''
-      logo.setAttribute('aria-hidden', 'true')
-      const title = document.createElement('h1')
-      title.textContent = '添加你的第一个 AI 服务'
-      const message = document.createElement('p')
-      message.textContent = '选择服务商并填写 API Key 后，就可以在本机开始聊天；密钥只会加密保存。'
-      const button = document.createElement('button')
-      button.className = 'primary-button'
-      button.type = 'button'
-      button.textContent = '添加你的第一个 AI 服务'
-      main.append(logo, title, message, button)
-      document.body.append(main)
-      return true
-    })()`)
-    const state = await evaluate(`(() => {
-      const fixture = document.querySelector('[data-visual-provider-empty-fixture]')
-      const title = fixture?.querySelector('h1')
-      const message = fixture?.querySelector('p')
-      const button = fixture?.querySelector('button')
-      const logo = fixture?.querySelector('.app-logo')
-      const logoBox = logo?.getBoundingClientRect()
-      const titleBox = title?.getBoundingClientRect()
-      const messageBox = message?.getBoundingClientRect()
-      const buttonBox = button?.getBoundingClientRect()
-      const contentTop = Math.min(
-        ...[logoBox, titleBox, messageBox, buttonBox]
-          .map((box) => box?.top)
-          .filter((value) => Number.isFinite(value)),
-      )
-      return {
-        innerWidth: window.innerWidth,
-        innerHeight: window.innerHeight,
-        titleInside: titleBox
-          ? titleBox.left >= -1 && titleBox.right <= window.innerWidth + 1
-          : false,
-        messageInside: messageBox
-          ? messageBox.left >= -1 && messageBox.right <= window.innerWidth + 1
-          : false,
-        buttonInside: buttonBox
-          ? buttonBox.left >= -1 && buttonBox.right <= window.innerWidth + 1
-          : false,
-        contentTop,
-        providerEmptyContentStartsNearTop: contentTop <= Math.max(24, window.innerHeight * 0.2),
-        providerEmptyPrimaryActionNearTop: buttonBox
-          ? buttonBox.top <= Math.min(window.innerHeight * 0.54, 340)
-          : false,
-        buttonHeight: buttonBox?.height ?? 0,
-      }
-    })()`)
-
-    assert.equal(
-      state.titleInside && state.messageInside && state.buttonInside,
-      true,
-      `${name} provider empty state should stay inside the ${state.innerWidth}px viewport: ${JSON.stringify(
-        state,
-      )}`,
-    )
-    assert.ok(
-      state.buttonHeight >= 38,
-      `${name} provider empty state primary action should remain tappable: ${JSON.stringify(
-        state,
-      )}`,
-    )
-    assert.equal(
-      state.providerEmptyContentStartsNearTop && state.providerEmptyPrimaryActionNearTop,
-      true,
-      `${name} provider empty state should keep first-provider setup near the top on compact screens: ${JSON.stringify(
-        state,
-      )}`,
-    )
-
-    await capture(name)
-    await evaluate(`document.querySelector('[data-visual-provider-empty-fixture]')?.remove()`)
-  }
-
-  const captureModalActionsFixture = async (name, width) => {
-    await setViewport(width, 560, false)
-    await evaluate(`(() => {
-      document.querySelector('[data-visual-modal-actions-fixture]')?.remove()
-      const backdrop = document.createElement('div')
-      backdrop.className = 'modal-backdrop'
-      backdrop.dataset.visualModalActionsFixture = 'true'
-      backdrop.setAttribute('role', 'dialog')
-      backdrop.setAttribute('aria-modal', 'true')
-      backdrop.setAttribute('aria-labelledby', 'visual-modal-actions-title')
-      const modal = document.createElement('section')
-      modal.className = 'modal guide-modal'
-      const header = document.createElement('div')
-      header.className = 'modal-header'
-      const titleWrap = document.createElement('div')
-      const title = document.createElement('h2')
-      title.id = 'visual-modal-actions-title'
-      title.textContent = '首次配置'
-      const intro = document.createElement('p')
-      intro.textContent = '先接入一个可用模型，同步可以之后再设置。'
-      titleWrap.append(title, intro)
-      header.append(titleWrap)
-      const layout = document.createElement('div')
-      layout.className = 'guide-layout'
-      const left = document.createElement('div')
-      left.className = 'form-stack'
-      const field = document.createElement('label')
-      field.textContent = 'API Key'
-      const input = document.createElement('input')
-      input.placeholder = 'sk-...'
-      field.append(input)
-      left.append(field)
-      const right = document.createElement('div')
-      right.className = 'form-stack'
-      const modes = document.createElement('div')
-      modes.className = 'mode-grid'
-      for (const label of ['本地', 'Gist', 'Cloudflare']) {
-        const button = document.createElement('button')
-        button.type = 'button'
-        button.textContent = label
-        modes.append(button)
-      }
-      right.append(modes)
-      layout.append(left, right)
-      const requirement = document.createElement('p')
-      requirement.className = 'settings-note guide-requirement'
-      requirement.textContent = '请填写 API Key；也可以先跳过。'
-      const actions = document.createElement('div')
-      actions.className = 'modal-actions'
-      const skip = document.createElement('button')
-      skip.className = 'ghost-button'
-      skip.type = 'button'
-      skip.textContent = '跳过，先本地使用'
-      const done = document.createElement('button')
-      done.className = 'primary-button'
-      done.type = 'button'
-      done.textContent = '完成'
-      actions.append(skip, done)
-      modal.append(header, layout, requirement, actions)
-      backdrop.append(modal)
-      document.body.append(backdrop)
-      return true
-    })()`)
-    await capture(name)
-    await evaluate(`document.querySelector('[data-visual-modal-actions-fixture]')?.remove()`)
-  }
-
-  const captureDangerActionsFixture = async (name, width) => {
-    await setViewport(width, 560, false)
-    await evaluate(`(() => {
-      document.querySelector('[data-visual-danger-actions-fixture]')?.remove()
-      const backdrop = document.createElement('div')
-      backdrop.className = 'modal-backdrop compact-dialog-backdrop'
-      backdrop.dataset.visualDangerActionsFixture = 'true'
-      backdrop.setAttribute('role', 'alertdialog')
-      backdrop.setAttribute('aria-modal', 'true')
-      backdrop.setAttribute('aria-labelledby', 'visual-danger-actions-title')
-      const modal = document.createElement('section')
-      modal.className = 'modal danger-modal'
-      const header = document.createElement('div')
-      header.className = 'modal-header'
-      const titleWrap = document.createElement('div')
-      const title = document.createElement('h2')
-      title.id = 'visual-danger-actions-title'
-      title.textContent = '重置本机数据'
-      const intro = document.createElement('p')
-      intro.textContent = '请先确认这个操作的影响'
-      titleWrap.append(title, intro)
-      header.append(titleWrap)
-      const body = document.createElement('div')
-      body.className = 'danger-copy'
-      const text = document.createElement('p')
-      text.textContent = '这会清空本机聊天记录、设置和本地密钥。'
-      const list = document.createElement('ul')
-      for (const item of ['不会主动删除云端数据。', '旧数据可能无法恢复。']) {
-        const li = document.createElement('li')
-        li.textContent = item
-        list.append(li)
-      }
-      body.append(text, list)
-      const acknowledge = document.createElement('label')
-      acknowledge.className = 'danger-skip'
-      const checkbox = document.createElement('input')
-      checkbox.type = 'checkbox'
-      const acknowledgeText = document.createElement('span')
-      acknowledgeText.textContent = '我已理解这个风险，以后不再提醒这类操作'
-      acknowledge.append(checkbox, acknowledgeText)
-      const actions = document.createElement('div')
-      actions.className = 'modal-actions'
-      const cancel = document.createElement('button')
-      cancel.className = 'ghost-button'
-      cancel.type = 'button'
-      cancel.textContent = '取消'
-      const confirm = document.createElement('button')
-      confirm.className = 'danger-button'
-      confirm.type = 'button'
-      confirm.textContent = '重置本机数据'
-      actions.append(cancel, confirm)
-      modal.append(header, body, acknowledge, actions)
-      backdrop.append(modal)
-      document.body.append(backdrop)
-      return true
-    })()`)
-    await capture(name)
-    await evaluate(`document.querySelector('[data-visual-danger-actions-fixture]')?.remove()`)
-  }
-
-  const assertWelcomeComposerGap = async (name) => {
-    const state = await evaluate(`(() => {
-      const welcome = document.querySelector('.welcome-panel')
-      const composer = document.querySelector('.composer')
-      if (!welcome || !composer) return { skipped: true }
-
-      const welcomeBox = welcome.getBoundingClientRect()
-      const composerBox = composer.getBoundingClientRect()
-      return {
-        composerTop: composerBox.top,
-        gap: composerBox.top - welcomeBox.bottom,
-        viewportHeight: window.innerHeight,
-        welcomeBottom: welcomeBox.bottom,
-      }
-    })()`)
-
-    assert.ok(
-      state.skipped || state.gap >= 12,
-      `${name} welcome panel and composer should keep at least 12px of visual separation: ${JSON.stringify(
-        state,
-      )}`,
-    )
-  }
-
-  const assertImageToolShortViewportFit = async (name) => {
-    const state = await evaluate(`(() => {
-      const isVisible = (element) => {
-        if (!element) return false
-        const style = getComputedStyle(element)
-        const box = element.getBoundingClientRect()
-        return (
-          style.display !== 'none' &&
-          style.visibility !== 'hidden' &&
-          style.opacity !== '0' &&
-          box.width > 0 &&
-          box.height > 0
-        )
-      }
-      const boxFor = (selector) => {
-        const element = document.querySelector(selector)
-        const box = element?.getBoundingClientRect()
-        return box
-          ? {
-              top: box.top,
-              bottom: box.bottom,
+    const waitForSidebarClosed = async (timeout = 8000) => {
+      const state = await evaluate(`new Promise((resolve) => {
+        const surfaceIsClosed = ${renderedSurfaceIsClosed.toString()}
+        const visibleRectFor = ${renderedVisibleRect.toString()}
+        const visibleRectForElement = (element) => {
+          if (!(element instanceof HTMLElement)) return null
+          const style = getComputedStyle(element)
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+            return null
+          }
+          return visibleRectFor(element)
+        }
+        const snapshot = (element) => {
+          if (!(element instanceof HTMLElement)) return null
+          const box = element.getBoundingClientRect()
+          return {
+            box: {
               left: box.left,
               right: box.right,
+              top: box.top,
+              bottom: box.bottom,
               width: box.width,
               height: box.height,
-              visible: isVisible(element),
-            }
-          : null
-      }
-      const welcome = document.querySelector('.welcome-panel')
-      const composer = boxFor('.composer')
-      const imagePanel = boxFor('.image-compose-panel')
-      const sourcePanel = boxFor('.image-source-panel')
-      const textarea = boxFor('.composer textarea')
-      const sendButton = boxFor('.send-button')
+            },
+            visibleRect: visibleRectForElement(element),
+          }
+        }
+        const started = performance.now()
+        let stableFrames = 0
+        const check = () => {
+          const sidebar = document.querySelector('.zc-sidebar')
+          const backdrop = document.querySelector('.zc-sidebar-backdrop')
+          const sidebarSnapshot = snapshot(sidebar)
+          const backdropSnapshot = snapshot(backdrop)
+          const closed = surfaceIsClosed({
+            sidebarCollapsed: sidebar instanceof HTMLElement && sidebar.classList.contains('collapsed'),
+            sidebarVisibleRect: sidebarSnapshot?.visibleRect ?? null,
+            backdropVisibleRect: backdropSnapshot?.visibleRect ?? null,
+          })
+          stableFrames = closed ? stableFrames + 1 : 0
+          const state = {
+            closed,
+            stableFrames,
+            sidebar: sidebarSnapshot,
+            backdrop: backdropSnapshot,
+          }
+          if (stableFrames >= 2 || performance.now() - started >= ${timeout}) {
+            resolve(state)
+            return
+          }
+          requestAnimationFrame(check)
+        }
+        requestAnimationFrame(check)
+      })`, true)
+      assert.equal(
+        state?.closed,
+        true,
+        `mobile sidebar must leave the viewport before visual capture: ${JSON.stringify(state)}`,
+      )
+      return state
+    }
 
-      return {
-        innerWidth: window.innerWidth,
-        innerHeight: window.innerHeight,
-        welcomeVisible: isVisible(welcome),
-        composer,
-        imagePanel,
-        sourcePanel,
-        textarea,
-        sendButton,
-      }
-    })()`)
+    const setViewport = async (width, height, mobile = false) => {
+      viewport = { width, height }
+      await cdp.send('Emulation.setDeviceMetricsOverride', {
+        width,
+        height,
+        deviceScaleFactor: 1,
+        mobile,
+      })
+      await sleep(160)
+      await waitForPaint()
+    }
 
-    assert.equal(
-      state.welcomeVisible,
-      false,
-      `${name} should hide the welcome card in the short image-tool viewport instead of crowding the composer: ${JSON.stringify(
-        state,
-      )}`,
-    )
+    const assertPageGeometry = async (name) => {
+      const state = await evaluate(`(() => {
+        const root = document.querySelector('.zc-app, .zc-boot')
+        const dialog = document.querySelector('.zc-settings[role="dialog"]')
+        const box = dialog?.getBoundingClientRect()
+        const visible = (element) => {
+          const style = getComputedStyle(element)
+          const rect = element.getBoundingClientRect()
+          return rect.width > 0 && rect.height > 0 && style.display !== 'none' &&
+            style.visibility !== 'hidden' && style.opacity !== '0' &&
+            !element.closest('[aria-hidden="true"]')
+        }
+        const labelFor = (element) =>
+          (element.textContent || element.getAttribute('aria-label') || element.className || element.tagName)
+            .replace(/\\s+/g, ' ')
+            .trim()
+            .slice(0, 80)
+        const clipsContent = ${renderedElementClipsContent.toString()}
+        const placeholderFits = ${renderedPlaceholderFits.toString()}
+        const buttonContentIsCentered = ${renderedButtonContentIsCentered.toString()}
+        const actionTargetMeetsMinimum = ${renderedActionTargetMeetsMinimum.toString()}
+        const touchTargetMeetsMinimum = ${renderedTouchTargetMeetsMinimum.toString()}
+        const controlOverlap = ${renderedControlOverlap.toString()}
+        const visibleRectFor = ${renderedVisibleRect.toString()}
+        const visibleTextControls = [...document.querySelectorAll('button, [role="button"], label')]
+          .filter((element) => visible(element) && Boolean(labelFor(element)))
+        const clippedControls = visibleTextControls
+          .filter((element) =>
+            !element.classList.contains('zc-icon-btn') &&
+            !element.classList.contains('zc-sidebar-backdrop'))
+          .filter((element) => clipsContent(element))
+          .map(labelFor)
+        const clippedGroups = [...document.querySelectorAll([
+          '.zc-chat-header',
+          '.zc-composer-row',
+          '.zc-conversation-starters',
+          '.zc-credential-row',
+          '.zc-image-task-modes',
+          '.zc-model-order-actions',
+          '.zc-msg-actions',
+          '.zc-provider-head',
+          '.zc-provider-order-actions',
+          '.zc-segmented',
+          '.zc-settings-body-header',
+          '.zc-settings-nav',
+          '.zc-skill-switches',
+          '.image-source-actions',
+          '.mask-controls',
+        ].join(','))]
+          .filter(visible)
+          .filter((element) => clipsContent(element))
+          .map(labelFor)
+        const clippedPlaceholders = [...document.querySelectorAll([
+          'input[placeholder]:not([type="file"]):not([type="checkbox"]):not([type="radio"])',
+          'textarea[placeholder]',
+        ].join(','))]
+          .filter(visible)
+          .filter((element) => !placeholderFits(element))
+          .map((element) =>
+            element.tagName.toLowerCase() + '[placeholder="' +
+            element.getAttribute('placeholder') + '"]')
+        const offCenterControls = [...document.querySelectorAll('button')]
+          .filter(visible)
+          .filter((element) => {
+            const style = getComputedStyle(element)
+            return style.textAlign === 'center' ||
+              style.justifyContent === 'center' ||
+              style.justifyItems === 'center'
+          })
+          .filter((element) => !buttonContentIsCentered(element))
+          .map(labelFor)
+        const smallActionTargets = [...document.querySelectorAll([
+          'button',
+          '[role="button"]',
+          'label.zc-btn',
+          'label.file-button',
+        ].join(','))]
+          .filter(visible)
+          .filter((element) => !element.classList.contains('zc-sidebar-backdrop'))
+          .filter((element) => !element.closest('.zc-toasts'))
+          .filter((element) => !actionTargetMeetsMinimum(element))
+          .map((element) => {
+            const rect = element.getBoundingClientRect()
+            return labelFor(element) + ' (' +
+              Math.round(rect.width * 10) / 10 + 'x' +
+              Math.round(rect.height * 10) / 10 + 'px)'
+          })
+        const mobileTouchTargets = innerWidth <= 480
+          ? [...document.querySelectorAll([
+              'button',
+              '[role="button"]',
+              'label.zc-btn',
+              'label.file-button',
+              'input:not([type="file"]):not([type="checkbox"]):not([type="radio"]):not([type="range"])',
+              'select',
+              'textarea',
+            ].join(','))]
+              .filter(visible)
+              .filter((element) => !element.classList.contains('zc-sidebar-backdrop'))
+              .filter((element) => !touchTargetMeetsMinimum(element))
+              .map((element) => {
+                const rect = element.getBoundingClientRect()
+                return labelFor(element) + ' (' +
+                  Math.round(rect.width * 10) / 10 + 'x' +
+                  Math.round(rect.height * 10) / 10 + 'px)'
+              })
+          : []
+        const geometryScope = dialog ?? document
+        const measuredControls = [...geometryScope.querySelectorAll([
+          'button',
+          '[role="button"]',
+          'label.zc-btn',
+          'label.file-button',
+          'input:not([type="file"]):not([type="checkbox"]):not([type="radio"]):not([type="range"])',
+          'select',
+          'textarea',
+        ].join(','))]
+          .filter(visible)
+          .filter((element) => !element.classList.contains('zc-sidebar-backdrop'))
+          .filter((element) => !element.closest('.zc-toasts'))
+        const controlBoxes = measuredControls
+          .map((element) => ({ element, rect: visibleRectFor(element) }))
+          .filter((item) => item.rect)
+          .sort((left, right) => left.rect.top - right.rect.top)
+        const controlRectByElement = new Map(
+          controlBoxes.map((item) => [item.element, item.rect]),
+        )
+        const overlappingControls = []
+        for (let leftIndex = 0; leftIndex < controlBoxes.length; leftIndex += 1) {
+          const left = controlBoxes[leftIndex]
+          for (let rightIndex = leftIndex + 1; rightIndex < controlBoxes.length; rightIndex += 1) {
+            const right = controlBoxes[rightIndex]
+            if (right.rect.top >= left.rect.bottom - 2) break
+            const overlap = controlOverlap(
+              left.element,
+              right.element,
+              2,
+              (element) => controlRectByElement.get(element),
+            )
+            if (!overlap) continue
+            overlappingControls.push(
+              labelFor(left.element) + ' <> ' + labelFor(right.element) + ' (' +
+              Math.round(overlap.width * 10) / 10 + 'x' +
+              Math.round(overlap.height * 10) / 10 + 'px)',
+            )
+          }
+        }
+        return {
+          root: Boolean(root),
+          horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1 ||
+            (document.body?.scrollWidth || 0) > innerWidth + 1,
+          settingsScrollHorizontalOverflow: (() => {
+            const scroll = document.querySelector('.zc-settings-scroll')
+            return scroll instanceof HTMLElement && scroll.scrollWidth > scroll.clientWidth + 1
+          })(),
+          dialogInside: !box || (box.left >= -1 && box.right <= innerWidth + 1 && box.top >= -1),
+          clippedControls,
+          clippedGroups,
+          clippedPlaceholders,
+          offCenterControls,
+          smallActionTargets,
+          mobileTouchTargets,
+          overlappingControls,
+          controls: visibleTextControls.length,
+        }
+      })()`)
+      assert.equal(state.root, true, `${name} must render the production app shell`)
+      assert.equal(state.horizontalOverflow, false, `${name} must not overflow horizontally`)
+      assert.equal(
+        state.settingsScrollHorizontalOverflow,
+        false,
+        `${name} settings content must not overflow its scroll container horizontally`,
+      )
+      assert.equal(state.dialogInside, true, `${name} settings dialog must fit the viewport`)
+      assert.deepEqual(state.clippedControls, [], `${name} visible controls must not clip labels: ${state.clippedControls.join(', ')}`)
+      assert.deepEqual(state.clippedGroups, [], `${name} key control groups must not clip labels: ${state.clippedGroups.join(', ')}`)
+      assert.deepEqual(state.clippedPlaceholders, [], `${name} empty input placeholders must fit their fields: ${state.clippedPlaceholders.join(', ')}`)
+      assert.deepEqual(state.offCenterControls, [], `${name} centered button content must stay centered: ${state.offCenterControls.join(', ')}`)
+      assert.deepEqual(state.smallActionTargets, [], `${name} visible action targets must be at least 28px: ${state.smallActionTargets.join(', ')}`)
+      assert.deepEqual(state.mobileTouchTargets, [], `${name} mobile touch targets must be at least 44px: ${state.mobileTouchTargets.join(', ')}`)
+      assert.deepEqual(state.overlappingControls, [], `${name} visible controls must not overlap: ${state.overlappingControls.join(', ')}`)
+      assert.ok(state.controls > 0, `${name} must expose visible controls`)
+    }
 
-    for (const [label, box] of Object.entries({
-      composer: state.composer,
-      imagePanel: state.imagePanel,
-      sourcePanel: state.sourcePanel,
-      textarea: state.textarea,
-      sendButton: state.sendButton,
-    })) {
-      assert.ok(
-        box?.visible &&
-          box.top >= -1 &&
-          box.left >= -1 &&
-          box.right <= state.innerWidth + 1 &&
-          box.bottom <= state.innerHeight + 1,
-        `${name} ${label} should stay visible inside the ${state.innerWidth}x${state.innerHeight} viewport: ${JSON.stringify(
-          state,
-        )}`,
+    const assertToastGeometry = async (name) => {
+      const failures = await evaluate(`(() => {
+        const settingsNav = document.querySelector('.zc-settings-nav')
+        const settingsContentStart = settingsNav instanceof HTMLElement
+          ? settingsNav.getBoundingClientRect().right + 8
+          : 16
+        const availableWidth = settingsNav instanceof HTMLElement
+          ? innerWidth - settingsContentStart - 16
+          : Math.min(480, innerWidth - 32)
+        const minimumWidth = Math.min(280, availableWidth)
+        const toasts = [...document.querySelectorAll('.zc-toast')].filter((toast) => {
+          const style = getComputedStyle(toast)
+          return style.display !== 'none' && style.visibility !== 'hidden'
+        })
+        const failures = innerWidth <= 480 && toasts.length > 1 ? ['too-many:' + toasts.length] : []
+        return failures.concat(toasts.flatMap((toast) => {
+          const box = toast.getBoundingClientRect()
+          const issues = []
+          if (box.width + 1 < minimumWidth) issues.push('too-narrow')
+          if (box.left < 16 || box.right > innerWidth - 16) issues.push('out-of-bounds')
+          return issues.length > 0 ? [issues.join(':')] : []
+        }))
+      })()`)
+      assert.deepEqual(
+        failures,
+        [],
+        `${name} toast messages must remain readable and inside the viewport: ${failures.join(', ')}`,
       )
     }
-  }
 
-  const clickSidebarBackdropOutsidePanel = async (name) => {
-    const target = await evaluate(`(() => {
-      const sidebar = document.querySelector('.sidebar.open')
-      const backdrop = document.querySelector('.sidebar-backdrop')
-      const sidebarBox = sidebar?.getBoundingClientRect()
-      const backdropBox = backdrop?.getBoundingClientRect()
+    const capture = async (name) => {
+      await assertPageGeometry(name)
+      await assertToastGeometry(name)
+      await waitForPaint()
+      await sleep(100)
+      const index = screenshotIndex
+      const result = await cdp.send('Page.captureScreenshot', {
+        format: 'png',
+        fromSurface: true,
+        captureBeyondViewport: false,
+      })
+      const fileName = `${String(index).padStart(2, '0')}-${name}-${viewport.width}x${viewport.height}.png`
+      const buffer = Buffer.from(result.data, 'base64')
+      const analysis = analyzePngScreenshot(buffer, viewport, name)
+      const filePath = path.join(outputDir, fileName)
+      await writeFile(filePath, buffer)
+      screenshots.push({
+        index,
+        name,
+        file: fileName,
+        viewport: { ...viewport },
+        analysis,
+      })
+      screenshotIndex += 1
+      if (!summaryOnly) console.log(filePath)
+    }
 
-      if (!sidebarBox || !backdropBox) {
-        return { ok: false, reason: 'missing sidebar or backdrop' }
+    const visual = (method, ...args) =>
+      evaluate(`window.__zeroChatVisual.${method}(${args.map((value) => JSON.stringify(value)).join(', ')})`, true)
+
+    const waitForSettingsViewportSettled = async () => {
+      const settled = await evaluate(`new Promise((resolve) => {
+        const scroll = document.querySelector('.zc-settings-scroll')
+        if (!(scroll instanceof HTMLElement)) {
+          resolve(false)
+          return
+        }
+        let previous = scroll.scrollTop
+        let stableFrames = 0
+        const observe = () => {
+          const current = scroll.scrollTop
+          stableFrames = Math.abs(current - previous) <= 0.5 ? stableFrames + 1 : 0
+          previous = current
+          if (stableFrames >= 3) {
+            resolve(true)
+            return
+          }
+          requestAnimationFrame(observe)
+        }
+        requestAnimationFrame(observe)
+      })`, true)
+      assert.equal(settled, true, 'current Settings viewport must settle before target anchoring')
+    }
+
+    const anchorSettingsTarget = async (selector) => {
+      await waitForSettingsViewportSettled()
+      const anchored = await evaluate(`(() => {
+        const scroll = document.querySelector('.zc-settings-scroll')
+        const target = document.querySelector(${JSON.stringify(selector)})
+        if (!(scroll instanceof HTMLElement) || !(target instanceof HTMLElement)) {
+          return { valid: false, reason: 'missing-current-settings-target' }
+        }
+        const scrollBox = scroll.getBoundingClientRect()
+        const targetBox = target.getBoundingClientRect()
+        const desired = scroll.scrollTop + targetBox.top - scrollBox.top - 8
+        scroll.scrollTop = Math.max(0, Math.min(scroll.scrollHeight - scroll.clientHeight, desired))
+        scroll.dispatchEvent(new Event('scroll', { bubbles: true }))
+        return { valid: true, scrollTop: scroll.scrollTop }
+      })()`)
+      assert.equal(
+        anchored.valid,
+        true,
+        `current Settings target must exist before anchoring: ${selector}`,
+      )
+      await waitForPaint()
+      await waitForSettingsViewportSettled()
+      const visible = await evaluate(`(() => {
+        const scroll = document.querySelector('.zc-settings-scroll')
+        const target = document.querySelector(${JSON.stringify(selector)})
+        if (!(scroll instanceof HTMLElement) || !(target instanceof HTMLElement)) return false
+        const scrollBox = scroll.getBoundingClientRect()
+        const targetBox = target.getBoundingClientRect()
+        return targetBox.top >= scrollBox.top - 1 &&
+          targetBox.top <= scrollBox.top + 24 &&
+          targetBox.bottom <= scrollBox.bottom + 1
+      })()`)
+      assert.equal(
+        visible,
+        true,
+        `current Settings target must remain fully visible near the viewport top: ${selector}`,
+      )
+    }
+
+    const assertCurrentPlaceholder = async (selector, expected) => {
+      const actual = await evaluate(`document.querySelector(${JSON.stringify(selector)})?.getAttribute('placeholder') ?? ''`)
+      assert.equal(actual, expected, `${selector} must expose the current compact placeholder`)
+    }
+
+    const openLargeSkillLibrary = async (count = 241) => {
+      const initialRenderCount = Math.min(80, count)
+      let rendered = 0
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        if (attempt % 5 === 0) {
+          await evaluate(`window.__zerochatAppTest.seedLargeSkillLibrary(${count})`, true)
+        }
+        rendered = await evaluate('document.querySelectorAll(".zc-skill-item").length')
+        if (rendered >= initialRenderCount) break
+        await sleep(50)
       }
+      assert.ok(
+        rendered >= initialRenderCount,
+        `current large Skill fixture must render its first batch: ${rendered}/${initialRenderCount}`,
+      )
 
-      const left = Math.max(backdropBox.left, sidebarBox.right)
-      const right = backdropBox.right
-      const top = backdropBox.top
-      const bottom = backdropBox.bottom
-
-      return {
-        ok: right - left >= 24 && bottom - top >= 24,
-        left,
-        right,
-        top,
-        bottom,
-        sidebarRight: sidebarBox.right,
-        x: Math.floor((left + right) / 2),
-        y: Math.floor((top + bottom) / 2),
+      while (rendered < count) {
+        const expectedCount = Math.min(rendered + 80, count)
+        await visual('scrollSettings', 'bottom')
+        await waitFor(
+          `document.querySelectorAll(".zc-skill-item").length >= ${expectedCount}`,
+        )
+        rendered = await evaluate('document.querySelectorAll(".zc-skill-item").length')
       }
-    })()`)
+      assert.equal(rendered, count, 'current large Skill fixture must expose every row')
+    }
 
-    assert.equal(
-      target.ok,
-      true,
-      `${name} sidebar backdrop should expose a real clickable area outside the panel: ${JSON.stringify(
-        target,
-      )}`,
-    )
-
-    await cdp.send('Input.dispatchMouseEvent', {
-      type: 'mousePressed',
-      x: target.x,
-      y: target.y,
-      button: 'left',
-      clickCount: 1,
-    })
-    await cdp.send('Input.dispatchMouseEvent', {
-      type: 'mouseReleased',
-      x: target.x,
-      y: target.y,
-      button: 'left',
-      clickCount: 1,
-    })
-    await sleep(80)
-
-    const closed = await evaluate(`(() => {
-      const sidebar = document.querySelector('.sidebar')
-      const backdrop = document.querySelector('.sidebar-backdrop')
-
-      return {
-        sidebarOpen: Boolean(sidebar?.classList.contains('open')),
-        backdropVisible: Boolean(backdrop && getComputedStyle(backdrop).display !== 'none'),
-      }
-    })()`)
-
-    assert.deepEqual(
-      closed,
-      { sidebarOpen: false, backdropVisible: false },
-      `${name} sidebar should close after clicking the outside backdrop`,
-    )
-  }
-
-  try {
     await cdp.send('Page.enable')
     await cdp.send('Runtime.enable')
     await cdp.send('Log.enable')
-    await cdp.send('Page.navigate', { url: appUrl })
-    await evaluate(
-      `new Promise((resolve) => {
-        const done = () => resolve(document.readyState)
-        if (document.readyState === 'complete') done()
-        else window.addEventListener('load', done, { once: true })
-      })`,
-      true,
-    )
-    await evaluate(`
-      window.__zeroChatVisual = {
-        textOf(element) {
-          const text = (element.textContent || '').trim()
-          return text || element.getAttribute('aria-label') || element.title || ''
-        },
-        match(element, names) {
-          const text = this.textOf(element)
-          return names.some((name) => text.includes(name))
-        },
-        click(names) {
-          const controls = Array.from(document.querySelectorAll('button, [role="button"], label'))
-          const element = controls.find((item) => this.match(item, names))
-          if (!element) {
-            throw new Error(
-              'Missing control: ' +
-                names.join(' / ') +
-                '; available: ' +
-                controls.map((item) => this.textOf(item)).filter(Boolean).slice(0, 40).join(' | ')
-            )
-          }
-          element.click()
-          return this.textOf(element)
-        },
-        clickSelector(selector) {
-          const element = document.querySelector(selector)
-          if (!element) throw new Error('Missing selector: ' + selector)
-          element.click()
-          return true
-        },
-        tinyAudioFile(fileName = 'zerochat-visual-audio.wav') {
-          const bytes = Uint8Array.from(
-            atob('UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='),
-            (char) => char.charCodeAt(0),
-          )
-          return new File([bytes], fileName, { type: 'audio/wav' })
-        },
-        async attachTinyAudio(fileName = 'zerochat-visual-audio.wav') {
-          const input = document.querySelector('.audio-source-actions input[type="file"]')
-          if (!input) throw new Error('Missing audio source file input')
-          const data = new DataTransfer()
-          data.items.add(this.tinyAudioFile(fileName))
-          input.files = data.files
-          input.dispatchEvent(new Event('input', { bubbles: true }))
-          input.dispatchEvent(new Event('change', { bubbles: true }))
-
-          for (let attempt = 0; attempt < 80; attempt += 1) {
-            const sourceText = document.querySelector('.audio-source-name')?.textContent?.trim() ?? ''
-
-            if (sourceText.includes(fileName)) return sourceText
-            await new Promise((resolve) => setTimeout(resolve, 50))
-          }
-
-          throw new Error(
-            'Audio source name did not update: ' +
-              (document.querySelector('.audio-source-name')?.textContent?.trim() ?? ''),
-          )
-        },
-        setSelectValue(value) {
-          const select = Array.from(document.querySelectorAll('select'))
-            .find((item) => Array.from(item.options).some((option) => option.value === value))
-          if (!select) throw new Error('Missing select option: ' + value)
-          select.value = value
-          select.dispatchEvent(new Event('change', { bubbles: true }))
-          return true
-        },
-        async waitForGuideProviderSelection(presetId, expectsCustomFields) {
-          for (let attempt = 0; attempt < 80; attempt += 1) {
-            const select = document.querySelector('.guide-modal .guide-provider-select-row select')
-            const customBaseUrl = document.querySelector(
-              ".guide-modal [data-provider-base-url-field='true']",
-            )
-            const customBlockingFields = [
-              customBaseUrl,
-              document.querySelector(
-                ".guide-modal label[data-provider-api-key-field='true'] input",
-              ),
-              document.querySelector(
-                '.guide-modal [data-provider-default-model-field="true"]',
-              ),
-            ]
-            const customBlockingFieldsVisible = customBlockingFields.every((field) => {
-              if (!field) return false
-
-              const box = field.getBoundingClientRect()
-              const style = getComputedStyle(field)
-              return (
-                style.display !== 'none' &&
-                style.visibility !== 'hidden' &&
-                box.width >= 28 &&
-                box.height >= 28 &&
-                box.top >= -1 &&
-                box.bottom <= window.innerHeight + 1
-              )
-            })
-
-            if (
-              select?.value === presetId &&
-              Boolean(customBaseUrl) === expectsCustomFields &&
-              (!expectsCustomFields || customBlockingFieldsVisible)
-            ) {
-              return true
-            }
-
-            await new Promise((resolve) => setTimeout(resolve, 50))
-          }
-
-          throw new Error(
-            'First-run Provider menu selection did not settle with visible blocking fields: ' +
-              presetId,
-          )
-        },
-        setCheckboxLabel(names, checked) {
-          const label = Array.from(document.querySelectorAll('label'))
-            .find((item) => this.match(item, names))
-          if (!label) throw new Error('Missing checkbox label: ' + names.join(' / '))
-          const input = label.querySelector('input[type="checkbox"]')
-          if (!input) throw new Error('Missing checkbox input: ' + names.join(' / '))
-          if (input.checked !== checked) input.click()
-          return input.checked
-        },
-        async waitForCompact(value) {
-          for (let attempt = 0; attempt < 80; attempt += 1) {
-            if (document.documentElement.dataset.compact === value) return true
-            await new Promise((resolve) => setTimeout(resolve, 50))
-          }
-          throw new Error('Compact mode did not settle: ' + document.documentElement.dataset.compact)
-        },
-        setSyncPassphrase(value) {
-          const input = this.syncPassphraseInput()
-          if (!input) throw new Error('Missing sync passphrase input')
-          input.focus()
-          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value)
-          input.dispatchEvent(new Event('input', { bubbles: true }))
-          input.dispatchEvent(new Event('change', { bubbles: true }))
-          input.blur()
-          return true
-        },
-        syncPassphraseInput() {
-          return document.querySelector('#settings-tab-data')
-            ? Array.from(document.querySelectorAll('.settings-modal [role="tabpanel"] input'))
-                .find((item) => item.closest('label')?.textContent?.includes('数据加密密码') ||
-                  item.closest('label')?.textContent?.includes('Data encryption password'))
-            : null
-        },
-        assertSyncPassphrasePlaceholder(names) {
-          const input = this.syncPassphraseInput()
-          if (!input) throw new Error('Missing sync passphrase input')
-          if (input.value) throw new Error('Sync passphrase input should be empty for placeholder audit')
-          if (!names.some((name) => input.placeholder.includes(name))) {
-            throw new Error(
-              'Unexpected sync passphrase placeholder: ' + input.placeholder,
-            )
-          }
-          return input.placeholder
-        },
-        cloudflareAccessKeyInput() {
-          return Array.from(document.querySelectorAll('.settings-modal [role="tabpanel"] input'))
-            .find((item) => item.closest('label')?.textContent?.includes('Cloudflare 访问密钥') ||
-              item.closest('label')?.textContent?.includes('Cloudflare access key'))
-        },
-        assertCloudflareAccessKeyPlaceholder(names) {
-          const input = this.cloudflareAccessKeyInput()
-          if (!input) throw new Error('Missing Cloudflare access key input')
-          if (input.value) throw new Error('Cloudflare access key input should be empty for placeholder audit')
-          if (!names.some((name) => input.placeholder.includes(name))) {
-            throw new Error(
-              'Unexpected Cloudflare access key placeholder: ' + input.placeholder,
-            )
-          }
-          return input.placeholder
-        },
-        setSkillDraft(name, content) {
-          const panel = document.querySelector('.skill-settings')
-          if (!panel) throw new Error('Missing skill settings panel')
-          const nameInput = Array.from(panel.querySelectorAll('input'))
-            .find((item) => !['checkbox', 'number', 'file'].includes(item.type))
-          const textarea = panel.querySelector('textarea.skill-draft')
-          if (!nameInput || !textarea) throw new Error('Missing skill draft fields')
-          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(nameInput, name)
-          nameInput.dispatchEvent(new Event('input', { bubbles: true }))
-          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(textarea, content)
-          textarea.dispatchEvent(new Event('input', { bubbles: true }))
-          return true
-        },
-        clickSkillEdit(rowText) {
-          const row = Array.from(document.querySelectorAll('.skill-row'))
-            .find((item) => (item.textContent || '').includes(rowText))
-          if (!row) throw new Error('Missing skill row: ' + rowText)
-          const button = row.querySelector('.skill-edit-button')
-          if (!button) throw new Error('Missing skill edit button: ' + rowText)
-          button.click()
-          return true
-        },
-        async waitForSkillEditor(rowText) {
-          for (let attempt = 0; attempt < 80; attempt += 1) {
-            const row = Array.from(document.querySelectorAll('.skill-row'))
-              .find((item) => (item.textContent || '').includes(rowText))
-            const textarea = row?.querySelector('.skill-edit-form textarea')
-            if (textarea && !textarea.disabled && textarea.value.trim()) {
-              return textarea.value
-            }
-            await new Promise((resolve) => setTimeout(resolve, 50))
-          }
-          throw new Error('Missing loaded skill editor: ' + rowText)
-        },
-        largeSkillListState() {
-          const top = document.querySelector('.skill-list-more-top')
-          const button = top?.querySelector('button')
-
-          return {
-            rowCount: document.querySelectorAll('.skill-row').length,
-            topText: (top?.textContent || '').trim(),
-            buttonText: (button?.textContent || '').trim(),
-            buttonVisible: Boolean(
-              button &&
-                getComputedStyle(button).display !== 'none' &&
-                button.getBoundingClientRect().width > 0 &&
-                button.getBoundingClientRect().height > 0,
-            ),
-          }
-        },
-        assertLargeSkillListProgress(total, shown) {
-          const state = this.largeSkillListState()
-
-          if (state.rowCount !== shown) {
-            throw new Error(
-              'Large Skill list should render exactly ' +
-                shown +
-                ' rows before loading more, got ' +
-                state.rowCount,
-            )
-          }
-
-          if (!state.topText.includes(String(shown)) || !state.topText.includes(String(total))) {
-            throw new Error('Large Skill progress is not visible: ' + state.topText)
-          }
-
-          if (!state.buttonVisible || !state.buttonText) {
-            throw new Error('Large Skill show-more button is not visible')
-          }
-
-          return state
-        },
-        guideSyncNote() {
-          const note = document.querySelector('.guide-modal .guide-sync-note')
-          return (note?.textContent || '').trim()
-        },
-        selectGuideSyncMode(names) {
-          const guide = document.querySelector('.guide-modal')
-          if (!guide) throw new Error('Missing first-run guide')
-          const buttons = Array.from(guide.querySelectorAll('.mode-grid button'))
-          const button = buttons.find((item) => this.match(item, names))
-          if (!button) {
-            throw new Error(
-              'Missing guide sync mode: ' +
-                names.join(' / ') +
-                '; available: ' +
-                buttons.map((item) => this.textOf(item)).join(' | '),
-            )
-          }
-          button.click()
-          return this.textOf(button)
-        },
-        async waitForGuideSyncNote(names) {
-          for (let attempt = 0; attempt < 80; attempt += 1) {
-            const note = this.guideSyncNote()
-            if (names.some((name) => note.includes(name))) return note
-            await new Promise((resolve) => setTimeout(resolve, 50))
-          }
-          throw new Error(
-            'Guide sync note did not match: ' +
-              names.join(' / ') +
-              '; note=' +
-              this.guideSyncNote(),
-          )
-        },
-        reopenedGuideActionState() {
-          const guide = document.querySelector('.guide-modal')
-          if (!guide) throw new Error('Missing setup guide')
-          const buttons = Array.from(guide.querySelectorAll('button'))
-          const hasSkipLocal = buttons.some((button) =>
-            this.match(button, [
-              '跳过，先本地使用',
-              'Skip, use locally',
-              'Skip, use local first',
-              'Ignorer, utiliser en local',
-            ]),
-          )
-          const hasCloseGuide = buttons.some((button) =>
-            this.match(button, ['关闭引导', 'Close guide', 'Fermer le guide']),
-          )
-
-          return {
-            hasCloseGuide,
-            hasSkipLocal,
-            labels: buttons.map((button) => this.textOf(button)).filter(Boolean),
-          }
-        },
-        async waitForText(names) {
-          for (let attempt = 0; attempt < 80; attempt += 1) {
-            if (Array.from(document.querySelectorAll('body *')).some((item) => this.match(item, names))) {
-              return true
-            }
-            await new Promise((resolve) => setTimeout(resolve, 50))
-          }
-          throw new Error('Missing text: ' + names.join(' / '))
-        },
-        async openLargeSkillLibrary(count, names) {
-          for (let attempt = 0; attempt < 80; attempt += 1) {
-            if (attempt % 5 === 0) {
-              window.dispatchEvent(new CustomEvent('zerochat:smoke-large-skills', {
-                detail: { count },
-              }))
-            }
-            if (Array.from(document.querySelectorAll('body *')).some((item) => this.match(item, names))) {
-              return true
-            }
-            await new Promise((resolve) => setTimeout(resolve, 50))
-          }
-          throw new Error('Missing text after opening large Skill library: ' + names.join(' / '))
-        },
-        async waitForVisualSmokeReady() {
-          for (let attempt = 0; attempt < 80; attempt += 1) {
-            if (window.__zeroChatVisualSmokeReady) return true
-            await new Promise((resolve) => setTimeout(resolve, 50))
-          }
-          throw new Error('Visual smoke controller did not become ready')
-        },
-        async waitForTheme(theme) {
-          for (let attempt = 0; attempt < 80; attempt += 1) {
-            if (document.documentElement.dataset.theme === theme) {
-              return true
-            }
-            await new Promise((resolve) => setTimeout(resolve, 50))
-          }
-          throw new Error('Theme did not settle: ' + document.documentElement.dataset.theme)
-        },
-        async waitForDocumentLanguage(lang, dir) {
-          for (let attempt = 0; attempt < 100; attempt += 1) {
-            const langMatches = !lang || document.documentElement.lang === lang
-            const actualDir = document.documentElement.dir
-            const dirMatches =
-              !dir ||
-              actualDir === dir ||
-              (dir === 'ltr' && actualDir === '')
-            if (langMatches && dirMatches) return true
-            if (lang) {
-              window.dispatchEvent(new CustomEvent('zerochat:smoke-language', {
-                detail: { language: lang },
-              }))
-            }
-            await new Promise((resolve) => setTimeout(resolve, 50))
-          }
-          throw new Error('Document language did not settle: ' + document.documentElement.lang + '/' + document.documentElement.dir)
-        },
-        scrollSettingsModal(position) {
-          const modal = document.querySelector('.settings-modal')
-          if (!modal) throw new Error('Missing settings modal')
-          modal.scrollTop = position === 'bottom' ? modal.scrollHeight : 0
-          return modal.scrollTop
-        },
-        scrollSettingsModalTo(names) {
-          const modal = document.querySelector('.settings-modal')
-          if (!modal) throw new Error('Missing settings modal')
-          const target =
-            Array.from(modal.querySelectorAll('label')).find((item) => this.match(item, names)) ||
-            Array.from(modal.querySelectorAll('input, button, p, .notice')).find((item) =>
-              this.match(item, names),
-            )
-          if (!target) throw new Error('Missing settings scroll target: ' + names.join(' / '))
-          const scrollTarget = target
-          const targetBox = scrollTarget.getBoundingClientRect()
-          const modalBox = modal.getBoundingClientRect()
-          const sticky = modal.querySelector('.settings-sticky')
-          const stickyBottom =
-            sticky?.getBoundingClientRect().bottom ?? modalBox.top
-          const visibleTop = Math.max(modalBox.top, stickyBottom) + 12
-
-          modal.scrollTop = Math.max(0, modal.scrollTop + targetBox.top - visibleTop)
-          return modal.scrollTop
-        },
-        fieldViewport(labelNames) {
-          const modal = document.querySelector('.settings-modal')
-          if (!modal) throw new Error('Missing settings modal')
-          const label = Array.from(modal.querySelectorAll('label'))
-            .find((item) => this.match(item, labelNames))
-          if (!label) throw new Error('Missing field: ' + labelNames.join(' / '))
-          const field = label.querySelector('input, textarea, select') ?? label
-          const labelRect = label.getBoundingClientRect()
-          const fieldRect = field.getBoundingClientRect()
-          const modalRect = modal.getBoundingClientRect()
-          const stickyRect = modal.querySelector('.settings-sticky')?.getBoundingClientRect()
-          const visibleTop = Math.max(0, stickyRect?.bottom ?? 0)
-          const visibleBottom = Math.min(window.innerHeight, modalRect.bottom)
-
-          return {
-            bottom: labelRect.bottom,
-            fieldBottom: fieldRect.bottom,
-            fieldTop: fieldRect.top,
-            modalBottom: modalRect.bottom,
-            modalTop: modalRect.top,
-            stickyBottom: stickyRect?.bottom ?? 0,
-            top: labelRect.top,
-            topGap: labelRect.top - visibleTop,
-            viewportHeight: window.innerHeight,
-            visibleTop,
-            visible:
-              labelRect.top >= visibleTop - 1 &&
-              labelRect.bottom <= visibleBottom + 1 &&
-              labelRect.top >= modalRect.top - 1 &&
-              labelRect.bottom <= modalRect.bottom + 1,
-          }
-        },
-        assertFieldInViewport(labelNames) {
-          const state = this.fieldViewport(labelNames)
-          if (!state.visible) {
-            throw new Error(
-              'Field is hidden by modal chrome or outside viewport: ' +
-                labelNames.join(' / ') +
-                '; state=' +
-                JSON.stringify(state),
-            )
-          }
-          return state
-        },
-        assertFieldNearViewportTop(labelNames, maxGap = 52) {
-          const state = this.fieldViewport(labelNames)
-          if (!state.visible || state.topGap > maxGap) {
-            throw new Error(
-              'Field is not anchored near the visible top of the settings modal: ' +
-                labelNames.join(' / ') +
-                '; state=' +
-                JSON.stringify(state),
-            )
-          }
-          return state
-        },
-        controlViewport(names) {
-          const modal = document.querySelector('.settings-modal')
-          if (!modal) throw new Error('Missing settings modal')
-          const target = Array.from(
-            modal.querySelectorAll('button, [role="button"], label.file-button'),
-          ).find((item) => this.match(item, names))
-          if (!target) throw new Error('Missing control: ' + names.join(' / '))
-          const rect = target.getBoundingClientRect()
-          const modalRect = modal.getBoundingClientRect()
-          const stickyRect = modal.querySelector('.settings-sticky')?.getBoundingClientRect()
-          const style = window.getComputedStyle(target)
-          const visibleTop = Math.max(0, stickyRect?.bottom ?? modalRect.top)
-          const visibleBottom = Math.min(window.innerHeight, modalRect.bottom)
-
-          return {
-            bottom: rect.bottom,
-            modalBottom: modalRect.bottom,
-            modalTop: modalRect.top,
-            stickyBottom: stickyRect?.bottom ?? 0,
-            top: rect.top,
-            viewportHeight: window.innerHeight,
-            visible:
-              rect.width > 0 &&
-              rect.height > 0 &&
-              style.display !== 'none' &&
-              style.visibility !== 'hidden' &&
-              rect.top >= visibleTop - 1 &&
-              rect.bottom <= visibleBottom + 1 &&
-              rect.left >= modalRect.left - 1 &&
-              rect.right <= modalRect.right + 1,
-          }
-        },
-        assertControlInViewport(names) {
-          const state = this.controlViewport(names)
-          if (!state.visible) {
-            throw new Error(
-              'Control is hidden by modal chrome or outside viewport: ' +
-                names.join(' / ') +
-                '; state=' +
-                JSON.stringify(state),
-            )
-          }
-          return state
-        },
-        assertSegmentedLabelsFit() {
-          const labels = Array.from(document.querySelectorAll('.settings-modal .segmented-label'))
-          if (!labels.length) throw new Error('Missing settings segmented labels')
-          const failures = labels
-            .filter((label) => {
-              const style = window.getComputedStyle(label)
-              const rect = label.getBoundingClientRect()
-              return (
-                rect.width > 0 &&
-                rect.height > 0 &&
-                style.display !== 'none' &&
-                style.visibility !== 'hidden' &&
-                label.scrollWidth > label.clientWidth + 1
-              )
-            })
-            .map((label) => ({
-              text: (label.textContent || '').trim(),
-              clientWidth: label.clientWidth,
-              scrollWidth: label.scrollWidth,
-            }))
-          if (failures.length) {
-            throw new Error('Settings segmented labels overflow: ' + JSON.stringify(failures))
-          }
-          return labels.map((label) => ({
-            text: (label.textContent || '').trim(),
-            clientWidth: label.clientWidth,
-            scrollWidth: label.scrollWidth,
-          }))
-        },
-        async waitForControl() {
-          for (let attempt = 0; attempt < 100; attempt += 1) {
-            if (document.querySelector('button, [role="button"], label')) return true
-            await new Promise((resolve) => setTimeout(resolve, 50))
-          }
-          throw new Error('No controls rendered')
-        },
-      }
-    `)
-    await evaluate(`window.__zeroChatVisual.waitForControl()`, true)
+    const runtimeUrl = new URL(appUrl)
+    runtimeUrl.searchParams.set('app-test', '1')
+    appUrl = runtimeUrl.href
+    const loadStart = cdp.events.length
+    const navigation = await cdp.send('Page.navigate', { url: appUrl })
+    await waitForMainFrameLoadCompletion(cdp.events, loadStart, navigation.frameId, {
+      timeoutMs: 30_000,
+    })
+    await evaluate(visualSmokeScript())
+    await waitFor('document.readyState === "complete"')
+    await waitFor('Boolean(document.querySelector(".zc-app"))')
+    await waitFor('Boolean(document.querySelector(".zc-empty-card"))')
 
     await setViewport(1440, 900)
     await capture('first-run-guide-desktop')
-    await setViewport(1280, 705)
-    await assertViewportFit('first-run-guide-short-desktop')
-    await evaluate(`window.__zeroChatVisual.setSelectValue('custom-openai-relay')`)
-    await evaluate(
-      `window.__zeroChatVisual.waitForGuideProviderSelection('custom-openai-relay', true)`,
-      true,
-    )
-    await assertViewportFit('first-run-guide-custom-relay-short-desktop')
-    await setViewport(320, 640, true)
-    await assertViewportFit('first-run-guide-custom-relay-compact-mobile')
-    await evaluate(`window.__zeroChatVisual.setSelectValue('openai')`)
-    await evaluate(
-      `window.__zeroChatVisual.waitForGuideProviderSelection('openai', false)`,
-      true,
-    )
     await setViewport(390, 780, true)
     await capture('first-run-guide-mobile')
-    await evaluate(`
-      window.dispatchEvent(new CustomEvent('zerochat:smoke-language', {
-        detail: { language: 'fr-FR' },
-      }))
-    `)
-    await evaluate(`window.__zeroChatVisual.waitForDocumentLanguage('fr-FR', 'ltr')`, true)
-    await capture('first-run-guide-fr-FR-mobile')
-    await evaluate(`
-      window.dispatchEvent(new CustomEvent('zerochat:smoke-language', {
-        detail: { language: 'ar-SA' },
-      }))
-    `)
-    await evaluate(`window.__zeroChatVisual.waitForDocumentLanguage('ar-SA', 'rtl')`, true)
-    const rtlTechnicalFieldState = await evaluate(`(() => {
-      const secret = document.querySelector('.guide-modal .secret-input input')
-      const model = document.querySelector('.guide-modal .model-row input[aria-label]')
+
+    await setViewport(320, 640, true)
+    await visual('click', ['添加提供商', 'Add provider'])
+    await waitFor('Boolean(document.querySelector(".zc-settings"))')
+    await waitFor(`(() => {
+      const scroll = document.querySelector('.zc-settings-scroll')
+      const keyInput = document.querySelector('[data-provider-key-input="true"]')
+      return scroll instanceof HTMLElement &&
+        keyInput instanceof HTMLInputElement &&
+        document.activeElement === keyInput &&
+        scroll.scrollTop > 0
+    })()`)
+    const onboardingProviderKeyState = await evaluate(`(() => {
+      const settings = document.querySelector('.zc-settings')
+      const scroll = settings?.querySelector('.zc-settings-scroll')
+      const providerTab = settings?.querySelector('#settings-tab-providers')
+      const keyInput = settings?.querySelector('[data-provider-key-input="true"]')
+      if (!(scroll instanceof HTMLElement) ||
+          !(providerTab instanceof HTMLButtonElement) ||
+          !(keyInput instanceof HTMLInputElement)) return { valid: false, reason: 'missing-current-provider-surface' }
+      const scrollBox = scroll.getBoundingClientRect()
+      const keyBox = keyInput.getBoundingClientRect()
+      const valid = providerTab.classList.contains('active') &&
+        document.activeElement === keyInput &&
+        keyBox.width > 0 &&
+        keyBox.height > 0 &&
+        keyBox.top >= scrollBox.top - 1 &&
+        keyBox.bottom <= scrollBox.bottom + 1 &&
+        keyBox.left >= scrollBox.left - 1 &&
+        keyBox.right <= scrollBox.right + 1
       return {
-        secretDir: secret?.getAttribute('dir') ?? '',
-        secretPlaceholder: secret?.getAttribute('placeholder') ?? '',
-        modelDir: model?.getAttribute('dir') ?? '',
-        modelValue: model?.value ?? '',
+        valid,
+        scrollTop: scroll.scrollTop,
+        scroll: { top: scrollBox.top, bottom: scrollBox.bottom, height: scrollBox.height },
+        key: { top: keyBox.top, bottom: keyBox.bottom, height: keyBox.height },
       }
     })()`)
     assert.equal(
-      rtlTechnicalFieldState.secretDir,
-      'auto',
-      'RTL setup guide provider key field should use content-based direction',
+      onboardingProviderKeyState.valid,
+      true,
+      `current first-run Provider entry must keep the first credential field visible in the compact Settings viewport: ${JSON.stringify(onboardingProviderKeyState)}`,
     )
-    assert.equal(
-      rtlTechnicalFieldState.secretPlaceholder,
-      'sk-...',
-      'RTL setup guide provider key placeholder should remain visually LTR',
-    )
-    assert.equal(
-      rtlTechnicalFieldState.modelDir,
-      'auto',
-      'RTL setup guide model field should use content-based direction',
-    )
-    assert.ok(
-      rtlTechnicalFieldState.modelValue.startsWith('gpt-'),
-      'RTL setup guide model value should be a LTR model identifier',
-    )
+    await setViewport(390, 780, true)
+    await visual('clickTab', 'general')
+    await visual('setSelectValue', 'fr-FR')
+    await waitFor('document.documentElement.lang === "fr-FR"')
+    await visual('clickSelector', '.zc-settings-back')
+    await waitFor('!document.querySelector(".zc-settings")')
+    await capture('first-run-guide-fr-FR-mobile')
+
+    await visual('click', ['添加提供商', 'Add provider'])
+    await visual('clickTab', 'general')
+    await visual('setSelectValue', 'ar-SA')
+    await waitFor('document.documentElement.lang === "ar-SA" && document.documentElement.dir === "rtl"')
+    await visual('clickSelector', '.zc-settings-back')
+    await waitFor('!document.querySelector(".zc-settings")')
     await capture('first-run-guide-ar-SA-mobile')
-    await evaluate(`
-      window.dispatchEvent(new CustomEvent('zerochat:smoke-language', {
-        detail: { language: 'zh-CN' },
-      }))
-    `)
-    await evaluate(`window.__zeroChatVisual.waitForDocumentLanguage('zh-CN', 'ltr')`, true)
-    await evaluate(`window.__zeroChatVisual.selectGuideSyncMode(['Gist'])`)
-    await evaluate(`window.__zeroChatVisual.waitForGuideSyncNote(['GitHub 令牌', 'GitHub token'])`, true)
-    await capture('first-run-guide-gist-mobile')
-    await evaluate(`window.__zeroChatVisual.selectGuideSyncMode(['Cloudflare'])`)
-    await evaluate(`window.__zeroChatVisual.waitForGuideSyncNote(['Worker + KV/R2', 'AI requests'])`, true)
-    await capture('first-run-guide-cloudflare-mobile')
-    const guideNotes = await evaluate(`(async () => {
-      const helper = window.__zeroChatVisual
-      const notes = []
-      const modes = [
-        { label: ['本地', 'Local'], note: ['本地模式', 'Local mode'] },
-        { label: ['Gist'], note: ['GitHub 令牌', 'GitHub token'] },
-        { label: ['Cloudflare'], note: ['Worker + KV/R2', 'AI requests'] },
-      ]
-      for (const { label, note } of modes) {
-        helper.selectGuideSyncMode(label)
-        notes.push(await helper.waitForGuideSyncNote(note))
-      }
-      return notes
-    })()`, true)
+
+    await visual('click', ['إضافة مزود', '添加提供商', 'Add provider'])
+    await visual('clickTab', 'general')
+    await visual('setSelectValue', 'zh-CN')
+    await waitFor('document.documentElement.lang === "zh-CN" && document.documentElement.dir === "ltr"')
+    await visual('clickTab', 'providers')
+    await waitFor('Boolean(document.querySelector(".zc-provider-card"))')
+    await visual('focusProviderKey')
+    await cdp.send('Input.insertText', { text: 'visual-audit-placeholder' })
+    await sleep(120)
+    const providerKeyState = await visual('saveProviderKey')
     assert.equal(
-      new Set(guideNotes).size,
-      3,
-      `first-run guide visual states should use distinct sync notes (${JSON.stringify(guideNotes)})`,
+      providerKeyState.saveDisabled || providerKeyState.fieldShowsSavedState,
+      true,
+      `Provider credential save did not settle in the production settings view: ${JSON.stringify(providerKeyState)}`,
     )
+    await visual('clickSelector', '.zc-settings-back')
+    await waitFor('!document.querySelector(".zc-settings")')
+
     await setViewport(320, 640, true)
     await capture('first-run-guide-compact-mobile')
     await setViewport(300, 620, true)
-    await capture('first-run-guide-ultra-compact-mobile')
-    await setViewport(280, 560, false)
+    await capture('first-run-guide-tiny-mobile')
+    await setViewport(280, 560)
+    const guideLayoutContentTightOnMicroViewport = await evaluate(`(() => {
+      const card = document.querySelector('.zc-empty-card')
+      if (!(card instanceof HTMLElement)) return false
+      const children = [...card.children]
+        .filter((child) => child instanceof HTMLElement && getComputedStyle(child).display !== 'none')
+        .map((child) => child.getBoundingClientRect())
+      if (children.length < 4) return false
+      const maximumGap = children.slice(1).reduce(
+        (largest, box, index) => Math.max(largest, box.top - children[index].bottom),
+        0,
+      )
+      const cardBox = card.getBoundingClientRect()
+      return maximumGap <= 24 &&
+        children[0].top >= cardBox.top - 1 &&
+        children.at(-1).bottom <= cardBox.bottom + 1 &&
+        cardBox.top >= 0 &&
+        cardBox.bottom <= innerHeight
+    })()`)
+    assert.equal(
+      guideLayoutContentTightOnMicroViewport,
+      true,
+      'first-run content should not leave a large trailing blank gap on micro viewports',
+    )
     await capture('first-run-guide-tiny-desktop')
     await setViewport(1440, 900)
-
-    const skippedGuideState = await evaluate(`
-      (async () => {
-        const helper = window.__zeroChatVisual
-        const names = ['跳过，先本地使用', 'Skip, use locally', 'Skip, use local first']
-        const button =
-          document.querySelector('[data-guide-skip-local-action="true"]') ||
-          Array.from(document.querySelectorAll('button'))
-            .find((item) => helper.match(item, names))
-
-        if (!button) {
-          return {
-            clicked: false,
-            guideVisible: Boolean(document.querySelector('.guide-modal')),
-            skipDisabled: null,
-          }
-        }
-
-        const skipDisabled = Boolean(button.disabled)
-        button.click()
-
-        for (let attempt = 0; attempt < 100; attempt += 1) {
-          if (!document.querySelector('.guide-modal')) {
-            return {
-              clicked: true,
-              guideVisible: false,
-              skipDisabled,
-            }
-          }
-
-          await new Promise((resolve) => setTimeout(resolve, 50))
-        }
-
-        return {
-          clicked: true,
-          guideVisible: Boolean(document.querySelector('.guide-modal')),
-          skipDisabled,
-          labels: Array.from(document.querySelectorAll('.guide-modal button'))
-            .map((button) => helper.textOf(button))
-            .filter(Boolean),
-        }
-      })()
-    `, true)
-
-    if (skippedGuideState.clicked) {
-      assert.equal(
-        skippedGuideState.guideVisible,
-        false,
-        `first-run skip-local action should close the guide before continuing (${JSON.stringify(skippedGuideState)})`,
-      )
-      await evaluate(`window.__zeroChatVisual.waitForText(['新建对话', 'New chat'])`, true)
-    }
-
+    await capture('first-run-ready-desktop')
+    await capture('guide-before-chat-desktop')
+    await visual('click', ['开始使用', 'Start chatting'])
+    await waitFor('Boolean(document.querySelector(".zc-composer textarea"))')
     await capture('chat-desktop')
-    await evaluate(`window.__zeroChatVisual.click(['打开设置', 'Open settings'])`)
-    await capture('settings-providers-desktop')
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-data')`)
-    await capture('settings-data-desktop')
-    await evaluate(`window.__zeroChatVisual.click(['打开配置引导', 'Open setup guide'])`)
-    await evaluate(`window.__zeroChatVisual.waitForText(['首次配置', 'First setup'])`, true)
-    const reopenedGuideActionState = await evaluate(`window.__zeroChatVisual.reopenedGuideActionState()`)
-    assert.equal(
-      reopenedGuideActionState.hasSkipLocal,
-      false,
-      `reopened setup guide visual state should not show the first-run skip-local action (${JSON.stringify(reopenedGuideActionState)})`,
-    )
-    assert.equal(
-      reopenedGuideActionState.hasCloseGuide,
-      true,
-      `reopened setup guide visual state should show a harmless close action (${JSON.stringify(reopenedGuideActionState)})`,
-    )
-    await capture('reopened-setup-guide-desktop')
-    await evaluate(`window.__zeroChatVisual.click(['关闭引导', 'Close guide'])`)
-    await evaluate(`window.__zeroChatVisual.waitForText(['数据', 'Data'])`, true)
-    await evaluate(`window.__zeroChatVisual.click(['重置同步密码', 'Reset sync password'])`)
-    await capture('reset-sync-password-dialog-desktop')
-    await evaluate(`window.__zeroChatVisual.click(['取消', 'Cancel'])`)
-    await evaluate(`window.__zeroChatVisual.setSyncPassphrase('old-passphrase-for-visual-audit')`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-sync')`)
-    await capture('settings-sync-desktop')
-    await evaluate(`
-      window.dispatchEvent(new CustomEvent('zerochat:smoke-sync-conflict'))
-    `)
-    await evaluate(`window.__zeroChatVisual.waitForText(['选择首次同步方向'])`, true)
-    await capture('first-sync-conflict-dialog-desktop')
-    await evaluate(`window.__zeroChatVisual.clickSelector('.sync-conflict-modal .modal-header .icon-button')`)
-    await evaluate(`window.__zeroChatVisual.click(['GitHub Gist'])`)
-    await evaluate(`window.__zeroChatVisual.scrollSettingsModalTo(['Gist ID'])`)
-    await evaluate(`window.__zeroChatVisual.assertFieldInViewport(['Gist ID'])`)
-    await capture('settings-sync-gist-desktop')
-    await evaluate(`window.__zeroChatVisual.scrollSettingsModal('top')`)
-    await evaluate(`window.__zeroChatVisual.click(['Cloudflare'])`)
-    await waitForDeferredSettingsScroll()
-    await evaluate(`window.__zeroChatVisual.scrollSettingsModalTo(['Worker 地址', 'Worker URL'])`)
-    await evaluate(`window.__zeroChatVisual.assertFieldInViewport(['Worker 地址', 'Worker URL'])`)
-    await capture('settings-sync-cloudflare-desktop')
-    await evaluate(`window.__zeroChatVisual.scrollSettingsModal('top')`)
-    await evaluate(`window.__zeroChatVisual.click(['GitHub Gist'])`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-data')`)
-    await evaluate(`window.__zeroChatVisual.setSyncPassphrase('new-passphrase-for-visual-audit')`)
-    await capture('rotate-sync-password-dialog-desktop')
-    await evaluate(`window.__zeroChatVisual.click(['取消', 'Cancel'])`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-sync')`)
-    await evaluate(`window.__zeroChatVisual.click(['本地', 'Local'])`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-models')`)
-    await capture('settings-models-desktop')
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-skills')`)
-    await evaluate(
-      `window.__zeroChatVisual.setSkillDraft(
-        'Visual review skill',
-        '# Visual review\\nCheck alignment, tap targets, overflow, sidebar behavior, settings density, and mobile readability.'
-      )`,
-    )
-    await evaluate(`window.__zeroChatVisual.click(['添加技能', 'Add skill'])`)
-    await evaluate(`window.__zeroChatVisual.waitForText(['Visual review skill'])`, true)
-    await capture('settings-skills-desktop')
-    await evaluate(`window.__zeroChatVisual.clickSkillEdit('Visual review skill')`)
-    await evaluate(`window.__zeroChatVisual.waitForSkillEditor('Visual review skill')`, true)
-    await capture('settings-skills-edit-desktop')
-    await evaluate(`window.__zeroChatVisual.clickSkillEdit('Visual review skill')`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-appearance')`)
-    await evaluate(`window.__zeroChatVisual.setCheckboxLabel(['紧凑显示', 'Compact display'], true)`)
-    await evaluate(`window.__zeroChatVisual.waitForCompact('true')`, true)
-    await capture('settings-appearance-compact-desktop')
-    await evaluate(`window.__zeroChatVisual.clickSelector('.settings-modal .modal-header .icon-button')`)
-    await capture('chat-compact-preference-desktop')
-    await evaluate(`window.__zeroChatVisual.click(['设置', 'Settings'])`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-appearance')`)
-    await evaluate(`window.__zeroChatVisual.setCheckboxLabel(['紧凑显示', 'Compact display'], false)`)
-    await evaluate(`window.__zeroChatVisual.waitForCompact('false')`, true)
-    await evaluate(`window.__zeroChatVisual.setSelectValue('ar-SA')`)
-    await evaluate(`window.__zeroChatVisual.waitForDocumentLanguage('ar-SA', 'rtl')`, true)
+
     await setViewport(390, 780, true)
-    await capture('settings-appearance-rtl-mobile')
-    for (const locale of [
-      ['zh-CN', 'ltr'],
-      ['en-US', 'ltr'],
-      ['es-ES', 'ltr'],
-      ['hi-IN', 'ltr'],
-      ['ar-SA', 'rtl'],
-      ['pt-BR', 'ltr'],
-      ['ru-RU', 'ltr'],
-      ['ja-JP', 'ltr'],
-      ['ko-KR', 'ltr'],
-      ['fr-FR', 'ltr'],
-    ]) {
-      const [language, direction] = locale
-      await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-appearance')`)
-      await evaluate(`window.__zeroChatVisual.setSelectValue('${language}')`)
-      await evaluate(
-        `window.__zeroChatVisual.waitForDocumentLanguage('${language}', '${direction}')`,
-        true,
-      )
-      await evaluate(`window.__zeroChatVisual.assertSegmentedLabelsFit()`)
-      await capture(`settings-language-${language}-mobile`)
+    await visual('clickSelector', '[data-zc-composer-mode="audio"]')
+    await waitFor('Boolean(document.querySelector(\'[data-zc-audio-composer="true"]\'))')
+    await capture('audio-composer-mobile')
+    const compactAudioFileName =
+      'visual-audit-audio-source-with-a-deliberately-long-filename-for-compact-layout.wav'
+    await evaluate(`(() => {
+      const input = document.querySelector('[data-zc-audio-composer="true"] input[type="file"]')
+      if (!(input instanceof HTMLInputElement)) return false
+      const transfer = new DataTransfer()
+      transfer.items.add(new File(
+        [new Uint8Array([82, 73, 70, 70, 4, 0, 0, 0, 87, 65, 86, 69])],
+        ${JSON.stringify(compactAudioFileName)},
+        { type: 'audio/wav' },
+      ))
+      input.files = transfer.files
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+      return true
+    })()`)
+    await waitFor(
+      `document.querySelector('[data-zc-audio-composer="true"] .zc-audio-source-copy strong')?.textContent === ${JSON.stringify(compactAudioFileName)}`,
+    )
+    await setViewport(320, 640, true)
+    const compactAudioFileNameBounded = await evaluate(`(() => {
+      const panel = document.querySelector('[data-zc-audio-composer="true"]')
+      const name = panel?.querySelector('.zc-audio-source-copy strong')
+      const action = panel?.querySelector('[data-zc-audio-transcribe="true"]')
+      if (!(panel instanceof HTMLElement) ||
+          !(name instanceof HTMLElement) ||
+          !(action instanceof HTMLButtonElement)) return false
+      const panelBox = panel.getBoundingClientRect()
+      const nameBox = name.getBoundingClientRect()
+      const actionBox = action.getBoundingClientRect()
+      return name.textContent === ${JSON.stringify(compactAudioFileName)} &&
+        name.scrollWidth > name.clientWidth &&
+        nameBox.left >= panelBox.left - 1 &&
+        nameBox.right <= panelBox.right + 1 &&
+        actionBox.left >= panelBox.left - 1 &&
+        actionBox.right <= panelBox.right + 1 &&
+        actionBox.bottom <= innerHeight + 1 &&
+        !action.disabled
+    })()`)
+    assert.equal(
+      compactAudioFileNameBounded,
+      true,
+      'compact audio composer must clip long source names without hiding transcription controls',
+    )
+    await capture('audio-composer-compact-mobile')
+    await setViewport(260, 560)
+    const audioComposerSubmissionVisible = await evaluate(`(() => {
+      const panel = document.querySelector('[data-zc-audio-composer="true"]')
+      const action = panel?.querySelector('[data-zc-audio-transcribe="true"]')
+      if (!(panel instanceof HTMLElement) || !(action instanceof HTMLElement)) {
+        return false
+      }
+      const panelBox = panel.getBoundingClientRect()
+      const actionBox = action.getBoundingClientRect()
+      const panelStyle = getComputedStyle(panel)
+      return panelBox.left >= -1 &&
+        panelBox.right <= innerWidth + 1 &&
+        panelBox.top >= -1 &&
+        panelBox.bottom <= innerHeight + 1 &&
+        actionBox.left >= panelBox.left - 1 &&
+        actionBox.right <= panelBox.right + 1 &&
+        actionBox.top >= panelBox.top - 1 &&
+        actionBox.bottom <= panelBox.bottom + 1 &&
+        actionBox.bottom <= innerHeight + 1 &&
+        panelStyle.overflowY === 'auto'
+    })()`)
+    assert.equal(
+      audioComposerSubmissionVisible,
+      true,
+      'short-viewport audio composer must keep the transcription action visible',
+    )
+    await capture('audio-composer-micro-desktop')
+    await visual('clickSelector', '[data-zc-composer-mode="chat"]')
+    await waitFor('!document.querySelector(\'[data-zc-audio-composer="true"]\')')
+    await setViewport(1440, 900)
+
+    await visual('click', ['设置', 'Settings'])
+    await waitFor('Boolean(document.querySelector(".zc-settings"))')
+    await capture('settings-providers-desktop')
+    await visual('clickTab', 'models')
+    await waitFor('Boolean(document.querySelector(".zc-model-grid"))')
+    await capture('settings-models-desktop')
+    await visual('clickTab', 'skills')
+    await waitFor('Boolean(document.querySelector(".zc-skill-editor"))')
+    await capture('settings-skills-desktop')
+    await openLargeSkillLibrary(241)
+    await visual('scrollSettings', 'bottom')
+    const largeSkillLibraryVisible = await evaluate(`(() => {
+      const rows = [...document.querySelectorAll('.zc-skill-item')]
+      const scroll = document.querySelector('.zc-settings-scroll')
+      const last = rows.at(-1)
+      if (!(scroll instanceof HTMLElement) || !(last instanceof HTMLElement)) return false
+      const scrollBox = scroll.getBoundingClientRect()
+      const lastBox = last.getBoundingClientRect()
+      return rows.length === 241 &&
+        last.textContent.includes('Visual Skill 241') &&
+        lastBox.top >= scrollBox.top - 1 &&
+        lastBox.bottom <= scrollBox.bottom + 1
+    })()`)
+    assert.equal(
+      largeSkillLibraryVisible,
+      true,
+      'large Skill library must render all deterministic fixture rows and expose the final row',
+    )
+    await capture('settings-skills-large-desktop')
+    await visual('scrollSettings', 'top')
+    await visual('clickTab', 'sync')
+    await waitFor('Boolean(document.querySelector(".zc-segmented"))')
+    await capture('settings-sync-desktop')
+    await visual('clickTab', 'data')
+    await waitFor('Boolean(document.querySelector(".zc-settings-scroll input[type=password]"))')
+    await capture('settings-data-desktop')
+    await visual('clickTab', 'general')
+    await visual('setCompact', true)
+    await waitFor('document.querySelector(".zc-switch")?.getAttribute("aria-checked") === "true"')
+    await capture('settings-general-compact-desktop')
+    await visual('clickSelector', '.zc-settings-back')
+    await waitFor('!document.querySelector(".zc-settings")')
+    await capture('chat-compact-preference-desktop')
+
+    await visual('click', ['设置', 'Settings'])
+    await visual('clickTab', 'general')
+    await visual('setCompact', false)
+    await visual('setSelectValue', 'ar-SA')
+    await waitFor('document.documentElement.lang === "ar-SA" && document.documentElement.dir === "rtl"')
+    await setViewport(390, 780, true)
+    await capture('settings-general-rtl-mobile')
+    for (const locale of supportedLocales) {
+      await visual('setSelectValue', locale)
+      await waitFor(`document.documentElement.lang === ${JSON.stringify(locale)}`)
+      await capture(`settings-language-${locale}-mobile`)
     }
-    await evaluate(`window.__zeroChatVisual.setSelectValue('zh-CN')`)
-    await evaluate(`window.__zeroChatVisual.waitForDocumentLanguage('zh-CN', 'ltr')`, true)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-providers')`)
-    await evaluate(`window.__zeroChatVisual.assertFieldInViewport(['API Key'])`)
+    await visual('setSelectValue', 'zh-CN')
+    await waitFor('document.documentElement.lang === "zh-CN"')
+    await visual('clickTab', 'providers')
+    await visual('scrollSettings', 'bottom')
+    await setViewport(390, 780, true)
     await capture('settings-providers-mobile')
     await setViewport(320, 640, true)
+    const providerPresetSelectContracts = []
+    let expectedProviderOptionValues = null
+    for (const locale of supportedLocales) {
+      await visual('clickTab', 'general')
+      await visual('setSelectValue', locale)
+      await waitFor(`document.documentElement.lang === ${JSON.stringify(locale)}`)
+      await visual('clickTab', 'providers')
+      await waitFor('Boolean(document.querySelector(".zc-settings-scroll select"))')
+      await visual('scrollSettings', 'top')
+      const providerPresetSelectContract = await evaluate(`(() => {
+        const select = document.querySelector('.zc-settings-scroll select')
+        if (!(select instanceof HTMLSelectElement)) {
+          return { select: false, locale: document.documentElement.lang }
+        }
+        let changeEvents = 0
+        const onChange = () => { changeEvents += 1 }
+        select.addEventListener('change', onChange)
+        select.focus({ focusVisible: true })
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+        const box = select.getBoundingClientRect()
+        const scroll = select.closest('.zc-settings-scroll')?.getBoundingClientRect()
+        const style = getComputedStyle(select)
+        const options = [...select.options]
+        const optionValues = options.map((option) => option.value)
+        const optionLabels = options.map((option) => option.textContent.trim())
+        const labelMeasure = document.createElement('span')
+        labelMeasure.style.position = 'absolute'
+        labelMeasure.style.visibility = 'hidden'
+        labelMeasure.style.display = 'inline-block'
+        labelMeasure.style.whiteSpace = 'nowrap'
+        labelMeasure.style.pointerEvents = 'none'
+        for (const property of [
+          'fontFamily',
+          'fontSize',
+          'fontWeight',
+          'fontStyle',
+          'fontStretch',
+          'lineHeight',
+          'letterSpacing',
+          'wordSpacing',
+          'textTransform',
+        ]) {
+          labelMeasure.style[property] = style[property]
+        }
+        document.body.append(labelMeasure)
+        const optionWidths = optionLabels.map((label) => {
+          labelMeasure.textContent = label
+          return labelMeasure.getBoundingClientRect().width
+        })
+        labelMeasure.remove()
+        const maxLabelWidth = optionWidths.length > 0 ? Math.max(...optionWidths) : 0
+        const horizontalInset = [
+          style.paddingLeft,
+          style.paddingRight,
+          style.borderLeftWidth,
+          style.borderRightWidth,
+        ].reduce((total, value) => total + (parseFloat(value) || 0), 0)
+        const disclosureAllowance = 24
+        const requiredWidth = maxLabelWidth + horizontalInset + disclosureAllowance
+        const widestOptionIndex = optionWidths.indexOf(maxLabelWidth)
+        const originalValue = select.value
+        select.value = options[widestOptionIndex]?.value ?? originalValue
+        const selectedLabel = select.selectedOptions[0]?.textContent?.trim() ?? ''
+        const selectedLabelWidth = widestOptionIndex >= 0 ? optionWidths[widestOptionIndex] : 0
+        select.value = originalValue
+        select.removeEventListener('change', onChange)
+        return {
+          locale: document.documentElement.lang,
+          select: true,
+          focused: document.activeElement === select,
+          changed: changeEvents === 1,
+          touchTarget: box.width >= 44 && box.height >= 44,
+          focusRing: style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) > 0,
+          optionValues,
+          optionLabels,
+          optionWidths,
+          optionLabelsNonEmpty: optionLabels.every(Boolean),
+          optionLabelsUnique: new Set(optionLabels).size === optionLabels.length,
+          selectedLabel,
+          selectedLabelWidth,
+          maxLabelWidth,
+          horizontalInset,
+          disclosureAllowance,
+          requiredWidth,
+          selectWidth: box.width,
+          widthFits: box.width >= requiredWidth,
+          focusRingInside: Boolean(scroll) &&
+            box.left - 3 >= scroll.left - 1 &&
+            box.right + 3 <= scroll.right + 1,
+        }
+      })()`)
+      providerPresetSelectContracts.push(providerPresetSelectContract)
+      assert.equal(
+        providerPresetSelectContract.locale,
+        locale,
+        `provider preset select must render the requested locale: ${JSON.stringify(providerPresetSelectContract)}`,
+      )
+      assert.equal(
+        providerPresetSelectContract.select,
+        true,
+        `provider preset select must exist for ${locale}: ${JSON.stringify(providerPresetSelectContract)}`,
+      )
+      if (!expectedProviderOptionValues) {
+        expectedProviderOptionValues = providerPresetSelectContract.optionValues
+      }
+      assert.deepEqual(
+        providerPresetSelectContract.optionValues,
+        expectedProviderOptionValues,
+        `provider preset option values/order must stay stable in ${locale}: ${JSON.stringify(providerPresetSelectContract)}`,
+      )
+      assert.equal(
+        providerPresetSelectContract.focused,
+        true,
+        `provider preset select must be focusable in ${locale}: ${JSON.stringify(providerPresetSelectContract)}`,
+      )
+      assert.equal(
+        providerPresetSelectContract.changed,
+        true,
+        `provider preset select must dispatch change in ${locale}: ${JSON.stringify(providerPresetSelectContract)}`,
+      )
+      assert.equal(
+        providerPresetSelectContract.touchTarget,
+        true,
+        `provider preset select must keep its touch target in ${locale}: ${JSON.stringify(providerPresetSelectContract)}`,
+      )
+      assert.equal(
+        providerPresetSelectContract.focusRing,
+        true,
+        `provider preset select must keep its focus ring in ${locale}: ${JSON.stringify(providerPresetSelectContract)}`,
+      )
+      assert.equal(
+        providerPresetSelectContract.optionLabelsNonEmpty,
+        true,
+        `provider preset option labels must be non-empty in ${locale}: ${JSON.stringify(providerPresetSelectContract)}`,
+      )
+      assert.equal(
+        providerPresetSelectContract.optionLabelsUnique,
+        true,
+        `provider preset option labels must be unique in ${locale}: ${JSON.stringify(providerPresetSelectContract)}`,
+      )
+      assert.equal(
+        providerPresetSelectContract.widthFits,
+        true,
+        `provider preset option labels must fit by measured pixels in ${locale}: ${JSON.stringify(providerPresetSelectContract)}`,
+      )
+      assert.equal(
+        providerPresetSelectContract.focusRingInside,
+        true,
+        `provider preset select focus ring must stay inside its scroll surface in ${locale}: ${JSON.stringify(providerPresetSelectContract)}`,
+      )
+    }
+    assert.deepEqual(
+      providerPresetSelectContracts.map((contract) => contract.locale),
+      supportedLocales,
+      'provider preset pixel coverage must include every supported locale',
+    )
+    await visual('clickTab', 'general')
+    await visual('setSelectValue', 'zh-CN')
+    await waitFor('document.documentElement.lang === "zh-CN"')
+    await visual('clickTab', 'providers')
+    await waitFor('Boolean(document.querySelector(".zc-settings-scroll select"))')
+    await visual('scrollSettings', 'bottom')
     await capture('settings-providers-compact-mobile')
-    await evaluate(`window.__zeroChatVisual.scrollSettingsModalTo(['Base URL'])`)
-    await capture('settings-providers-fields-compact-mobile')
-    await evaluate(`window.__zeroChatVisual.scrollSettingsModal('top')`)
+    await visual('scrollSettings', 'top')
     await setViewport(390, 780, true)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-models')`)
+    await visual('clickTab', 'models')
     await capture('settings-models-mobile')
     await setViewport(320, 640, true)
     await capture('settings-models-compact-mobile')
     await setViewport(390, 780, true)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-sync')`)
-    await evaluate(`window.__zeroChatVisual.click(['GitHub Gist'])`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-data')`)
-    await capture('settings-data-mobile')
-    await evaluate(`
-      window.dispatchEvent(new CustomEvent('zerochat:smoke-import-backup-danger'))
-    `)
-    await evaluate(`window.__zeroChatVisual.waitForText(['导入会覆盖当前数据', 'Import will overwrite'])`, true)
-    await capture('import-backup-dialog-mobile')
-    await evaluate(`window.__zeroChatVisual.click(['取消', 'Cancel'])`)
-    await setViewport(320, 640, true)
-    await evaluate(`
-      window.dispatchEvent(new CustomEvent('zerochat:smoke-import-backup-danger'))
-    `)
-    await evaluate(`window.__zeroChatVisual.waitForText(['导入会覆盖当前数据', 'Import will overwrite'])`, true)
-    await capture('import-backup-dialog-compact-mobile')
-    await evaluate(`window.__zeroChatVisual.click(['取消', 'Cancel'])`)
-    await setViewport(390, 780, true)
-    await evaluate(`window.__zeroChatVisual.click(['清空云端数据', 'Clear cloud data'])`)
-    await evaluate(`window.__zeroChatVisual.waitForText(['这会清空当前同步方式', 'This clears'])`, true)
-    await capture('clear-cloud-data-dialog-mobile')
-    await evaluate(`window.__zeroChatVisual.click(['取消', 'Cancel'])`)
-    await setViewport(320, 640, true)
-    await evaluate(`window.__zeroChatVisual.click(['清空云端数据', 'Clear cloud data'])`)
-    await evaluate(`window.__zeroChatVisual.waitForText(['这会清空当前同步方式', 'This clears'])`, true)
-    await capture('clear-cloud-data-dialog-compact-mobile')
-    await evaluate(`window.__zeroChatVisual.click(['取消', 'Cancel'])`)
-    await setViewport(390, 780, true)
-    await evaluate(`window.__zeroChatVisual.click(['重置本机数据', 'Reset local data'])`)
-    await evaluate(`window.__zeroChatVisual.waitForText(['重置本机数据'])`, true)
-    await capture('reset-local-data-dialog-mobile')
-    await evaluate(`window.__zeroChatVisual.click(['取消', 'Cancel'])`)
-    await setViewport(320, 640, true)
-    await evaluate(`window.__zeroChatVisual.click(['重置本机数据', 'Reset local data'])`)
-    await evaluate(`window.__zeroChatVisual.waitForText(['重置本机数据'])`, true)
-    await capture('reset-local-data-dialog-compact-mobile')
-    await evaluate(`window.__zeroChatVisual.click(['取消', 'Cancel'])`)
-    await setViewport(390, 780, true)
-    await evaluate(`window.__zeroChatVisual.click(['重置同步密码', 'Reset sync password'])`)
-    await evaluate(`window.__zeroChatVisual.waitForText(['这只会清除本机当前记住的数据加密密码。', 'This only clears'])`, true)
-    await capture('reset-sync-password-dialog-mobile')
-    await evaluate(`window.__zeroChatVisual.click(['取消', 'Cancel'])`)
-    await setViewport(320, 640, true)
-    await evaluate(`window.__zeroChatVisual.click(['重置同步密码', 'Reset sync password'])`)
-    await evaluate(`window.__zeroChatVisual.waitForText(['这只会清除本机当前记住的数据加密密码。', 'This only clears'])`, true)
-    await capture('reset-sync-password-dialog-compact-mobile')
-    await evaluate(`window.__zeroChatVisual.click(['取消', 'Cancel'])`)
-    await setViewport(390, 780, true)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-sync')`)
-    await evaluate(`window.__zeroChatVisual.click(['GitHub Gist'])`)
-    await evaluate(`window.__zeroChatVisual.scrollSettingsModalTo(['Gist ID'])`)
-    await evaluate(`window.__zeroChatVisual.assertFieldInViewport(['Gist ID'])`)
-    await capture('settings-sync-gist-mobile')
-    await setViewport(320, 640, true)
-    await evaluate(`window.__zeroChatVisual.scrollSettingsModalTo(['Gist ID'])`)
-    await evaluate(`window.__zeroChatVisual.assertFieldInViewport(['Gist ID'])`)
-    await capture('settings-sync-gist-compact-mobile')
-    await evaluate(`window.__zeroChatVisual.scrollSettingsModal('top')`)
-    await setViewport(390, 780, true)
-    await evaluate(`window.__zeroChatVisual.click(['Cloudflare'])`)
-    await waitForDeferredSettingsScroll()
-    await evaluate(`window.__zeroChatVisual.scrollSettingsModalTo(['Worker 地址', 'Worker URL'])`)
-    await evaluate(`window.__zeroChatVisual.assertFieldInViewport(['Worker 地址', 'Worker URL'])`)
-    await capture('settings-sync-cloudflare-mobile')
-    await setViewport(320, 640, true)
-    await evaluate(`window.__zeroChatVisual.scrollSettingsModalTo(['Worker 地址', 'Worker URL'])`)
-    await evaluate(`window.__zeroChatVisual.assertFieldInViewport(['Worker 地址', 'Worker URL'])`)
-    await capture('settings-sync-cloudflare-compact-mobile')
-    await evaluate(`window.__zeroChatVisual.scrollSettingsModal('top')`)
-    await evaluate(`window.__zeroChatVisual.click(['本地', 'Local'])`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-data')`)
-    await evaluate(`window.__zeroChatVisual.setSyncPassphrase('')`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-sync')`)
-    await evaluate(`window.__zeroChatVisual.click(['Cloudflare'])`)
-    await waitForDeferredSettingsScroll()
-    await evaluate(
-      `window.__zeroChatVisual.scrollSettingsModalTo(['Cloudflare 访问密钥', 'Cloudflare access key'])`,
-    )
-    await waitForPaint()
-    await evaluate(
-      `window.__zeroChatVisual.assertFieldNearViewportTop(['Cloudflare 访问密钥', 'Cloudflare access key'])`,
-    )
-    await evaluate(
-      `window.__zeroChatVisual.assertCloudflareAccessKeyPlaceholder(['自动生成', 'Auto-generated'])`,
-    )
-    await capture('settings-sync-cloudflare-access-compact-mobile')
-    await evaluate(`window.__zeroChatVisual.scrollSettingsModal('top')`)
-    await evaluate(`window.__zeroChatVisual.click(['本地', 'Local'])`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-data')`)
-    await evaluate(`window.__zeroChatVisual.setSyncPassphrase('old-passphrase-for-visual-audit')`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-sync')`)
-    await setViewport(390, 780, true)
-    await evaluate(`window.__zeroChatVisual.click(['GitHub Gist'])`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-data')`)
-    await evaluate(`window.__zeroChatVisual.setSyncPassphrase('old-passphrase-for-visual-audit')`)
-    await sleep(300)
-    await evaluate(`window.__zeroChatVisual.setSyncPassphrase('mobile-rotate-passphrase-for-visual-audit')`)
-    await evaluate(`window.__zeroChatVisual.waitForText(['修改同步密码'])`, true)
-    await capture('rotate-sync-password-dialog-mobile')
-    await evaluate(`window.__zeroChatVisual.click(['取消', 'Cancel'])`)
-    await setViewport(320, 640, true)
-    await evaluate(`window.__zeroChatVisual.setSyncPassphrase('old-passphrase-for-visual-audit')`)
-    await sleep(300)
-    await evaluate(`window.__zeroChatVisual.setSyncPassphrase('compact-rotate-passphrase-for-visual-audit')`)
-    await evaluate(`window.__zeroChatVisual.waitForText(['修改同步密码'])`, true)
-    await capture('rotate-sync-password-dialog-compact-mobile')
-    await evaluate(`window.__zeroChatVisual.click(['取消', 'Cancel'])`)
-    await setViewport(390, 780, true)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-sync')`)
-    await evaluate(`window.__zeroChatVisual.click(['本地', 'Local'])`)
-    await capture('settings-sync-mobile')
-    await evaluate(`
-      window.dispatchEvent(new CustomEvent('zerochat:smoke-sync-conflict'))
-    `)
-    await evaluate(`window.__zeroChatVisual.waitForText(['选择首次同步方向'])`, true)
-    await capture('first-sync-conflict-dialog-mobile')
-    await evaluate(`window.__zeroChatVisual.clickSelector('.sync-conflict-modal .modal-header .icon-button')`)
-    await setViewport(320, 640, true)
-    await evaluate(`
-      window.dispatchEvent(new CustomEvent('zerochat:smoke-sync-conflict'))
-    `)
-    await evaluate(`window.__zeroChatVisual.waitForText(['选择首次同步方向'])`, true)
-    await capture('first-sync-conflict-dialog-compact-mobile')
-    await evaluate(`window.__zeroChatVisual.clickSelector('.sync-conflict-modal .modal-header .icon-button')`)
-    await setViewport(390, 780, true)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-skills')`)
+    await visual('clickTab', 'skills')
     await capture('settings-skills-mobile')
-    await evaluate(`window.__zeroChatVisual.clickSkillEdit('Visual review skill')`)
-    await evaluate(`window.__zeroChatVisual.waitForSkillEditor('Visual review skill')`, true)
-    await capture('settings-skills-edit-mobile')
-    await setViewport(320, 640, true)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-data')`)
-    await evaluate(`window.__zeroChatVisual.setSyncPassphrase('')`)
-    await evaluate(`window.__zeroChatVisual.assertSyncPassphrasePlaceholder(['同步密码', 'Sync password'])`)
-    await capture('settings-data-compact-mobile')
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-sync')`)
-    await capture('settings-sync-compact-mobile')
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-skills')`)
-    await capture('settings-skills-compact-mobile')
-    await setViewport(300, 620, true)
-    await capture('settings-skills-ultra-compact-mobile')
-    await evaluate(`window.__zeroChatVisual.clickSelector('.settings-modal .modal-header .icon-button')`)
+    await visual('clickTab', 'sync')
+    await capture('settings-sync-mobile')
+    await visual('clickTab', 'data')
+    await capture('settings-data-mobile')
+    await visual('clickSelector', '.zc-settings-back')
+    await waitFor('!document.querySelector(".zc-settings")')
 
     await setViewport(720, 760)
+    await visual('setSidebarCollapsed', false)
     await capture('chat-narrow-desktop')
-    await evaluate(`window.__zeroChatVisual.click(['打开边栏', 'Open sidebar'])`)
     await capture('sidebar-open-narrow-desktop')
-    await clickSidebarBackdropOutsidePanel('narrow desktop')
+    await visual('setSidebarCollapsed', true)
     await capture('sidebar-closed-narrow-desktop')
-    await evaluate(`window.__zeroChatVisual.click(['打开边栏', 'Open sidebar'])`)
-    await evaluate(`window.__zeroChatVisual.click(['删除对话', 'Delete chat'])`)
-    await evaluate(`window.__zeroChatVisual.waitForText(['删除整个对话', 'Delete chat'])`, true)
-    await capture('delete-conversation-dialog-narrow-desktop')
-    await evaluate(`window.__zeroChatVisual.click(['取消', 'Cancel'])`)
-
     await setViewport(390, 780, true)
     await capture('chat-mobile')
     await setViewport(320, 640, true)
     await capture('chat-compact-mobile')
     await setViewport(300, 620, true)
     await capture('chat-ultra-compact-mobile')
-    await setViewport(280, 560, false)
+    await setViewport(280, 560)
     await capture('chat-tiny-desktop')
-    await setViewport(260, 560, false)
+    await setViewport(260, 560)
+    const compactChatTitleDefaultVisible = await evaluate(`(() => {
+      const header = document.querySelector('.zc-chat-header')
+      const title = header?.querySelector('.zc-chat-title span')
+      const picker = header?.querySelector('.zc-model-picker')
+      const buttons = [...(header?.querySelectorAll('.zc-icon-btn') ?? [])]
+      if (!(header instanceof HTMLElement) ||
+          !(title instanceof HTMLElement) ||
+          !(picker instanceof HTMLElement) ||
+          buttons.length !== 2 ||
+          !buttons.every((button) => button instanceof HTMLButtonElement)) return false
+      const headerBox = header.getBoundingClientRect()
+      const pickerBox = picker.getBoundingClientRect()
+      const controls = [title, picker, ...buttons]
+      return title.textContent?.trim().length > 0 &&
+        title.scrollWidth <= title.clientWidth + 1 &&
+        headerBox.left >= -1 &&
+        headerBox.right <= innerWidth + 1 &&
+        pickerBox.left >= headerBox.left - 1 &&
+        pickerBox.right <= headerBox.right + 1 &&
+        controls.every((control) => {
+          const box = control.getBoundingClientRect()
+          return box.left >= headerBox.left - 1 && box.right <= headerBox.right + 1
+        })
+    })()`)
+    assert.equal(
+      compactChatTitleDefaultVisible,
+      true,
+      'current compact chat header should keep its short default conversation title fully visible',
+    )
     await capture('chat-micro-desktop')
-    await setViewport(390, 780, true)
-    await evaluate(`window.__zeroChatVisual.click(['打开边栏', 'Open sidebar'])`)
-    await capture('sidebar-open-mobile')
-    await clickSidebarBackdropOutsidePanel('mobile')
-    await evaluate(`window.__zeroChatVisual.click(['打开边栏', 'Open sidebar'])`)
-    await evaluate(`window.__zeroChatVisual.click(['删除对话', 'Delete chat'])`)
-    await evaluate(`window.__zeroChatVisual.waitForText(['删除整个对话', 'Delete chat'])`, true)
-    await capture('delete-conversation-dialog-mobile')
-    await evaluate(`window.__zeroChatVisual.click(['取消', 'Cancel'])`)
     await setViewport(320, 640, true)
-    await evaluate(`window.__zeroChatVisual.click(['打开边栏', 'Open sidebar'])`)
-    await capture('sidebar-open-compact-mobile')
-    await clickSidebarBackdropOutsidePanel('compact mobile')
-    await evaluate(`window.__zeroChatVisual.click(['打开边栏', 'Open sidebar'])`)
-    await evaluate(`window.__zeroChatVisual.click(['删除对话', 'Delete chat'])`)
-    await evaluate(`window.__zeroChatVisual.waitForText(['删除整个对话', 'Delete chat'])`, true)
-    await capture('delete-conversation-dialog-compact-mobile')
-    await evaluate(`window.__zeroChatVisual.click(['取消', 'Cancel'])`)
-    await setViewport(390, 780, true)
-    await evaluate(`window.__zeroChatVisual.clickSelector('[data-compose-mode="image"]')`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('[data-image-task-mode="generate"]')`)
-    await capture('image-composer-mobile')
-    await setViewport(320, 640, true)
-    await capture('image-composer-compact-mobile')
-    await setViewport(260, 560, false)
-    await capture('image-composer-micro-desktop')
-    await setViewport(390, 780, true)
-    await evaluate(`window.__zeroChatVisual.clickSelector('[data-image-task-mode="edit"]')`)
-    await capture('image-edit-mobile')
-    await setViewport(320, 640, true)
+    await visual('clickSelector', '[data-zc-composer-mode="image"]')
+    await visual('click', ['编辑', 'Edit'])
+    await evaluate(`(() => {
+      const input = document.querySelector('.image-source-panel input[type="file"]')
+      if (!(input instanceof HTMLInputElement)) return false
+      const binary = atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nH0AAAAASUVORK5CYII=')
+      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0))
+      const transfer = new DataTransfer()
+      transfer.items.add(new File([bytes], 'visual-image-source.png', { type: 'image/png' }))
+      Object.defineProperty(input, 'files', { configurable: true, value: transfer.files })
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+      return true
+    })()`)
+    await waitFor('document.querySelector(".image-source-preview")?.complete === true')
+    const imageFeatureHintFitsCurrentChrome = await evaluate(`(() => {
+      const header = document.querySelector('.zc-chat-header')
+      const hint = document.querySelector('.zc-feature-hint[data-feature-hint="image"]')
+      const composer = document.querySelector('.zc-composer-wrap')
+      if (!(header instanceof HTMLElement) ||
+          !(hint instanceof HTMLElement) ||
+          !(composer instanceof HTMLElement)) return false
+      const headerBox = header.getBoundingClientRect()
+      const hintBox = hint.getBoundingClientRect()
+      const composerBox = composer.getBoundingClientRect()
+      return hintBox.width > 0 &&
+        hintBox.height > 0 &&
+        hintBox.top >= headerBox.bottom - 1 &&
+        hintBox.bottom <= composerBox.top + 1 &&
+        hintBox.left >= -1 &&
+        hintBox.right <= innerWidth + 1
+    })()`)
+    assert.equal(
+      imageFeatureHintFitsCurrentChrome,
+      true,
+      'current image feature hint must stay below the chat header, above the composer, and inside the compact viewport',
+    )
+    const imageShortViewportHeaderBounded = await evaluate(`(() => {
+      const header = document.querySelector('.zc-chat-header')
+      const picker = header?.querySelector('.zc-model-picker')
+      const title = header?.querySelector('.zc-chat-title span')
+      if (!(header instanceof HTMLElement) ||
+          !(picker instanceof HTMLElement) ||
+          !(title instanceof HTMLElement)) return false
+      const headerBox = header.getBoundingClientRect()
+      const pickerBox = picker.getBoundingClientRect()
+      const titleBox = title.getBoundingClientRect()
+      return pickerBox.left >= headerBox.left - 1 &&
+        pickerBox.right <= headerBox.right + 1 &&
+        titleBox.width >= 24 &&
+        titleBox.left >= headerBox.left - 1 &&
+        titleBox.right <= headerBox.right + 1
+    })()`)
+    assert.equal(
+      imageShortViewportHeaderBounded,
+      true,
+      'short image edit viewports must keep the model picker and conversation title inside the current chat header',
+    )
     await capture('image-edit-compact-mobile')
-    await setViewport(390, 780, true)
-    await evaluate(`window.__zeroChatVisual.clickSelector('[data-image-task-mode="inpaint"]')`)
-    await capture('image-inpaint-mobile')
-    await setViewport(320, 720, true)
-    await assertWelcomeComposerGap('image-inpaint-compact-tall-mobile')
-    await capture('image-inpaint-compact-tall-mobile')
-    await setViewport(320, 640, true)
-    await assertWelcomeComposerGap('image-inpaint-compact-mobile')
-    await capture('image-inpaint-compact-mobile')
-    await setViewport(300, 620, true)
-    await assertImageToolShortViewportFit('image-inpaint-ultra-compact-mobile')
-    await capture('image-inpaint-ultra-compact-mobile')
-    await setViewport(280, 560, false)
-    await assertWelcomeComposerGap('image-inpaint-tiny-desktop')
+    await visual('click', ['局部重绘', 'Inpaint'])
+    await waitFor('Boolean(document.querySelector(".mask-canvas"))')
+    await setViewport(280, 560)
+    const imageInpaintShortViewportBounded = await evaluate(`(() => {
+      const composePanel = document.querySelector('.image-compose-panel')
+      const panel = document.querySelector('.image-source-panel')
+      const canvas = panel?.querySelector('.mask-canvas')
+      const controls = panel?.querySelector('.mask-controls')
+      if (!(composePanel instanceof HTMLElement) ||
+          !(panel instanceof HTMLElement) ||
+          !(canvas instanceof HTMLCanvasElement) ||
+          !(controls instanceof HTMLElement)) return false
+      composePanel.scrollTop = composePanel.scrollHeight
+      const composePanelBox = composePanel.getBoundingClientRect()
+      const panelBox = panel.getBoundingClientRect()
+      const canvasBox = canvas.getBoundingClientRect()
+      const controlsBox = controls.getBoundingClientRect()
+      return panelBox.left >= -1 &&
+        panelBox.right <= innerWidth + 1 &&
+        canvasBox.width > 0 &&
+        canvasBox.left >= panelBox.left - 1 &&
+        canvasBox.right <= panelBox.right + 1 &&
+        getComputedStyle(composePanel).overflowY === 'auto' &&
+        composePanel.scrollHeight > composePanel.clientHeight &&
+        controlsBox.top >= composePanelBox.top - 1 &&
+        controlsBox.bottom <= composePanelBox.bottom + 1 &&
+        controlsBox.bottom <= innerHeight + 1
+    })()`)
+    assert.equal(
+      imageInpaintShortViewportBounded,
+      true,
+      'short image inpaint viewports must keep the source and mask controls inside the current composer',
+    )
     await capture('image-inpaint-tiny-desktop')
-    await evaluate(`window.__zeroChatVisual.clickSelector('[data-image-task-mode="generate"]')`)
-    await setViewport(780, 390, true)
-    await assertWelcomeComposerGap('image-composer-mobile-landscape')
-    await capture('image-composer-mobile-landscape')
+    await visual('clickSelector', '[data-zc-composer-mode="chat"]')
+    await setViewport(390, 780, true)
+    await visual('setSidebarCollapsed', false)
+    await capture('sidebar-open-mobile')
+
+    const beforeCreate = await evaluate(
+      'document.querySelectorAll(".zc-conv-item").length',
+    )
+    await visual('click', ['新会话', 'New chat'])
+    await waitFor(
+      `document.querySelectorAll(".zc-conv-item").length > ${beforeCreate} && Boolean(document.querySelector('.zc-conv-item .zc-conv-actions button:last-child:not([disabled])'))`,
+    )
+    await visual('setSidebarCollapsed', false)
+    await waitFor(
+      'Boolean(document.querySelector(".zc-sidebar:not(.collapsed)"))',
+    )
+    const beforeDelete = await evaluate('document.querySelectorAll(".zc-conv-item").length')
+    await runActionWithExpectedConfirm(
+      cdp,
+      () => visual('clickFirstConversationDelete'),
+      { expectedMessageFragments: ['删除', 'Delete'] },
+    )
+    await waitFor(`document.querySelectorAll(".zc-conv-item").length < ${beforeDelete}`)
+    await capture('delete-conversation-mobile')
+    await visual('setSidebarCollapsed', true)
 
     await setViewport(1024, 760)
-    await evaluate(`window.__zeroChatVisual.clickSelector('.provider-model-trigger')`)
-    await capture('provider-model-menu-desktop')
-    await evaluate(`window.__zeroChatVisual.clickSelector('.provider-model-trigger')`)
-    await evaluate(`window.__zeroChatVisual.click(['设置', 'Settings'])`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-appearance')`)
-    await evaluate(`window.__zeroChatVisual.setSelectValue('light')`)
-    await evaluate(`window.__zeroChatVisual.waitForTheme('light')`, true)
-    await capture('settings-appearance-light-desktop')
-    await evaluate(`window.__zeroChatVisual.clickSelector('.settings-modal .modal-header .icon-button')`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('[data-compose-mode="chat"]')`)
+    await visual('click', ['设置', 'Settings'])
+    await visual('clickTab', 'general')
+    await visual('setSelectValue', 'light')
+    await waitFor('document.documentElement.dataset.theme === "light" || document.documentElement.classList.contains("light") || getComputedStyle(document.body).backgroundColor !== ""')
+    await capture('settings-general-light-desktop')
+    await visual('clickSelector', '.zc-settings-back')
+    await waitFor('!document.querySelector(".zc-settings")')
     await capture('chat-light-desktop')
-    await evaluate(`window.__zeroChatVisual.click(['设置', 'Settings'])`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-data')`)
-    await setViewport(280, 560, false)
-    await evaluate(`window.__zeroChatVisual.scrollSettingsModalTo(['清空云端数据', 'Clear cloud data'])`)
-    await evaluate(`window.__zeroChatVisual.assertControlInViewport(['清空云端数据', 'Clear cloud data'])`)
-    await evaluate(`window.__zeroChatVisual.scrollSettingsModal('top')`)
+    await visual('click', ['设置', 'Settings'])
+    await visual('clickTab', 'data')
+    await setViewport(280, 560)
+    await visual('scrollSettings', 'bottom')
+    const tinySettingsTooltipContract = await evaluate(`(() => {
+      const tooltip = document.querySelector('.zc-app-tooltip')
+      const back = document.querySelector('.zc-settings-back')
+      if (!(tooltip instanceof HTMLElement) || !(back instanceof HTMLElement)) {
+        return { visible: false, overlaps: [] }
+      }
+      const tooltipBox = tooltip.getBoundingClientRect()
+      const overlaps = [...document.querySelectorAll(
+        '.zc-settings-nav h2, .zc-settings-nav button, .zc-settings-body-header h3, .zc-settings-body-header button',
+      )]
+        .filter((element) => {
+          if (element === back) return false
+          const box = element.getBoundingClientRect()
+          const style = getComputedStyle(element)
+          return box.width > 0 && box.height > 0 &&
+            style.display !== 'none' && style.visibility !== 'hidden'
+        })
+        .filter((element) => {
+          const box = element.getBoundingClientRect()
+          return tooltipBox.left < box.right && tooltipBox.right > box.left &&
+            tooltipBox.top < box.bottom && tooltipBox.bottom > box.top
+        })
+        .map((element) =>
+          (element.textContent || element.getAttribute('aria-label') || element.tagName)
+            .replace(/\s+/g, ' ')
+            .trim(),
+        )
+      return { visible: true, overlaps }
+    })()`)
+    assert.deepEqual(
+      tinySettingsTooltipContract,
+      { visible: false, overlaps: [] },
+      `compact Settings back control must not show an overlapping redundant tooltip: ${JSON.stringify(tinySettingsTooltipContract)}`,
+    )
     await capture('settings-data-tiny-desktop')
-    await setViewport(260, 560, false)
+    await setViewport(260, 560)
     await capture('settings-data-micro-desktop')
     await setViewport(780, 390, true)
     await capture('settings-data-light-mobile-landscape')
-    await evaluate(`window.__zeroChatVisual.clickSelector('.settings-modal .modal-header .icon-button')`)
-    await assertWelcomeComposerGap('chat-light-mobile-landscape')
+    await visual('clickSelector', '.zc-settings-back')
+    await waitFor('!document.querySelector(".zc-settings")')
     await capture('chat-light-mobile-landscape')
-    await setViewport(390, 780, true)
-    await evaluate(`window.__zeroChatVisual.click(['设置', 'Settings'])`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-data')`)
-    await evaluate(`window.__zeroChatVisual.click(['打开配置引导', 'Open setup guide'])`)
-    await evaluate(`window.__zeroChatVisual.waitForText(['首次配置', 'First setup'])`, true)
-    const reopenedGuideMobileActionState = await evaluate(`window.__zeroChatVisual.reopenedGuideActionState()`)
-    assert.equal(
-      reopenedGuideMobileActionState.hasSkipLocal,
-      false,
-      `reopened mobile setup guide visual state should not show the first-run skip-local action (${JSON.stringify(reopenedGuideMobileActionState)})`,
-    )
-    assert.equal(
-      reopenedGuideMobileActionState.hasCloseGuide,
-      true,
-      `reopened mobile setup guide visual state should show a harmless close action (${JSON.stringify(reopenedGuideMobileActionState)})`,
-    )
-    await capture('reopened-setup-guide-mobile')
-    await captureStartupLoadingFixture(
-      'startup-loading-ultra-narrow-260',
-      260,
-      'लोड हो रहा है...',
-    )
-    await captureStartupLoadingFixture(
-      'startup-loading-ultra-narrow-240',
-      240,
-      'جار التحميل...',
-      'rtl',
-    )
-    await captureModalActionsFixture('modal-actions-micro-desktop', 260)
-    await captureDangerActionsFixture('danger-actions-micro-desktop', 260)
-    await evaluate(`window.__zeroChatVisual.clickSelector('.guide-modal .modal-header .icon-button')`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('.settings-modal .modal-header .icon-button')`)
-    await setViewport(320, 640, true)
-    await evaluate(`window.__zeroChatVisual.clickSelector('.provider-model-trigger')`)
-    await capture('provider-model-menu-compact-mobile')
-    await evaluate(`window.__zeroChatVisual.clickSelector('.provider-model-trigger')`)
-    await captureProviderEmptyStateFixture('provider-empty-state-compact-mobile', 320, 640)
-    await setViewport(390, 780, true)
-    await evaluate(`window.__zeroChatVisual.clickSelector('[data-compose-mode="audio"]')`)
-    await capture('audio-composer-mobile')
-    await setViewport(320, 640, true)
-    await capture('audio-composer-compact-mobile')
-    await evaluate(
-      `window.__zeroChatVisual.attachTinyAudio('zerochat-visual-source-with-a-deliberately-long-file-name-for-compact-layout-regression-check.wav')`,
-      true,
-    )
-    await capture('audio-long-filename-compact-mobile')
-    await setViewport(260, 560, false)
-    await capture('audio-composer-micro-desktop')
-    await setViewport(320, 640, true)
-    await evaluate(`window.__zeroChatVisual.click(['打开设置', 'Open settings'])`)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-appearance')`)
-    for (const [language, direction] of compactLanguageLocales) {
-      await evaluate(`window.__zeroChatVisual.setSelectValue('${language}')`)
-      await evaluate(
-        `window.__zeroChatVisual.waitForDocumentLanguage('${language}', '${direction}')`,
-        true,
-      )
-      await evaluate(`window.__zeroChatVisual.assertSegmentedLabelsFit()`)
-      await capture(`settings-language-${language}-compact-mobile`)
-    }
 
-    await evaluate(`window.__zeroChatVisual.setSelectValue('zh-CN')`)
-    await evaluate(`window.__zeroChatVisual.waitForDocumentLanguage('zh-CN', 'ltr')`, true)
-    await evaluate(`window.__zeroChatVisual.clickSelector('#settings-tab-skills')`)
-    await evaluate(`window.__zeroChatVisual.waitForVisualSmokeReady()`, true)
-    await evaluate(
-      `window.__zeroChatVisual.openLargeSkillLibrary(241, ['Visual bulk skill 001'])`,
+    const captureFixture = async (name, width, direction, kind) => {
+      await setViewport(width, 560)
+      const isBoot = kind === 'boot'
+      const rootClass = isBoot ? 'zc-boot' : 'zc-empty'
+      const cardClass = isBoot ? 'zc-boot-card' : 'zc-empty-card guide-modal'
+      const titleTag = isBoot ? 'div' : 'h1'
+      const titleText = isBoot ? 'ZeroChat' : 'Add a provider'
+      const bodyText = isBoot ? 'Loading' : 'Connect a provider to start chatting.'
+      await evaluate(`(() => {
+        document.querySelector('[data-visual-fixture]')?.remove()
+        const root = document.createElement('section')
+        root.dataset.visualFixture = 'true'
+        root.dir = ${JSON.stringify(direction)}
+        root.className = ${JSON.stringify(rootClass)}
+        Object.assign(root.style, { position: 'fixed', inset: '0', zIndex: '2147483647' })
+        const card = document.createElement('div')
+        card.className = ${JSON.stringify(cardClass)}
+        const title = document.createElement(${JSON.stringify(titleTag)})
+        title.textContent = ${JSON.stringify(titleText)}
+        const body = document.createElement('p')
+        body.textContent = ${JSON.stringify(bodyText)}
+        if (${isBoot}) {
+          const logo = document.createElement('img')
+          logo.src = '/favicon.svg'
+          logo.alt = ''
+          card.append(logo, title, body)
+        } else {
+          card.append(title, body)
+        }
+        if (!${isBoot}) {
+          const button = document.createElement('button')
+          button.className = 'zc-btn primary'
+          button.textContent = 'Add provider'
+          card.append(button)
+        }
+        root.append(card)
+        document.body.append(root)
+        return true
+      })()`)
+      await capture(name)
+      await evaluate('document.querySelector("[data-visual-fixture]")?.remove()')
+    }
+    await captureFixture('startup-loading-ultra-narrow-260', 260, 'ltr', 'boot')
+    await captureFixture('startup-loading-ultra-narrow-240', 240, 'rtl', 'boot')
+    await setViewport(320, 640, true)
+    await evaluate(`(() => {
+      document.querySelector('[data-visual-fixture]')?.remove()
+      const root = document.createElement('section')
+      root.dataset.visualFixture = 'true'
+      root.className = 'zc-empty provider-empty-state'
+      Object.assign(root.style, { position: 'fixed', inset: '0', zIndex: '2147483647' })
+      const card = document.createElement('div')
+      card.className = 'zc-empty-card guide-modal'
+      const title = document.createElement('h1')
+      title.textContent = 'Add your first AI provider'
+      const body = document.createElement('p')
+      body.textContent = 'Choose a provider and store its key locally.'
+      const button = document.createElement('button')
+      button.className = 'zc-btn primary'
+      button.textContent = 'Add provider'
+      card.append(title, body, button)
+      root.append(card)
+      document.body.append(root)
+      return true
+    })()`)
+    const providerEmptyPrimaryActionNearTop = await evaluate(`(() => {
+      const empty = document.querySelector('.zc-empty.provider-empty-state')
+      const card = empty?.querySelector('.zc-empty-card')
+      const action = card?.querySelector('button')
+      if (!(empty instanceof HTMLElement) ||
+          !(card instanceof HTMLElement) ||
+          !(action instanceof HTMLButtonElement)) return false
+      const cardBox = card.getBoundingClientRect()
+      const actionBox = action.getBoundingClientRect()
+      return getComputedStyle(empty).alignContent === 'start' &&
+        cardBox.top >= 40 &&
+        cardBox.top <= 72 &&
+        actionBox.bottom <= innerHeight * 0.5
+    })()`)
+    assert.equal(
+      providerEmptyPrimaryActionNearTop,
       true,
+      'provider empty state should keep first-provider setup near the top on compact screens',
     )
-    await evaluate(`window.__zeroChatVisual.scrollSettingsModal('top')`)
-    const largeSkillListState = await evaluate(
-      `window.__zeroChatVisual.assertLargeSkillListProgress(241, 80)`,
-    )
-    assert.ok(
-      largeSkillListState.buttonText.length > 0,
-      'large Skill library top show-more button should have visible text',
-    )
+    await capture('provider-empty-state-compact-mobile')
+    await evaluate('document.querySelector("[data-visual-fixture]")?.remove()')
+
+    await setViewport(320, 640, true)
+    await visual('setSidebarCollapsed', false)
+    await visual('click', ['设置', 'Settings'])
+    await visual('clickTab', 'skills')
+    await openLargeSkillLibrary(241)
+    await visual('scrollSettings', 'bottom')
     await capture('settings-skills-large-library-compact-mobile')
-    await evaluate(`window.__zeroChatVisual.clickSelector('.settings-modal .modal-header .icon-button')`)
 
-    for (const event of cdp.events) {
-      if (event.method === 'Runtime.exceptionThrown') {
-        errors.push(event.params.exceptionDetails.text)
-      }
-      if (event.method === 'Log.entryAdded' && event.params.entry.level === 'error') {
-        errors.push(event.params.entry.text)
-      }
-    }
-
-    assert.deepEqual(errors, [], 'visual audit browser console should not report runtime errors')
-    assert.equal(
-      screenshots.length,
-      expectedScreenshotCount,
-      `visual audit should capture ${expectedScreenshotCount} screenshots`,
+    await visual('clickTab', 'sync')
+    await visual('click', ['Cloudflare Worker'])
+    await waitFor('Boolean(document.querySelector("[data-zc-cloudflare-worker-endpoint=true]"))')
+    await anchorSettingsTarget('[data-zc-cloudflare-worker-endpoint="true"]')
+    await assertCurrentPlaceholder(
+      '[data-zc-cloudflare-worker-endpoint="true"] input',
+      'https://…',
     )
-    await writeVisualGallery(outputDir, screenshotRecords)
-    const contactSheetEvidence = await writeVisualContactSheet(cdp, outputDir, evaluate)
+    await capture('settings-sync-cloudflare-compact-mobile')
+
+    await visual('clickTab', 'data')
+    await anchorSettingsTarget('[data-zc-sync-passphrase="true"]')
+    await assertCurrentPlaceholder('[data-zc-sync-passphrase="true"]', '输入密码')
+    await capture('settings-data-compact-mobile')
+    const savedVisualPassphrase = await visual(
+      'saveDataPassphrase',
+      'visual-audit-passphrase',
+    )
+    assert.deepEqual(
+      savedVisualPassphrase,
+      { fieldCleared: true, saveDisabled: true },
+      'current data passphrase must persist before access-key visual evidence',
+    )
+
+    await visual('clickTab', 'sync')
+    await waitFor('Boolean(document.querySelector("[data-zc-cloudflare-access-key=true]"))')
+    await anchorSettingsTarget('[data-zc-cloudflare-access-key="true"]')
+    await assertCurrentPlaceholder(
+      '[data-zc-cloudflare-access-key="true"] input',
+      '自动生成',
+    )
+    await capture('settings-sync-cloudflare-access-compact-mobile')
+
+    await visual('clickTab', 'data')
+    await setViewport(260, 560)
+    await visual('scrollSettings', 'bottom')
+    const tinySettingsToastContract = await evaluate(`(() => {
+      const toast = [...document.querySelectorAll('.zc-toast')].find((candidate) => {
+        const style = getComputedStyle(candidate)
+        return style.display !== 'none' && style.visibility !== 'hidden'
+      })
+      const nav = document.querySelector('.zc-settings-nav')
+      if (!(toast instanceof HTMLElement) || !(nav instanceof HTMLElement)) {
+        return { visible: false, overlaps: [] }
+      }
+      const toastBox = toast.getBoundingClientRect()
+      const overlaps = [...nav.querySelectorAll('h2, button')]
+        .filter((element) => {
+          const box = element.getBoundingClientRect()
+          return toastBox.left < box.right && toastBox.right > box.left &&
+            toastBox.top < box.bottom && toastBox.bottom > box.top
+        })
+        .map((element) => element.textContent?.trim() || element.tagName.toLowerCase())
+      return { visible: true, overlaps }
+    })()`)
+    assert.deepEqual(
+      tinySettingsToastContract.overlaps,
+      [],
+      `compact Settings toast must not cover navigation chrome: ${JSON.stringify(tinySettingsToastContract)}`,
+    )
+    await capture('danger-actions-micro-desktop')
+    await visual('clickSelector', '.zc-settings-back')
+    await waitFor('!document.querySelector(".zc-settings")')
+
+    await setViewport(390, 780, true)
+    await visual('setSidebarCollapsed', true)
+    await waitForSidebarClosed()
+    await visual('clickSelector', '[data-zc-composer-mode="image"]')
+    await waitFor('Boolean(document.querySelector("[data-zc-composer-mode=image][aria-pressed=true]"))')
+    const lateImageSourceLoaded = await evaluate(`(() => {
+      const input = document.querySelector('.image-source-panel input[type="file"]')
+      if (!(input instanceof HTMLInputElement)) return false
+      const binary = atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nH0AAAAASUVORK5CYII=')
+      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0))
+      const transfer = new DataTransfer()
+      transfer.items.add(new File([bytes], 'visual-late-image-source.png', { type: 'image/png' }))
+      Object.defineProperty(input, 'files', { configurable: true, value: transfer.files })
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+      return true
+    })()`)
+    assert.equal(lateImageSourceLoaded, true, 'late inpaint evidence must load its image source through the production file input')
+    await waitFor('document.querySelector(".image-source-preview")?.complete === true && document.querySelector(".image-source-preview")?.naturalWidth > 0')
+    await visual('click', ['局部重绘', 'Inpaint'])
+    await waitFor('Boolean(document.querySelector(".zc-image-task-modes button[aria-pressed=true]"))')
+    await waitFor('Boolean(document.querySelector(".mask-canvas")?.getBoundingClientRect().width)')
+    await waitForSidebarClosed()
+    const imageInpaintSurface = await evaluate(`(() => {
+      const canvas = document.querySelector('.mask-canvas')
+      const sidebar = document.querySelector('.zc-sidebar')
+      const backdrop = document.querySelector('.zc-sidebar-backdrop')
+      const visibleRectFor = ${renderedVisibleRect.toString()}
+      const visibleRectForElement = (element) => {
+        if (!(element instanceof HTMLElement)) return false
+        const style = getComputedStyle(element)
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+          return null
+        }
+        return visibleRectFor(element)
+      }
+      const snapshot = (element) => {
+        if (!(element instanceof HTMLElement)) return null
+        const box = element.getBoundingClientRect()
+        return {
+          box: {
+            left: box.left,
+            right: box.right,
+            top: box.top,
+            bottom: box.bottom,
+            width: box.width,
+            height: box.height,
+          },
+          visibleRect: visibleRectForElement(element),
+        }
+      }
+      return {
+        canvasVisible: Boolean(visibleRectForElement(canvas)),
+        sidebarVisible: Boolean(visibleRectForElement(sidebar)),
+        backdropVisible: Boolean(visibleRectForElement(backdrop)),
+        canvas: snapshot(canvas),
+        sidebar: snapshot(sidebar),
+        backdrop: snapshot(backdrop),
+      }
+    })()`)
+    assert.equal(
+      imageInpaintSurface.canvasVisible,
+      true,
+      `image inpaint evidence must expose a visible canvas: ${JSON.stringify(imageInpaintSurface)}`,
+    )
+    assert.equal(
+      imageInpaintSurface.sidebarVisible,
+      false,
+      `image inpaint evidence must not show a mobile sidebar overlay: ${JSON.stringify(imageInpaintSurface)}`,
+    )
+    assert.equal(
+      imageInpaintSurface.backdropVisible,
+      false,
+      `image inpaint evidence must not show a mobile sidebar backdrop: ${JSON.stringify(imageInpaintSurface)}`,
+    )
+    await capture('image-inpaint-mobile')
+    await visual('clickSelector', '[data-zc-composer-mode="chat"]')
+
+    await setViewport(1440, 900)
+    await visual('setSidebarCollapsed', false)
+    await visual('click', ['设置', 'Settings'])
+    await visual('clickTab', 'skills')
+    await openLargeSkillLibrary(241)
+    const skillEditOpened = await evaluate(`(() => {
+      const row = [...document.querySelectorAll('.zc-skill-item')].at(-1)
+      const edit = row?.querySelector('.zc-icon-btn:not(.danger)')
+      if (!(edit instanceof HTMLButtonElement)) return false
+      edit.click()
+      return true
+    })()`)
+    assert.equal(skillEditOpened, true, 'current large Skill row must expose its edit action')
+    await waitFor(
+      'document.querySelector(".zc-skill-editor input")?.value === "Visual Skill 241"',
+    )
+    await anchorSettingsTarget('.zc-skill-editor')
+    await capture('settings-skills-edit-desktop')
+    await setViewport(320, 640, true)
+    await anchorSettingsTarget('.zc-skill-editor')
+    await capture('settings-skills-edit-mobile')
+    await visual('clickSelector', '.zc-skill-editor .zc-icon-btn')
+    await visual('clickSelector', '.zc-settings-back')
+    await waitFor('!document.querySelector(".zc-settings")')
+
+    await setViewport(320, 640, true)
+    await visual('setSidebarCollapsed', false)
+    await visual('click', ['设置', 'Settings'])
+    await visual('clickTab', 'general')
+    for (const locale of supportedLocales) {
+      await visual('setSelectValue', locale)
+      await waitFor(`document.documentElement.lang === ${JSON.stringify(locale)}`)
+      await capture(`settings-language-${locale}-compact-mobile`)
+    }
+    await visual('setSelectValue', 'zh-CN')
+    await visual('clickSelector', '.zc-settings-back')
+    await waitFor('!document.querySelector(".zc-settings")')
+    await visual('setSidebarCollapsed', true)
+
+    await setViewport(390, 780, true)
+    await cdp.send('Network.enable')
+    await cdp.send('Network.emulateNetworkConditions', {
+      offline: true,
+      latency: 0,
+      downloadThroughput: 0,
+      uploadThroughput: 0,
+    })
+    await visual('focusComposer')
+    await cdp.send('Input.insertText', { text: 'visual audit offline probe' })
+    const offline = await visual('submitOfflineProbe')
+    assert.ok(offline.queued >= 1, `Offline queue did not render a queued message: ${JSON.stringify(offline)}`)
+    await visual('dismissToast')
+    await capture('chat-offline-queue-mobile')
+    await cdp.send('Network.emulateNetworkConditions', {
+      offline: false,
+      latency: 0,
+      downloadThroughput: -1,
+      uploadThroughput: -1,
+    })
+
+    assert.equal(screenshots.length, expectedScreenshotCount, 'Visual audit screenshot count changed')
+    assert.deepEqual(errors, [], `Production page raised runtime exceptions: ${errors.join('; ')}`)
+    await writeVisualGallery(outputDir, screenshots)
+    const contactSheet = await writeVisualContactSheet(cdp, outputDir, evaluate)
+    const manifest = {
+      kind: 'zerochat.visualAudit',
+      version: 2,
+      entry: 'src/app/bootstrap.tsx',
+      appUrl,
+      expectedScreenshotCount,
+      screenshotCount: screenshots.length,
+      screenshots,
+      gallery: 'visual-audit-gallery.html',
+      contactSheet: 'visual-audit-contact-sheet.jpg',
+      contactSheetEvidence: contactSheet,
+      generatedAt: new Date().toISOString(),
+    }
     await writeFile(
       path.join(outputDir, 'visual-audit-manifest.json'),
-      `${JSON.stringify(
-        {
-          generatedAt: new Date().toISOString(),
-          appUrl,
-          contactSheet: 'visual-audit-contact-sheet.jpg',
-          contactSheetEvidence,
-          gallery: 'visual-audit-gallery.html',
-          expectedScreenshotCount,
-          screenshotCount: screenshots.length,
-          screenshots: screenshotRecords,
-        },
-        null,
-        2,
-      )}\n`,
+      `${JSON.stringify(manifest, null, 2)}\n`,
+      'utf8',
     )
-    console.log(`Visual audit captured ${screenshots.length} screenshots in ${outputDir}`)
-    if (visualAuditSummaryOnly) {
-      console.log(`- Manifest: ${path.join(outputDir, 'visual-audit-manifest.json')}`)
-      console.log(`- Gallery: ${path.join(outputDir, 'visual-audit-gallery.html')}`)
-      console.log(`- Contact sheet: ${path.join(outputDir, 'visual-audit-contact-sheet.jpg')}`)
-    }
+    console.log(
+      `Visual audit passed: ${screenshots.length} screenshots, ${path.resolve(outputDir)}`,
+    )
   } finally {
-    cdp.close()
+    cdp?.close()
+    const profileCleanup = {
+      removeProfile: async () => await removeBrowserProfileWithRetry(profileDir, 120),
+    }
+    const { profileRemoved } = await settleBrowserRuntimeCleanup({
+      child: chrome,
+      profilePath: profileDir,
+      stopProcessTree: async () => await stopChildProcessTree(chrome),
+      removeProfile: async () => {
+        const profileRemoved = await profileCleanup.removeProfile()
+        return {
+          profileRemoved,
+          exactProfileProcessesGone: profileRemoved,
+          profilePath: profileDir,
+        }
+      },
+      additionalCleanup: [() => devServer?.close()],
+    })
+    assert.equal(profileRemoved, true, `Visual audit browser profile cleanup failed: ${profileDir}`)
   }
 }
 
-try {
-  await main()
-} finally {
-  await stopChildProcessTree(chrome)
-  await devServer?.close()
-  const profileRemoved = await removeBrowserProfileWithRetry(profileDir, 120)
-  assert.ok(profileRemoved, `Visual audit browser profile cleanup failed: ${profileDir}`)
-}
+await main()

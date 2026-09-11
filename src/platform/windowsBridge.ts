@@ -411,18 +411,37 @@ function callWindowsSecretBridge<T extends WindowsSecretSuccessResponse>(
 
   return new Promise<T>((resolve, reject) => {
     let settled = false
+    let timeoutHandle: number | undefined
+    let listenerInstalled = false
+
+    const cleanup = () => {
+      const handle = timeoutHandle
+      timeoutHandle = undefined
+      if (handle !== undefined) {
+        try {
+          runtime.clearTimeout(handle)
+        } catch {
+          // The request result still owns settlement when timer cleanup fails.
+        }
+      }
+
+      if (listenerInstalled) {
+        listenerInstalled = false
+        try {
+          bridge.removeEventListener('message', onMessage)
+        } catch {
+          // The request is already settled; listener cleanup cannot change it.
+        }
+      }
+    }
+
     const finish = (result: () => void) => {
       if (settled) {
         return
       }
 
       settled = true
-      runtime.clearTimeout(timeoutHandle)
-      try {
-        bridge.removeEventListener('message', onMessage)
-      } catch {
-        // The request is already settled; listener cleanup cannot change it.
-      }
+      cleanup()
       result()
     }
     const onMessage = (event: WindowsWebViewMessageEvent) => {
@@ -440,12 +459,28 @@ function callWindowsSecretBridge<T extends WindowsSecretSuccessResponse>(
         ))
       }
     }
-    const timeoutHandle = runtime.setTimeout(() => {
-      finish(() => reject(new WindowsSecretBridgeError('timeout')))
-    }, options.timeoutMs ?? WINDOWS_SECRET_BRIDGE_TIMEOUT_MS)
 
     try {
+      timeoutHandle = runtime.setTimeout(() => {
+        finish(() => reject(new WindowsSecretBridgeError('timeout')))
+      }, options.timeoutMs ?? WINDOWS_SECRET_BRIDGE_TIMEOUT_MS)
+    } catch {
+      finish(() => reject(new WindowsSecretBridgeError('bridge-unavailable')))
+      return
+    }
+
+    if (settled) {
+      // A synchronous host timer can settle before returning its handle.
+      cleanup()
+      return
+    }
+
+    try {
+      listenerInstalled = true
       bridge.addEventListener('message', onMessage)
+      if (settled) {
+        return
+      }
       bridge.postMessage(request)
     } catch {
       finish(() => reject(new WindowsSecretBridgeError('bridge-unavailable')))

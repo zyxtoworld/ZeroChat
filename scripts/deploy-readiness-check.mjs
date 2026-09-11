@@ -92,7 +92,7 @@ const [
   webProductionBuildTest,
   serviceWorkerFinalizer,
   distServiceWorker,
-  startupScript,
+  startupShellSource,
   sourceHeaders,
   manifestText,
   distHeaders,
@@ -110,7 +110,7 @@ const [
 ] = await Promise.all([
   readText('package.json'),
   readText('vite.config.ts'),
-  readText('src/main.tsx'),
+  readText('src/app/bootstrap.tsx'),
   readText('src/i18n.ts'),
   readText('src/services/serviceWorkerRegistration.ts'),
   readText('public/sw.js'),
@@ -120,7 +120,7 @@ const [
   readText('scripts/__tests__/web-production-build.test.mjs'),
   readText('scripts/service-worker-finalize.mjs'),
   readText('dist/sw.js'),
-  readText('public/zerochat-startup.js'),
+  readText('src/app/startupShell.ts'),
   readText('public/_headers'),
   readText('dist/manifest.webmanifest'),
   readText('dist/_headers'),
@@ -277,7 +277,7 @@ expect(
     webBuildServiceWorkerIndex >= 0 &&
     webBuildServiceWorkerIndex < webBuildTypeScriptIndex &&
     webBuildTypeScriptIndex < webBuildViteIndex &&
-    webProductionBuildTest.includes('runs Service Worker generation before TypeScript and Vite') &&
+    webProductionBuildTest.includes('runs Service Worker generation and reachability before Vite') &&
     deployCloudflarePages.includes('printHelp()') &&
     deployCloudflarePages.includes("userArgs.includes('--dry-run')") &&
     deployCloudflarePages.includes("userArgs.includes('--skip-build')") &&
@@ -331,7 +331,7 @@ expect(
   'vite.config.ts should ignore local browser QA profiles during development.',
 )
 expect(
-  sourceMain.includes("from './services/serviceWorkerRegistration'") &&
+  sourceMain.includes("from '../services/serviceWorkerRegistration'") &&
     sourceMain.includes('installServiceWorkerRegistration()') &&
     sourceServiceWorkerRegistration.includes('baseUrl = import.meta.env.BASE_URL') &&
     sourceServiceWorkerRegistration.includes('register(`${baseUrl}sw.js`)'),
@@ -361,7 +361,7 @@ expect(
     !serviceWorkerSource.includes('error.message') &&
     !serviceWorkerSource.includes('error.stack') &&
     serviceWorkerSource.includes('function reportServiceWorkerCacheFailure') &&
-    serviceWorkerSource.includes("reportServiceWorkerCacheFailure('install-static')") &&
+    serviceWorkerSource.includes("reportServiceWorkerCacheFailure('install-shell')") &&
     serviceWorkerSource.includes("reportServiceWorkerCacheFailure('runtime-cache')") &&
     !serviceWorkerSource.includes('catch(() => {})') &&
     serviceWorkerBuilder.includes("input: 'scripts/service-worker-source.js'") &&
@@ -396,8 +396,6 @@ expect(
     manifest.display === 'standalone' &&
     manifest.background_color?.toLowerCase() === '#fafbfc' &&
     manifest.theme_color?.toLowerCase() === '#6366f1' &&
-    manifest.categories?.includes('productivity') &&
-    manifest.categories?.includes('utilities') &&
     (manifest.prefer_related_applications === undefined ||
       manifest.prefer_related_applications === false) &&
     iconSources.has('favicon.svg') &&
@@ -409,17 +407,17 @@ expect(
 expect(
   sourceIndex.includes('rel="apple-touch-icon"') &&
     sourceIndex.includes('./icon-180.png') &&
-    sourceIndex.includes('src="%BASE_URL%zerochat-startup.js" defer vite-ignore') &&
-    startupScript.includes('[navigator.language,...navigator.languages]') &&
-    startupScript.includes('.map(l=>a.find(') &&
-    startupScript.includes("document.querySelector('[data-initial-loading]')") &&
+    sourceIndex.includes('<script type="module" src="/src/app/bootstrap.tsx"></script>') &&
+    startupShellSource.includes('function browserLanguages()') &&
+    startupShellSource.includes('resolveStartupLocale(') &&
+    startupShellSource.includes("doc.querySelector<HTMLElement>('[data-initial-loading]')") &&
     serviceWorkerFinalizer.includes('collectStaticAssetPaths(outDir)') &&
     serviceWorkerFinalizer.includes("new Set(['sw.js', '_headers'])"),
   'PWA shell must expose touch/install icons and include them with the external startup bootstrap in the finalized complete static cache.',
 )
 expect(
   distIndex.includes('./assets/') &&
-    distIndex.includes('./zerochat-startup.js') &&
+    !distIndex.includes('/src/app/bootstrap.tsx') &&
     distIndex.includes('./manifest.webmanifest') &&
     distIndex.includes('./favicon.svg') &&
     distIndex.includes('./icon-180.png'),
@@ -433,10 +431,6 @@ expect(
   !/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/i.test(sourceIndex) &&
     !/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/i.test(distIndex),
   'Web/PWA index.html must not contain inline script so a strict CSP can disallow inline scripts.',
-)
-expect(
-  await fileExists('dist/zerochat-startup.js'),
-  'dist/zerochat-startup.js must be copied with the production build.',
 )
 expect(
   sourceHeaders.includes("Content-Security-Policy: default-src 'self'") &&
@@ -537,7 +531,7 @@ expect(
     ciWorkflow.includes('microsoft/setup-msbuild@v2') &&
     ciWorkflow.includes('node scripts\\native-build-prereq-check.mjs --platform=windows') &&
     ciWorkflow.includes('.\\scripts\\build-windows.ps1 -Configuration Release -SkipWebBuild -MsixReady') &&
-    ciWorkflow.includes('.\\scripts\\package-windows-msix.ps1 -BuildRoot C:\\ZeroChatWindowsBuild -Configuration Release -Platform x64') &&
+    ciWorkflow.includes('.\\scripts\\package-windows-msix.ps1 -BuildRoot .local\\codex\\artifacts\\windows-build -Configuration Release -Platform x64') &&
     ciWorkflow.includes('.\\scripts\\windows-msix-install-qa.ps1') &&
     ciWorkflow.includes('windows-release-shell'),
   'CI workflow must keep a Windows native Release build, unsigned MSIX packaging dry-run, and artifact upload.',

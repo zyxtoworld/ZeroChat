@@ -39,6 +39,64 @@ describe('encrypted sync decompression limits', () => {
     ).rejects.toThrow('Encrypted sync data exceeded the 4-byte safety limit.')
   })
 
+  it('does not wait for a stalled source cancellation after the byte limit is exceeded', async () => {
+    let releaseCancel: () => void = () => undefined
+    const cancelGate = new Promise<void>((resolve) => {
+      releaseCancel = resolve
+    })
+    let cancelStarted = false
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2]))
+      },
+      cancel() {
+        cancelStarted = true
+        return cancelGate
+      },
+    })
+
+    let settled = false
+    const rejection = readBoundedByteStream(stream, 1, 'Test data').catch(
+      (error: unknown) => {
+        settled = true
+        throw error
+      },
+    )
+
+    try {
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(cancelStarted).toBe(true)
+      expect(settled).toBe(true)
+    } finally {
+      releaseCancel()
+      await rejection.catch(() => undefined)
+    }
+
+    await expect(rejection).rejects.toThrow(
+      'Test data exceeded the 1-byte safety limit.',
+    )
+  })
+
+  it('keeps the byte-limit error when reader cancellation throws synchronously', async () => {
+    const stream = {
+      getReader: () => ({
+        read: async () => ({
+          done: false,
+          value: new Uint8Array([1, 2]),
+        }),
+        cancel: () => {
+          throw new Error('reader cancel failed')
+        },
+        releaseLock: () => undefined,
+      }),
+    } as unknown as ReadableStream<Uint8Array>
+
+    await expect(
+      readBoundedByteStream(stream, 1, 'Test data'),
+    ).rejects.toThrow('Test data exceeded the 1-byte safety limit.')
+  })
+
   it('applies the same budget to uncompressed authenticated objects', async () => {
     const payload = new TextEncoder().encode('12345')
 

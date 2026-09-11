@@ -4,21 +4,26 @@ import app.zerochat.data.AppSnapshot
 import app.zerochat.data.SnapshotCommit
 import app.zerochat.data.SnapshotCompareAndSetResult
 
-internal suspend fun commitProviderKeySaveTransaction(
+internal class ProviderKeySaveConflictException :
+    IllegalStateException("Local data changed while the provider credential was being saved.")
+
+internal suspend fun commitProviderKeySnapshotSaveTransaction(
     source: AppSnapshot,
     candidate: AppSnapshot,
     sourceRevision: Long,
     currentRevision: () -> Long,
-    writeProviderKey: suspend () -> Unit,
+    stageProviderKey: suspend () -> Unit,
+    finishProviderKey: suspend () -> Unit,
+    restoreProviderKey: suspend () -> Unit,
     compareAndSetSnapshot: suspend (AppSnapshot, AppSnapshot) -> SnapshotCompareAndSetResult,
-): SnapshotCommit {
-    return commitCredentialSnapshotTransaction(
-        source = source,
-        candidate = candidate,
-        sourceRevision = sourceRevision,
-        currentRevision = currentRevision,
-        writeCredential = writeProviderKey,
-        compareAndSetSnapshot = compareAndSetSnapshot,
-        conflictError = ::ProviderDeletionConflictException,
-    )
-}
+): SnapshotCommit = commitProviderKeyImportTransaction(
+    source = source,
+    candidate = candidate,
+    sourceRevision = sourceRevision,
+    currentRevision = currentRevision,
+    stageProviderKeys = stageProviderKey,
+    finishProviderKeys = finishProviderKey,
+    restoreProviderKeys = restoreProviderKey,
+    compareAndSetSnapshot = compareAndSetSnapshot,
+    conflictError = ::ProviderKeySaveConflictException,
+)

@@ -1,4 +1,11 @@
 import { readFile, stat } from 'node:fs/promises'
+import { assertNoDeletedWebAuditSourceReads } from './deleted-web-audit-paths.mjs'
+
+const checkerSource = await readFile(new URL(import.meta.url), 'utf8')
+assertNoDeletedWebAuditSourceReads(
+  checkerSource,
+  'scripts/windows-webview-shell-check.mjs',
+)
 
 const failures = []
 
@@ -51,8 +58,8 @@ const webSecretBridgeTests = await read('src/platform/__tests__/windowsBridge.te
 const webSecrets = await read('src/storage/secrets.ts')
 const webSecretTests = await read('src/storage/__tests__/secrets.test.ts')
 const serviceWorkerRegistration = await read('src/services/serviceWorkerRegistration.ts')
-const appBootstrapController = await read('src/services/appBootstrapController.ts')
-const syncPassphraseController = await read('src/services/syncPassphraseController.ts')
+const appStore = await read('src/app/store.ts')
+const appStoreTests = await read('src/app/__tests__/store.test.ts')
 const indexHtml = await read('index.html')
 const viteConfig = await read('vite.config.ts')
 let appIconBytes = 0
@@ -165,7 +172,16 @@ expect(
     has(secretStore, 'if (!IsCredentialNotFound(error))') &&
     has(secretStore, 'std::mutex& SecretStoreGate()') &&
     secretStore.match(/std::scoped_lock lock\{ SecretStoreGate\(\) \};/g)?.length === 3 &&
-    has(secretStore, 'SecretStoreMutexName[] = L"Local\\\\ZeroChat.SecretStore.v2"') &&
+    has(secretStore, 'SecretStoreMutexPrefix[] = L"Global\\\\ZeroChat.SecretStore.v2."') &&
+    has(secretStore, 'OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY') &&
+    has(secretStore, 'GetTokenInformation(') &&
+    has(secretStore, 'TokenUser') &&
+    has(secretStore, 'ConvertSidToStringSidW(') &&
+    has(secretStore, 'std::wstring{ L"D:P(A;;GA;;;" } + sid + L")(A;;GA;;;SY)"') &&
+    has(secretStore, 'ConvertStringSecurityDescriptorToSecurityDescriptorW(') &&
+    has(secretStore, 'CreateMutexW(&securityAttributes, FALSE, mutexName.c_str())') &&
+    project.match(/advapi32\.lib/g)?.length === 2 &&
+    !has(secretStore, 'Local\\\\ZeroChat.SecretStore') &&
     has(secretStore, 'class CrossProcessSecretStoreLock final') &&
     has(secretStore, 'WaitForSingleObject(m_mutex, INFINITE)') &&
     secretStore.match(/CrossProcessSecretStoreLock processLock;/g)?.length === 3 &&
@@ -181,6 +197,9 @@ expect(
     has(secretStore, 'AddCredentialVerified(vault, RevisionAccount, transaction);') &&
     has(secretStore, 'ParseVersionedRevision(vault, snapshot.revision)') &&
     has(secretStore, 'void CleanupResidualCredentials(') &&
+    has(secretStore, 'auto activeTransaction = ParseVersionedRevision(') &&
+    has(secretStore, 'ReadCredential(vault, RevisionAccount));') &&
+    secretStore.match(/CleanupResidualCredentials\(vault\);/g)?.length === 4 &&
     has(secretStore, 'void CleanupResidualCredentialsAfterCommit(') &&
     has(secretStore, 'auto previous = LoadCommittedSnapshot(vault);') &&
     has(secretStore, 'RequireSnapshotMatches(') &&
@@ -192,7 +211,7 @@ expect(
     !has(storageService, 'L"apiKey"') &&
     !has(storageService, 'syncPassphrase') &&
     !has(storageService, 'githubToken'),
-  'Windows Credential Locker must normalize only empty-vault not-found enumeration, serialize operations, publish complete versioned generations only after value verification, recover residual transactions, keep migration metadata outside user clears, and keep secret values out of snapshot storage.',
+  'Windows Credential Locker must normalize only empty-vault not-found enumeration, serialize one user across terminal sessions with a SID-scoped protected Global mutex, publish complete versioned generations only after value verification, reread the current revision before cleanup, keep migration metadata outside user clears, and keep secret values out of snapshot storage.',
 )
 expect(
   has(storageService, 'constexpr uint32_t MaxLocalSnapshotFileBytes = 64000000;') &&
@@ -200,12 +219,17 @@ expect(
     has(storageService, 'auto properties = co_await file.GetBasicPropertiesAsync();') &&
     has(storageService, 'text.size() > MaxLocalSnapshotFileBytes - length') &&
     has(storageService, 'IBuffer EncodeBoundedSnapshotText(hstring const& text)') &&
-    has(storageService, 'auto item = co_await folder.TryGetItemAsync(SnapshotFileName());') &&
-    has(storageService, 'item = co_await folder.TryGetItemAsync(SnapshotTempFileName());') &&
+    has(storageService, 'auto primaryItem = co_await folder.TryGetItemAsync(SnapshotFileName());') &&
+    has(storageService, 'auto tempItem = co_await folder.TryGetItemAsync(SnapshotTempFileName());') &&
     has(storageService, 'AppSnapshot snapshot = DefaultSnapshot();') &&
-    has(storageService, 'auto json = co_await ReadBoundedSnapshotTextAsync(file);') &&
-    has(storageService, 'snapshot = DeserializeSnapshot(json);') &&
-    has(storageService, 'co_await file.RenameAsync(SnapshotFileName(), NameCollisionOption::ReplaceExisting);') &&
+    has(storageService, 'std::optional<AppSnapshot> primarySnapshot;') &&
+    has(storageService, 'std::optional<AppSnapshot> tempSnapshot;') &&
+    has(storageService, 'auto json = co_await ReadBoundedSnapshotTextAsync(primaryFile);') &&
+    has(storageService, 'auto json = co_await ReadBoundedSnapshotTextAsync(tempFile);') &&
+    has(storageService, 'tempSnapshot->updatedAt >= primarySnapshot->updatedAt') &&
+    has(storageService, 'co_await tempFile.RenameAsync(') &&
+    has(storageService, 'std::rethrow_exception(primaryFailure);') &&
+    has(storageService, 'std::rethrow_exception(tempFailure);') &&
     has(storageService, 'auto encoded = EncodeBoundedSnapshotText(json);') &&
     has(storageService, 'co_await FileIO::WriteBufferAsync(tempFile, encoded);') &&
     has(storageService, 'co_await tempFile.MoveAndReplaceAsync(currentItem.as<StorageFile>());') &&
@@ -218,8 +242,7 @@ expect(
     has(storageService, '}\n\n        if (onLoaded)') &&
     !has(storageService, 'GetFileAsync(SnapshotFileName())') &&
     !has(storageService, 'FileIO::ReadTextAsync(file)') &&
-    !has(storageService, 'FileIO::WriteTextAsync(tempFile, json)') &&
-    !has(storageService, 'catch (...)'),
+    !has(storageService, 'FileIO::WriteTextAsync(tempFile, json)'),
   'Windows snapshot storage must bound UTF-8 load/save bytes, default only when absent, serialize load/save/clear asynchronously, recover completed temp files, and atomically replace the last complete snapshot.',
 )
 expect(
@@ -278,9 +301,10 @@ expect(
   'Windows project must clean and copy the built Web/PWA dist directory into the app output web folder.',
 )
 expect(
-  has(project, '<ZeroChatBuildRoot Condition="\'$(ZeroChatBuildRoot)\'==\'\'">C:\\ZeroChatWindowsBuild</ZeroChatBuildRoot>') &&
-    has(readme, 'build outputs to `C:\\ZeroChatWindowsBuild` by default'),
-  'Windows project and README must keep an ASCII default build root so C++/WinRT builds survive non-ASCII repository paths.',
+  has(project, '<ZeroChatBuildRoot Condition="\'$(ZeroChatBuildRoot)\'==\'\'">$(MSBuildThisFileDirectory)..\\..\\..\\.local\\codex\\artifacts\\windows-build</ZeroChatBuildRoot>') &&
+    has(readme, 'build outputs to the ignored project-local') &&
+    has(readme, '.local/codex/artifacts/windows-build'),
+  'Windows project and README must keep build outputs inside the ignored project-local artifact boundary.',
 )
 expect(
   has(mainWindow, 'auto webRoot = ModuleDirectory() / L"web"') &&
@@ -336,7 +360,8 @@ expect(
     has(mainWindow, 'InitializeFallbackSurface();') &&
     has(mainWindow, 'SidebarStatusBar().ActionButton(retryButton);') &&
     has(mainWindow, 'retryButton.Content(box_value(Text(L"button.retry")));') &&
-    has(mainWindow, 'repairButton.Content(box_value(L"Repair WebView2"));') &&
+    has(mainWindow, 'repairButton.Content(box_value(Text(L"button.repairWebView")));') &&
+    has(mainWindowText, 'name == L"button.repairWebView"') &&
     has(mainWindow, 'TryOpenAllowedExternalUri(WebView2RepairUri);'),
   'Windows WebView2 initialization failures must expose actionable native retry and runtime-repair recovery controls.',
 )
@@ -460,8 +485,11 @@ expect(
     ) &&
     has(
       mainWindowHeader,
-      /winrt::fire_and_forget ProcessSecretWebMessageAsync\(\s*winrt::hstring json,\s*winrt::hstring requestId,\s*WebViewSessionToken webViewSession\);/,
+      /winrt::Windows::Foundation::IAsyncAction ProcessSecretWebMessageAsync\(\s*winrt::hstring json,\s*winrt::hstring requestId,\s*WebViewSessionToken webViewSession\);/,
     ) &&
+    has(mainWindow, 'void InvokeWebViewCallbackSafely(Callback&& callback, FailureCallback&& onFailure) noexcept') &&
+    has(mainWindowHeader, 'TrayWindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) noexcept;') &&
+    has(trayIntegration, 'MainWindow::TrayWindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) noexcept') &&
     has(syncNotifications, 'if (TryHandleSecretWebMessage(json, webViewSession))') &&
     has(secretBridge, 'SecretRequestKind[] = L"zerochat.secret.request.v1"') &&
     has(secretBridge, 'SecretResponseKind[] = L"zerochat.secret.response.v1"') &&
@@ -475,7 +503,8 @@ expect(
     has(secretBridge, 'L"storage-failure" : L"invalid-request"') &&
     has(secretBridge, 'ProcessSecretWebMessageAsync(json, hstring{ id }, webViewSession);') &&
     has(secretBridge, 'auto weakThis = get_weak();') &&
-    has(secretBridge, 'auto dispatcherQueue = DispatcherQueue();') &&
+    has(secretBridge, /(?:auto|winrt::Microsoft::UI::Dispatching::DispatcherQueue)\s+dispatcherQueue(?:\{\s*nullptr\s*\})?;/) &&
+    has(secretBridge, 'dispatcherQueue = DispatcherQueue();') &&
     has(secretBridge, 'co_await winrt::resume_background();') &&
     has(secretBridge, 'if (!webViewSession || !webViewSession->load(std::memory_order_acquire))') &&
     secretBridge.indexOf('co_await winrt::resume_background();') <
@@ -509,7 +538,7 @@ expect(
     has(webSecrets, "'locker-written'") &&
     has(webSecrets, "'complete'") &&
     has(webSecrets, 'missingEntries.every(') &&
-    has(webSecrets, 'clearBrowserSecretsAfterWindowsMigration()') &&
+    has(webSecrets, 'clearBrowserSecretsAfterWindowsMigration(migrationBridgeIdentity)') &&
     has(webSecrets, "await mutateWindowsSecretStore([], 'all')") &&
     has(webSecrets, 'sessionStorage.removeItem(SYNC_PASSPHRASE_KEY)') &&
     !has(webSecrets, "deleteDatabase('zerochat-local-crypto')") &&
@@ -517,7 +546,7 @@ expect(
     has(webSecretTests, 'fails closed on the Windows origin when the native bridge is absent') &&
     has(webSecretTests, 'keeps the committed Windows revision after a deferred stale read returns') &&
     has(webSecretTests, 'migrates only missing browser secrets into Locker and keeps Locker authoritative') &&
-    has(webSecretTests, 'retries Windows migration cleanup from locker-written state'),
+    has(webSecretTests, 'retries Windows migration cleanup after durable completion'),
   'Windows secret migration must prefer Locker, import only missing browser secrets, verify native writes, clean legacy Web secrets, remain retryable, and never delete zerochat-local-crypto.',
 )
 expect(
@@ -533,15 +562,24 @@ expect(
   'The Windows virtual origin must skip service-worker registration and receive a meta CSP while Vite dev removes only that Windows-specific policy before React Refresh injection.',
 )
 expect(
-  has(appBootstrapController, 'getSyncPassphrase: () => Promise<string>') &&
-    has(appBootstrapController, 'syncPassphrase: await appServices.getSyncPassphrase()') &&
-    has(syncPassphraseController, 'persistSyncPassphrase: (value: string) => Promise<void>') &&
-    has(syncPassphraseController, 'export async function commitSyncPassphrasePlan(') &&
-    has(syncPassphraseController, 'export async function commitSyncPassphraseState(') &&
-    has(syncPassphraseController, 'await context.persistSyncPassphrase(state.value)') &&
-    has(syncPassphraseController, 'await commitSyncPassphrasePlan(plan, {') &&
-    has(syncPassphraseController, 'if (!await clearSyncPassphrase())'),
-  'Sync passphrase reads and writes must stay asynchronous through bootstrap, UI state commit, reset, and automatic-sync scheduling without fire-and-forget persistence.',
+  has(appStore, 'const syncPassphrase = await getSyncPassphrase()') &&
+    has(appStore, 'setSyncPassphrase: async (value) =>') &&
+    has(appStore, 'const mutation = runSecretMutation(') &&
+    has(appStore, 'trackSyncPassphraseMutation(mutation)') &&
+    has(appStore, 'await write()') &&
+    has(appStore, 'apply(admission)') &&
+    has(appStore, '() => persistSyncPassphrase(value)') &&
+    has(appStore, 'set({ syncPassphrase: value })') &&
+    has(appStore, "if (sync?.autoSync && sync.mode !== 'local')") &&
+    has(
+      appStoreTests,
+      'publishes a changed sync passphrase only after durable storage and queues one current-owner sync',
+    ) &&
+    has(
+      appStoreTests,
+      'keeps the committed sync passphrase and skips sync when durable storage rejects the change',
+    ),
+  'Current Web sync passphrase reads and writes must await durable storage, publish only committed state, and queue one current-owner automatic sync.',
 )
 expect(
   has(pch, '#include <winrt/Windows.Data.Json.h>') &&
@@ -722,7 +760,7 @@ expect(
 )
 expect(
   has(pch, '#include <shellapi.h>') &&
-    has(project, '<AdditionalDependencies>shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>') &&
+    project.match(/shell32\.lib/g)?.length === 2 &&
     has(project, '<ClCompile Include="MainWindowTray.cpp" />') &&
     has(projectFilters, '<ClCompile Include="MainWindowTray.cpp">') &&
     has(trayIntegration, 'Shell_NotifyIconW(NIM_ADD, &m_trayIconData)') &&
@@ -812,7 +850,9 @@ expect(
     has(buildHelper, 'vswhere.exe') &&
     has(buildHelper, 'node_modules\\typescript\\bin\\tsc') &&
     has(buildHelper, 'node_modules\\vite\\bin\\vite.js') &&
-    has(buildHelper, '[string] $BuildRoot = "C:\\ZeroChatWindowsBuild"') &&
+    has(buildHelper, '[string] $BuildRoot = ".local\\codex\\artifacts\\windows-build"') &&
+    has(buildHelper, 'function Get-AsciiBuildRoot') &&
+    has(buildHelper, '& subst') &&
     has(buildHelper, '[switch] $MsixReady') &&
     has(buildHelper, '/p:ZeroChatMsixBuild=true') &&
     has(buildHelper, 'Join-Path $OutputWebDir "index.html"') &&

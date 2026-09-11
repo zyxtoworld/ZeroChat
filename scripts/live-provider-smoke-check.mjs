@@ -5,9 +5,11 @@ import path from 'node:path'
 import {
   liveProviderApiSourceFingerprint,
   liveProviderApiSourceFingerprintRoots,
+  liveProviderUiSourceFiles,
   liveProviderUiSourceFingerprint,
   liveProviderUiSourceFingerprintRoots,
 } from './live-provider-source-fingerprint.mjs'
+import { resolveWebProductionGraph } from './web-production-reachability.mjs'
 
 const failures = []
 
@@ -183,6 +185,7 @@ const smoke = await read('scripts/live-provider-smoke.mjs')
 const smokeCheck = await read('scripts/live-provider-smoke-check.mjs')
 const reportPathPolicy = await read('scripts/live-provider-report-path.mjs')
 const uiSmoke = await read('scripts/live-provider-ui-smoke.mjs')
+const emptyChatRetry = await read('scripts/live-provider-empty-chat-retry.mjs')
 const sourceFingerprint = await read('scripts/live-provider-source-fingerprint.mjs')
 const liveProviderApiSourceFingerprintRootsBlock = exportedArrayBlock(
   sourceFingerprint,
@@ -202,6 +205,16 @@ const providerModels = await read('src/services/providerModels.ts')
 const forbiddenLiveProviderLiterals = configuredForbiddenLiveProviderLiterals()
 const fakeCredentialShapedProviderKey = ['sk', 'abcdefghijklmnopqrstuvwxyzABCDE'].join('-')
 const liveProviderChildTimeoutMs = 90_000
+const liveProviderUiSourceFilesForContract = await liveProviderUiSourceFiles()
+const liveProviderProductionGraph = resolveWebProductionGraph({ root: process.cwd() })
+const liveProviderProductionGraphFiles = new Set(liveProviderProductionGraph.files)
+const liveProviderUiGraphCoverage =
+  liveProviderProductionGraph.files.every((file) =>
+    liveProviderUiSourceFilesForContract.includes(file),
+  ) &&
+  liveProviderUiSourceFilesForContract
+    .filter((file) => file.startsWith('src/'))
+    .every((file) => liveProviderProductionGraphFiles.has(file))
 
 function runNodeScript(args, options = {}) {
   return execFileSync(process.execPath, args, {
@@ -546,6 +559,28 @@ expect(
   'Live provider smoke must cover model listing, prefer advanced chat models by default, prove the chosen model with a streaming chat completion, and summarize candidate failures.',
 )
 expect(
+  has(emptyChatRetry, 'Object.freeze([400, 900, 1600])') &&
+    has(emptyChatRetry, 'result?.emptySuccessfulResponse === true') &&
+    has(emptyChatRetry, 'result?.status === 200') &&
+    has(emptyChatRetry, 'runWithLiveProviderEmptyChatRetry') &&
+    has(emptyChatRetry, 'liveProviderChatModelAttemptValidationFailures') &&
+    has(emptyChatRetry, "'successful-empty-response'") &&
+    has(emptyChatRetry, 'contains an unsafe or unknown field') &&
+    has(smoke, "from './live-provider-empty-chat-retry.mjs'") &&
+    has(smoke, 'async function runStreamingChatAttempt') &&
+    has(smoke, "reply === '' ? { emptySuccessfulResponse: true }") &&
+    has(smoke, 'chatModelAttempts.push({ model, attempts: result.attempts })') &&
+    has(smoke, 'chatModelAttempts: chatSmoke.chatModelAttempts') &&
+    has(uiSmoke, "from './live-provider-empty-chat-retry.mjs'") &&
+    has(uiSmoke, 'async function runStreamingChatAttempt') &&
+    has(uiSmoke, "reply === '' ? { emptySuccessfulResponse: true }") &&
+    has(uiSmoke, 'chatModelAttempts.push({ model, attempts: result.attempts })') &&
+    has(uiSmoke, 'chatModelAttempts: modelResolution.chatModelAttempts') &&
+    has(runtimeArtifactCheck, 'liveProviderChatModelAttemptValidationFailures') &&
+    has(releaseBlockerReport, 'liveProviderChatModelAttemptValidationFailures'),
+  'Live provider API and browser UI evidence must share the exact bounded same-model retry for HTTP 200 empty chat responses and publish only validated per-attempt metadata.',
+)
+expect(
   has(smoke, "const IMAGE_CONFIRM_VALUE = 'GENERATE_ONE_TEST_IMAGE'") &&
     has(smoke, 'ZEROCHAT_LIVE_PROVIDER_IMAGE_CONFIRM') &&
     has(smoke, 'ZEROCHAT_LIVE_PROVIDER_IMAGE_MODEL') &&
@@ -860,15 +895,10 @@ expect(
     ) &&
     has(liveProviderUiSourceFingerprintRootsBlock, "'scripts/live-provider-ui-smoke.mjs'") &&
     has(liveProviderUiSourceFingerprintRootsBlock, "'scripts/browser-cdp.mjs'") &&
-    has(sourceFingerprint, "'src/components'") &&
-    has(sourceFingerprint, "'src/design-system'") &&
-    has(sourceFingerprint, "'src/locales'") &&
-    has(sourceFingerprint, "'src/ZeroChatAppRoot.tsx'") &&
-    has(sourceFingerprint, "'src/services/firstRunGuideController.ts'") &&
-    has(sourceFingerprint, "'src/services/providerSettingsController.ts'") &&
-    has(sourceFingerprint, "'src/services/chatGenerationTextSubmit.ts'") &&
+    has(sourceFingerprint, "'index.html'") &&
+    liveProviderUiGraphCoverage &&
     has(sourceFingerprint, 'export function liveProviderApiSourceFingerprint') &&
-    has(sourceFingerprint, 'export function liveProviderUiSourceFingerprint') &&
+    has(sourceFingerprint, 'export async function liveProviderUiSourceFingerprint') &&
     has(smoke, "from './live-provider-source-fingerprint.mjs'") &&
     has(uiSmoke, "from './live-provider-source-fingerprint.mjs'") &&
     has(runtimeArtifactCheck, "from './live-provider-source-fingerprint.mjs'") &&
@@ -941,7 +971,8 @@ expect(
     has(releaseBlockerReport, 'passed live provider UI report must prove the assistant body equals the marker with no extra content.') &&
     has(releaseBlockerReport, 'passed live provider UI report must dismiss the chat feature hint before sending the marker prompt.') &&
     has(uiSmoke, 'function liveProviderUiRequiredRemediation') &&
-    has(uiSmoke, 'kind: browserTransientRemediationKind || (providerEdgeInterstitial') &&
+    has(uiSmoke, 'kind: browserTransientRemediationKind || (browserProxyEdgeFailure') &&
+    has(uiSmoke, "? 'browser-ai-proxy-edge-remediation'") &&
     has(uiSmoke, "? 'provider-edge-interstitial-remediation'") &&
     has(uiSmoke, "? 'provider-upstream-html-remediation'") &&
     has(uiSmoke, "? 'browser-allowed-ai-proxy-required'") &&
@@ -1071,10 +1102,14 @@ expect(
 )
 expect(
     has(uiSmoke, 'function safeAppUrl') &&
-    has(uiSmoke, 'ZEROCHAT_LIVE_PROVIDER_UI_URL must point to the local ZeroChat app') &&
+    has(
+      uiSmoke,
+      'ZEROCHAT_LIVE_PROVIDER_UI_URL must point to the local ZeroChat app or the exact same-origin remote Worker root',
+    ) &&
     has(uiSmoke, 'ZEROCHAT_LIVE_PROVIDER_UI_URL must not include credentials, query strings, or fragments') &&
-    uiSmoke.indexOf('const appUrl = providedAppUrl ? safeAppUrl(providedAppUrl)') <
-      uiSmoke.indexOf('modelResolution = await resolveModel({') &&
+    /const appUrl = providedAppUrl\s*\? safeAppUrl\(providedAppUrl,[\s\S]*?modelResolution = await resolveModel\(/u.test(
+      uiSmoke,
+    ) &&
     has(uiSmoke, "document.title === 'ZeroChat'") &&
     has(uiSmoke, "document.querySelector('.app-shell')") &&
     has(uiSmoke, "document.querySelector('.guide-modal')") &&
@@ -1089,8 +1124,12 @@ expect(
     uiSmoke.indexOf("encodeURIComponent('about:blank')") <
       uiSmoke.indexOf("await cdp.send('Runtime.enable')") &&
     uiSmoke.indexOf("await cdp.send('Runtime.enable')") <
-      uiSmoke.indexOf("await cdp.send('Page.navigate', { url: runtimeAppUrl })"),
-  'Live provider UI smoke must instrument a blank CDP target before navigating to the app.',
+      uiSmoke.indexOf("const navigation = await cdp.send('Page.navigate', { url: runtimeAppUrl })") &&
+    has(uiSmoke, 'const pageLoadEventStartIndex = cdp.events.length') &&
+    has(uiSmoke, 'await waitForMainFrameLoadCompletion(') &&
+    uiSmoke.indexOf('await waitForMainFrameLoadCompletion(') <
+      uiSmoke.indexOf('const evaluate = async (expression, awaitPromise = false, timeoutMs) =>'),
+  'Live provider UI smoke must instrument a blank CDP target and await the new main frame before evaluating the app.',
 )
 expect(
   has(uiSmoke, 'function redact') &&
@@ -1970,6 +2009,19 @@ function fullCapabilityProviderReportFixture(overrides = {}) {
     chatStatus: 200,
     reply: 'ZeroChat OK',
     attemptedChatModels: ['gpt-5'],
+    chatModelAttempts: [
+      {
+        model: 'gpt-5',
+        attempts: [
+          {
+            attemptNumber: 1,
+            outcome: 'passed',
+            retryScheduled: false,
+            status: 200,
+          },
+        ],
+      },
+    ],
     imageSmoke: {
       imageModel: 'gpt-image-2',
       responsesModel: 'gpt-5',
@@ -2424,6 +2476,19 @@ function failedFullCapabilityProviderReportFixture(overrides = {}) {
     chatStatus: 200,
     reply: 'ZeroChat OK',
     attemptedChatModels: ['gpt-5'],
+    chatModelAttempts: [
+      {
+        model: 'gpt-5',
+        attempts: [
+          {
+            attemptNumber: 1,
+            outcome: 'passed',
+            retryScheduled: false,
+            status: 200,
+          },
+        ],
+      },
+    ],
     imageSmoke: {
       imageModel: 'gpt-image-2',
       responsesModel: 'gpt-5',
@@ -4113,9 +4178,9 @@ for (const [timeoutMs, expected] of [
 }
 
 for (const [appUrl, expected] of [
-  ['https://example.com/', 'must point to the local ZeroChat app'],
-  ['http://192.168.1.8:5173/', 'must point to the local ZeroChat app'],
-  ['file:///tmp/zerochat.html', 'must point to the local ZeroChat app'],
+  ['https://example.com/', 'must point to the local ZeroChat app or the exact same-origin remote Worker root'],
+  ['http://192.168.1.8:5173/', 'must point to the local ZeroChat app or the exact same-origin remote Worker root'],
+  ['file:///tmp/zerochat.html', 'must point to the local ZeroChat app or the exact same-origin remote Worker root'],
   ['http://user:secret@127.0.0.1:5173/', 'must not include credentials'],
   ['http://127.0.0.1:5173/?token=leak', 'must not include credentials'],
   ['http://127.0.0.1:5173/#token=leak', 'must not include credentials'],
@@ -4133,6 +4198,26 @@ for (const [appUrl, expected] of [
   expect(
     uiResult.status !== 0 && uiResult.output.includes(expected),
     `Live provider UI smoke must reject unsafe app URL ${appUrl} before launching a browser or injecting credentials.`,
+  )
+}
+
+{
+  const sameOriginWorkerUrl = 'https://worker.example.com/'
+  const uiResult = runUiInputValidation(
+    smokeEnv({
+      ZEROCHAT_LIVE_PROVIDER_BASE_URL: 'https://api.example.com/v1',
+      ZEROCHAT_LIVE_PROVIDER_CONFIRM: 'SEND_ONE_TEST_MESSAGE',
+      ZEROCHAT_LIVE_PROVIDER_MODEL: 'gpt-4o-mini',
+      ZEROCHAT_LIVE_PROVIDER_UI_URL: sameOriginWorkerUrl,
+      ZEROCHAT_LIVE_PROVIDER_UI_PROXY_URL: sameOriginWorkerUrl,
+      ZEROCHAT_LIVE_PROVIDER_UI_SYNC_PASSPHRASE: 'zc-ui-proxy-passphrase-check-12345',
+      ZEROCHAT_LIVE_PROVIDER_UI_WORKER_HOSTS_KEY: 'true',
+    }),
+  )
+
+  expect(
+    uiResult.status === 0 && uiResult.output.includes('input validation passed'),
+    'Live provider UI smoke must accept an exact same-origin remote Worker root only in Worker-hosted-key mode.',
   )
 }
 
@@ -4196,7 +4281,10 @@ for (const [screenshotPath, expected] of [
   )
 
   expect(
-    uiResult.status !== 0 && uiResult.output.includes('must point to the local ZeroChat app'),
+    uiResult.status !== 0 &&
+      uiResult.output.includes(
+        'must point to the local ZeroChat app or the exact same-origin remote Worker root',
+      ),
     'Live provider UI smoke must reject unsafe app URLs before validating Base URL or fetching provider models.',
   )
 }
@@ -4216,7 +4304,9 @@ for (const [screenshotPath, expected] of [
 
   expect(
     uiResult.status !== 0 &&
-      uiResult.output.includes('must point to the local ZeroChat app') &&
+      uiResult.output.includes(
+        'must point to the local ZeroChat app or the exact same-origin remote Worker root',
+      ) &&
       !uiResult.output.includes('ZEROCHAT_LIVE_PROVIDER_API_KEY'),
     'Live provider UI smoke must allow Worker-hosted provider-key proxy drills without a local provider API key.',
   )

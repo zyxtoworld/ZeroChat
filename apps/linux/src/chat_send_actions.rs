@@ -1,8 +1,9 @@
 use crate::{
     ImageTaskMode, LinuxAppState,
     background::{
-        AiChatStreamEvent, AiImageRequestEvent, poll_ai_image_request, poll_background_result,
-        poll_chat_stream, spawn_ai_chat_stream_request, spawn_ai_image_request,
+        AiChatStreamEvent, AiImageRequestEvent, BACKGROUND_TASK_DISCONNECTED,
+        poll_ai_image_request, poll_chat_stream, spawn_ai_chat_stream_request,
+        spawn_ai_image_request,
     },
     chat_image_controls::ImageComposerControls,
     chat_mode_controls::ComposeMode,
@@ -14,11 +15,11 @@ use crate::{
 use gtk::prelude::*;
 use std::{
     cell::RefCell,
-    mpsc,
     rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
 };
 use tokio::sync::watch;
@@ -213,58 +214,61 @@ pub(crate) fn connect_send_action(
             let state_for_result = state_for_send.clone();
             let window_for_result = window_for_send.clone();
             let locale_for_result = locale_for_send.clone();
-            let notice_for_result = notice_for_send.clone();
             let chat_streaming_for_result = chat_streaming_for_send.clone();
             let refresh_controls_for_result = refresh_controls_for_send.clone();
-            poll_ai_image_request(receiver, move |event| match event {
-                AiImageRequestEvent::Done(result) => {
-                    if take_active_stream_if_matches(
-                        &mut chat_streaming_for_result.borrow_mut(),
-                        &assistant_message_id,
-                    )
-                    .is_none()
-                    {
-                        return;
+            poll_ai_image_request(
+                receiver,
+                move |event| match event {
+                    AiImageRequestEvent::Done(result) => {
+                        if take_active_stream_if_matches(
+                            &mut chat_streaming_for_result.borrow_mut(),
+                            &assistant_message_id,
+                        )
+                        .is_none()
+                        {
+                            return;
+                        }
+                        refresh_controls_for_result();
+
+                        let (content, attachment, error) = match result {
+                            Ok(image) => {
+                                let content = image
+                                    .revised_prompt
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|value| !value.is_empty())
+                                    .unwrap_or(prompt_for_result.as_str())
+                                    .to_owned();
+                                let attachment = generated_image_attachment(
+                                    image,
+                                    &prompt_for_result,
+                                    &model_for_result,
+                                );
+                                (content, Some(attachment), None)
+                            }
+                            Err(message) => {
+                                let message = localize_ai_error(&locale_for_result, &message);
+                                let failure = tr(&locale_for_result, "message.imageRequestFailed");
+                                let content = if message == failure {
+                                    failure.to_owned()
+                                } else {
+                                    format!("{failure}: {message}")
+                                };
+                                (content.clone(), None, Some(content))
+                            }
+                        };
+
+                        state_for_result.complete_assistant_image_message(
+                            &assistant_message_id,
+                            content,
+                            attachment,
+                            error,
+                        );
+                        set_window_content(&window_for_result, state_for_result.clone(), "chat");
                     }
-                    refresh_controls_for_result();
-
-                    let (content, attachment, error) = match result {
-                        Ok(image) => {
-                            let content = image
-                                .revised_prompt
-                                .as_deref()
-                                .map(str::trim)
-                                .filter(|value| !value.is_empty())
-                                .unwrap_or(prompt_for_result.as_str())
-                                .to_owned();
-                            let attachment = generated_image_attachment(
-                                image,
-                                &prompt_for_result,
-                                &model_for_result,
-                            );
-                            (content, Some(attachment), None)
-                        }
-                        Err(message) => {
-                            let message = localize_ai_error(&locale_for_result, &message);
-                            let failure = tr(&locale_for_result, "message.imageRequestFailed");
-                            let content = if message == failure {
-                                failure.to_owned()
-                            } else {
-                                format!("{failure}: {message}")
-                            };
-                            (content.clone(), None, Some(content))
-                        }
-                    };
-
-                    state_for_result.complete_assistant_image_message(
-                        &assistant_message_id,
-                        content,
-                        attachment,
-                        error,
-                    );
-                    set_window_content(&window_for_result, state_for_result.clone(), "chat");
-                }
-            });
+                },
+                || AiImageRequestEvent::Done(Err(BACKGROUND_TASK_DISCONNECTED.to_owned())),
+            );
             return;
         }
 
@@ -332,77 +336,86 @@ pub(crate) fn connect_send_action(
         let notice_for_result = notice_for_send.clone();
         let chat_streaming_for_result = chat_streaming_for_send.clone();
         let refresh_controls_for_result = refresh_controls_for_send.clone();
-        poll_chat_stream(receiver, move |event| match event {
-            AiChatStreamEvent::Delta(content) => {
-                let is_active = chat_streaming_for_result
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|active| active.assistant_message_id == assistant_message_id);
-                if !is_active {
-                    return;
-                }
+        poll_chat_stream(
+            receiver,
+            move |event| match event {
+                AiChatStreamEvent::Delta(content) => {
+                    let is_active = chat_streaming_for_result
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|active| active.assistant_message_id == assistant_message_id);
+                    if !is_active {
+                        return;
+                    }
 
-                state_for_result
-                    .update_streaming_assistant_message(&assistant_message_id, content.clone());
-                let visible = if content.trim().is_empty() {
-                    format!("{}|", tr(&locale_for_result, "message.generating"))
-                } else {
-                    format!("{content}|")
-                };
-                assistant_body.set_text(&visible);
-            }
-            AiChatStreamEvent::Retry { attempt, total } => {
-                let is_active = chat_streaming_for_result
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|active| active.assistant_message_id == assistant_message_id);
-                if !is_active {
-                    return;
+                    state_for_result
+                        .update_streaming_assistant_message(&assistant_message_id, content.clone());
+                    let visible = if content.trim().is_empty() {
+                        format!("{}|", tr(&locale_for_result, "message.generating"))
+                    } else {
+                        format!("{content}|")
+                    };
+                    assistant_body.set_text(&visible);
                 }
+                AiChatStreamEvent::Retry { attempt, total } => {
+                    let is_active = chat_streaming_for_result
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|active| active.assistant_message_id == assistant_message_id);
+                    if !is_active {
+                        return;
+                    }
 
-                let attempt = attempt.to_string();
-                let total = total.to_string();
-                let message = replace_placeholders(
-                    tr(&locale_for_result, "notice.networkRetrying"),
-                    &[("{attempt}", &attempt), ("{total}", &total)],
-                );
-                set_notice_warning(&notice_for_result, &message);
-            }
-            AiChatStreamEvent::Done(result) => {
-                if take_active_stream_if_matches(
-                    &mut chat_streaming_for_result.borrow_mut(),
-                    &assistant_message_id,
-                )
-                .is_none()
-                {
-                    return;
+                    let attempt = attempt.to_string();
+                    let total = total.to_string();
+                    let message = replace_placeholders(
+                        tr(&locale_for_result, "notice.networkRetrying"),
+                        &[("{attempt}", &attempt), ("{total}", &total)],
+                    );
+                    set_notice_warning(&notice_for_result, &message);
                 }
-                refresh_controls_for_result();
-                let (content, error) = match result {
-                    Ok(content) => {
-                        let trimmed = content.trim().to_owned();
-                        if trimmed.is_empty() {
-                            let message =
-                                tr(&locale_for_result, "message.providerEmptyResponse").to_owned();
-                            (message.clone(), Some(message))
-                        } else {
-                            (trimmed, None)
+                AiChatStreamEvent::Done(result) => {
+                    if take_active_stream_if_matches(
+                        &mut chat_streaming_for_result.borrow_mut(),
+                        &assistant_message_id,
+                    )
+                    .is_none()
+                    {
+                        return;
+                    }
+                    refresh_controls_for_result();
+                    let (content, error) = match result {
+                        Ok(content) => {
+                            let trimmed = content.trim().to_owned();
+                            if trimmed.is_empty() {
+                                let message =
+                                    tr(&locale_for_result, "message.providerEmptyResponse")
+                                        .to_owned();
+                                (message.clone(), Some(message))
+                            } else {
+                                (trimmed, None)
+                            }
                         }
-                    }
-                    Err(message) => {
-                        let message = localize_ai_error(&locale_for_result, &message);
-                        let content = replace_placeholders(
-                            tr(&locale_for_result, "message.generationFailed"),
-                            &[("{message}", &message)],
-                        );
-                        (content.clone(), Some(content))
-                    }
-                };
+                        Err(message) => {
+                            let message = localize_ai_error(&locale_for_result, &message);
+                            let content = replace_placeholders(
+                                tr(&locale_for_result, "message.generationFailed"),
+                                &[("{message}", &message)],
+                            );
+                            (content.clone(), Some(content))
+                        }
+                    };
 
-                state_for_result.complete_assistant_message(&assistant_message_id, content, error);
-                set_window_content(&window_for_result, state_for_result.clone(), "chat");
-            }
-        });
+                    state_for_result.complete_assistant_message(
+                        &assistant_message_id,
+                        content,
+                        error,
+                    );
+                    set_window_content(&window_for_result, state_for_result.clone(), "chat");
+                }
+            },
+            || AiChatStreamEvent::Done(Err(BACKGROUND_TASK_DISCONNECTED.to_owned())),
+        );
     });
 }
 

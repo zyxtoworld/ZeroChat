@@ -5,6 +5,7 @@ import { normalizeWorkerEndpoint } from './syncEndpoint'
 import { fetchSync } from './syncHttpBody'
 import { readSyncGeneration } from './syncIncrementalRemote'
 import {
+  assertRemoteWriteAllowed,
   markRemoteCleared,
   readError,
   type SyncContext,
@@ -57,7 +58,9 @@ export async function clearCloudflareViaBulkEndpoint(
   endpoint: string,
   token: string,
   signal?: AbortSignal,
+  shouldDeferRemoteWrite?: () => boolean,
 ): Promise<void> {
+  assertRemoteWriteAllowed({ shouldDeferRemoteWrite })
   return fetchSync(
     `${endpoint}${SYNC_CLEAR_PATH}`,
     {
@@ -100,10 +103,12 @@ export async function clearWithCloudflare(
     throw new Error(rt('error.syncPassphraseRequired'))
   }
 
+  assertRemoteWriteAllowed(context)
   await clearCloudflareViaBulkEndpoint(
     endpoint,
     token,
     context.signal,
+    context.shouldDeferRemoteWrite,
   )
 
   const cleared = markRemoteCleared(data, rt('sync.status.remoteCleared'))

@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -9,6 +9,7 @@ import {
 } from './live-sync-source-fingerprint.mjs'
 
 const failures = []
+const LIVE_SYNC_CHECK_CHILD_TIMEOUT_MS = 60_000
 const LIVE_SYNC_MISSING_INPUT_KEYS = new Set([
   'liveSyncMode',
   'throwawaySyncPassphrase',
@@ -17,6 +18,43 @@ const LIVE_SYNC_MISSING_INPUT_KEYS = new Set([
   'disposableCloudflareWorkerEndpoint',
   'disposableGithubGistToken',
 ])
+
+function runDrillFixture(args, { env = process.env } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, args, {
+      cwd: process.cwd(),
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: LIVE_SYNC_CHECK_CHILD_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+      windowsHide: true,
+    })
+    let stdout = ''
+    let stderr = ''
+
+    child.stdout?.setEncoding('utf8')
+    child.stderr?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk
+    })
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk
+    })
+
+    child.once('error', (error) => {
+      resolve({
+        status: null,
+        signal: null,
+        stdout,
+        stderr: `${stderr}${error instanceof Error ? error.message : String(error)}`,
+      })
+    })
+    child.once('close', (status, signal) => {
+      resolve({ status, signal, stdout, stderr })
+    })
+  })
+}
+
 async function read(path) {
   try {
     return await readFile(path, 'utf8')
@@ -129,9 +167,7 @@ async function expectSkippedDiagnosticMissingInputs() {
   const reportPath = path.join(tempDir, 'live-sync-release-drill.json')
 
   try {
-    const result = spawnSync(process.execPath, ['scripts/live-sync-release-drill.mjs'], {
-      cwd: process.cwd(),
-      encoding: 'utf8',
+    const result = await runDrillFixture(['scripts/live-sync-release-drill.mjs'], {
       env: {
         ...process.env,
         ZEROCHAT_LIVE_SYNC_MODE: '',
@@ -211,14 +247,9 @@ async function expectCliArgumentsFailClosed() {
   try {
     for (const testCase of cases) {
       await rm(reportPath, { force: true })
-      const result = spawnSync(
-        process.execPath,
+      const result = await runDrillFixture(
         ['scripts/live-sync-release-drill.mjs', ...testCase.args],
-        {
-          cwd: process.cwd(),
-          encoding: 'utf8',
-          env,
-        },
+        { env },
       )
       const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
 
@@ -341,18 +372,13 @@ async function expectPassingReportRejectsDiagnosticFields() {
   try {
     await writeFile(reportPath, `${JSON.stringify(passingReportWithDiagnostics, null, 2)}\n`)
 
-    const result = spawnSync(
-      process.execPath,
+    const result = await runDrillFixture(
       [
         'scripts/runtime-smoke-artifact-check.mjs',
         '--only-live-sync-report',
         `--require-live-sync-passed-report=${reportPath}`,
       ],
-      {
-        cwd: process.cwd(),
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
+      {},
     )
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
 
@@ -417,18 +443,13 @@ async function expectPassingReportRejectsGenericDrillName() {
   try {
     await writeFile(reportPath, `${JSON.stringify(passingReportWithGenericDrillName, null, 2)}\n`)
 
-    const result = spawnSync(
-      process.execPath,
+    const result = await runDrillFixture(
       [
         'scripts/runtime-smoke-artifact-check.mjs',
         '--only-live-sync-report',
         `--require-live-sync-passed-report=${reportPath}`,
       ],
-      {
-        cwd: process.cwd(),
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
+      {},
     )
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
 
@@ -493,18 +514,13 @@ async function expectPassingReportRejectsStaleSourceFingerprint() {
   try {
     await writeFile(reportPath, `${JSON.stringify(passingReportWithStaleSource, null, 2)}\n`)
 
-    const result = spawnSync(
-      process.execPath,
+    const result = await runDrillFixture(
       [
         'scripts/runtime-smoke-artifact-check.mjs',
         '--only-live-sync-report',
         `--require-live-sync-passed-report=${reportPath}`,
       ],
-      {
-        cwd: process.cwd(),
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
+      {},
     )
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
 
@@ -609,18 +625,13 @@ async function expectDiagnosticReportRejectsStaleSourceFingerprint() {
   try {
     await writeFile(reportPath, `${JSON.stringify(staleDiagnosticReport, null, 2)}\n`)
 
-    const result = spawnSync(
-      process.execPath,
+    const result = await runDrillFixture(
       [
         'scripts/runtime-smoke-artifact-check.mjs',
         '--only-live-sync-report',
         `--require-live-sync-report=${reportPath}`,
       ],
-      {
-        cwd: process.cwd(),
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
+      {},
     )
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
 
@@ -639,9 +650,7 @@ async function expectBlockedUnsafeWorkerEndpoint(endpoint, expectedReasonMarker)
   const reportPath = path.join(tempDir, 'live-sync-release-drill.json')
 
   try {
-    const result = spawnSync(process.execPath, ['scripts/live-sync-release-drill.mjs'], {
-      cwd: process.cwd(),
-      encoding: 'utf8',
+    const result = await runDrillFixture(['scripts/live-sync-release-drill.mjs'], {
       env: {
         ...process.env,
         ZEROCHAT_LIVE_SYNC_MODE: 'cloudflare',
@@ -675,9 +684,7 @@ async function expectBlockedUnsafeGistFile(fileName, expectedReasonMarker) {
   const reportPath = path.join(tempDir, 'live-sync-release-drill.json')
 
   try {
-    const result = spawnSync(process.execPath, ['scripts/live-sync-release-drill.mjs'], {
-      cwd: process.cwd(),
-      encoding: 'utf8',
+    const result = await runDrillFixture(['scripts/live-sync-release-drill.mjs'], {
       env: {
         ...process.env,
         ZEROCHAT_LIVE_SYNC_MODE: 'gist',
@@ -712,9 +719,7 @@ async function expectBlockedUnsafeGistId(gistId, expectedReasonMarker) {
   const reportPath = path.join(tempDir, 'live-sync-release-drill.json')
 
   try {
-    const result = spawnSync(process.execPath, ['scripts/live-sync-release-drill.mjs'], {
-      cwd: process.cwd(),
-      encoding: 'utf8',
+    const result = await runDrillFixture(['scripts/live-sync-release-drill.mjs'], {
       env: {
         ...process.env,
         ZEROCHAT_LIVE_SYNC_MODE: 'gist',
@@ -977,8 +982,10 @@ expect(
     has(drill, 'assertGistFileCleared') &&
     has(drill, 'Cloudflare stale object') &&
     has(drill, 'deleteDisposableGist') &&
-    has(drill, 'DELETE'),
-  'Live sync drill must clear remote sync data, read back the cleared remote state, and clean up a disposable Gist it created.',
+    has(drill, 'DELETE') &&
+    has(drill, 'const deletedGist = await readGist(gistId, token)') &&
+    has(drill, "assert.equal(deletedGist, null, 'Disposable Gist should be absent after delete')"),
+  'Live sync drill must clear remote sync data, read back the cleared remote state, and verify deletion of a disposable Gist it created.',
 )
 expect(
   has(drill, 'async function bestEffortCleanupAfterFailure()') &&

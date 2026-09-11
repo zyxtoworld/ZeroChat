@@ -1,12 +1,12 @@
 use crate::{
     LinuxAppState,
-    background::{poll_background_result, spawn_ai_speech_request},
+    background::{BACKGROUND_TASK_DISCONNECTED, poll_background_result, spawn_ai_speech_request},
     i18n::{localize_ai_error, replace_placeholders, tr},
     set_window_content,
     ui_helpers::row_spacing,
 };
 use gtk::{gio, prelude::*};
-use std::mpsc;
+use std::sync::mpsc;
 
 pub(crate) fn attach_message_context_menu(
     bubble: &gtk::Box,
@@ -180,7 +180,7 @@ fn start_message_speech(
     message_id: String,
     notice: Option<gtk::Label>,
 ) {
-    let request = match state.prepare_message_speech_request(&message_id, locale) {
+    let request = match state.prepare_message_speech(&message_id, locale) {
         Ok(request) => request,
         Err(message) => {
             if let Some(notice) = &notice {
@@ -205,31 +205,37 @@ fn start_message_speech(
     let state_for_result = state;
     let message_id_for_result = message_id;
     let notice_for_result = notice;
-    poll_background_result(receiver, move |result| {
-        if !state_for_result.is_current_speech_request(&message_id_for_result, serial) {
-            return;
-        }
+    poll_background_result(
+        receiver,
+        move |result| {
+            if !state_for_result.is_current_speech_request(&message_id_for_result, serial) {
+                return;
+            }
 
-        match result {
-            Ok(bytes) => {
-                if let Err(message) =
-                    state_for_result.play_speech_audio(message_id_for_result.clone(), serial, bytes)
-                {
+            match result {
+                Ok(bytes) => {
+                    if let Err(message) = state_for_result.play_speech_audio(
+                        message_id_for_result.clone(),
+                        serial,
+                        bytes,
+                    ) {
+                        state_for_result.stop_speaking_message();
+                        if let Some(notice) = &notice_for_result {
+                            set_audio_speech_failed_notice(notice, &locale_for_result, &message);
+                        }
+                    }
+                }
+                Err(message) => {
                     state_for_result.stop_speaking_message();
                     if let Some(notice) = &notice_for_result {
+                        let message = localize_ai_error(&locale_for_result, &message);
                         set_audio_speech_failed_notice(notice, &locale_for_result, &message);
                     }
                 }
             }
-            Err(message) => {
-                state_for_result.stop_speaking_message();
-                if let Some(notice) = &notice_for_result {
-                    let message = localize_ai_error(&locale_for_result, &message);
-                    set_audio_speech_failed_notice(notice, &locale_for_result, &message);
-                }
-            }
-        }
-    });
+        },
+        || Err(BACKGROUND_TASK_DISCONNECTED.to_owned()),
+    );
 }
 
 fn set_notice_info(notice: &gtk::Label, message: &str) {

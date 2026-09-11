@@ -635,6 +635,27 @@ describe('provider request construction', () => {
             createdAt: 1,
           },
           {
+            id: 'encoded-loopback',
+            kind: 'image',
+            mimeType: 'image/png',
+            url: 'https://0x7f000001/image.png',
+            createdAt: 1,
+          },
+          {
+            id: 'mapped-loopback',
+            kind: 'image',
+            mimeType: 'image/png',
+            url: 'https://[::ffff:127.0.0.1]/image.png',
+            createdAt: 1,
+          },
+          {
+            id: 'control-url',
+            kind: 'image',
+            mimeType: 'image/png',
+            url: '\nhttps://cdn.example/image.png',
+            createdAt: 1,
+          },
+          {
             id: 'runtime-blob',
             kind: 'image',
             mimeType: 'image/png',
@@ -667,6 +688,9 @@ describe('provider request construction', () => {
       expect(payload).not.toContain('image/svg+xml')
       expect(payload).not.toContain('user:secret')
       expect(payload).not.toContain('127.0.0.1')
+      expect(payload).not.toContain('0x7f000001')
+      expect(payload).not.toContain('::ffff:127.0.0.1')
+      expect(payload).not.toContain('cdn.example/image.png')
       expect(payload).not.toContain('blob:zerochat-image')
     }
 

@@ -12,6 +12,7 @@ import {
 } from './browser-cdp.mjs'
 import {
   removeBrowserProfileWithRetry,
+  settleBrowserRuntimeCleanup,
   stopChildProcessTree,
 } from './browser-runtime-cleanup.mjs'
 
@@ -194,10 +195,12 @@ try {
       'about:blank',
     ],
     {
+      detached: process.platform !== 'win32',
       stdio: 'ignore',
       windowsHide: true,
     },
   )
+  chrome.zerochatProcessGroupLeader = process.platform !== 'win32'
 
   await waitForCdpChrome(cdpPort, { childProcess: chrome })
 
@@ -336,7 +339,7 @@ try {
           url: location.href,
           readyState: document.readyState,
           bodyText: document.body?.innerText?.slice(0, 1000) ?? '',
-          renderedMessages: document.querySelectorAll('.message[data-message-id]').length,
+          renderedMessages: document.querySelectorAll('[data-message-id]').length,
           snapshot,
         })))
       }))()`,
@@ -403,7 +406,7 @@ try {
   await cdp.send('Page.navigate', { url: appUrl })
   await waitForLoad()
   await waitForCondition(
-    `Array.from(document.querySelectorAll('.message[data-message-id]'))
+    `Array.from(document.querySelectorAll('[data-message-id]'))
       .some((message) => (message.textContent || '').includes('Context turn 30'))`,
     'seeded chat context fixture',
   )
@@ -443,48 +446,65 @@ try {
     })()`,
   )
 
-  assert.equal(payloadState.count, CONTEXT_LIMIT + 2, JSON.stringify(payloadState))
-  assert.deepEqual(
-    payloadState.contents,
-    [
-      'Base system prompt must stay',
-      'Injected Skill prompt must stay',
-      'Context turn 26',
-      'Context turn 27',
-      'Context turn 28',
-      'Context turn 29',
-      'Context turn 30',
-      'Context window final prompt',
-    ],
+  // System and skill prompts are always preserved; the configured context
+  // window applies only to the paired non-system history.
+  const expectedContents = [
+    'Base system prompt must stay',
+    'Injected Skill prompt must stay',
+    'Context turn 27',
+    'Context turn 28',
+    'Context turn 29',
+    'Context turn 30',
+    'Context window final prompt',
+  ]
+
+  assert.equal(payloadState.count, expectedContents.length, JSON.stringify(payloadState))
+  assert.deepEqual(payloadState.contents, expectedContents, JSON.stringify(payloadState))
+  assert.ok(
+    !payloadState.contents.includes('Context turn 26'),
     JSON.stringify(payloadState),
   )
 
   await evaluate(
     `(() => {
-      document.querySelector('.sidebar-actions [data-settings-opener="true"]')?.click()
+      const opener =
+        document.querySelector('button[aria-label="设置"]') ??
+        document.querySelector('button[aria-label="Settings"]')
+      opener?.click()
       return true
     })()`,
   )
   await waitForCondition(
-    `document.querySelector('#settings-tab-models') !== null`,
+    `document.querySelector('.zc-settings-overlay #settings-tab-general') !== null`,
     'settings modal',
   )
-  await evaluate(`document.querySelector('#settings-tab-models')?.click()`)
+
+  await evaluate(`document.querySelector('#settings-tab-general')?.click()`)
   await waitForCondition(
-    `document.querySelector('[data-chat-context-setting="true"] input')?.value === '${CONTEXT_LIMIT}'`,
-    'chat context setting field',
+    `document.querySelector('.zc-settings-scroll select option[value="zh-CN"]') !== null`,
+    'settings general tab',
   )
-  const settingsState = await evaluate(
-    `(() => ({
-      fieldValue: document.querySelector('[data-chat-context-setting="true"] input')?.value ?? '',
-      note: document.querySelector('[data-chat-context-window-note="true"]')?.textContent?.trim() ?? '',
-    }))()`,
-  )
-  assert.equal(settingsState.fieldValue, String(CONTEXT_LIMIT))
-  assert.ok(
-    settingsState.note.includes(String(CONTEXT_LIMIT)),
-    `settings note should mention the active limit: ${JSON.stringify(settingsState)}`,
-  )
+  const settingsState = await evaluate(`(() => {
+    const field = document.querySelector(
+      '[data-chat-context-setting="true"] input[type="number"]',
+    )
+    if (!(field instanceof HTMLInputElement)) {
+      return { exists: false }
+    }
+    const descriptionId = field.getAttribute('aria-describedby') || ''
+    return {
+      exists: true,
+      fieldValue: Number(field.value),
+      min: Number(field.min),
+      max: Number(field.max),
+      description: document.getElementById(descriptionId)?.textContent?.trim() || '',
+    }
+  })()`)
+  assert.equal(settingsState.exists, true, JSON.stringify(settingsState))
+  assert.equal(settingsState.fieldValue, CONTEXT_LIMIT, JSON.stringify(settingsState))
+  assert.equal(settingsState.min, 4, JSON.stringify(settingsState))
+  assert.equal(settingsState.max, 200, JSON.stringify(settingsState))
+  assert.notEqual(settingsState.description, '', JSON.stringify(settingsState))
 
   for (const event of cdp.events) {
     if (event.method === 'Runtime.exceptionThrown') {
@@ -514,9 +534,21 @@ try {
   )
 } finally {
   cdp?.close()
-  await stopChildProcessTree(chrome)
-  await devServer?.close()
-  if (!(await removeBrowserProfileWithRetry(profileDir))) {
-    throw new Error(`Unable to remove temporary browser profile: ${profileDir}`)
+  const profileCleanup = {
+    removeProfile: async () => await removeBrowserProfileWithRetry(profileDir),
   }
+  await settleBrowserRuntimeCleanup({
+    child: chrome,
+    profilePath: profileDir,
+    stopProcessTree: async () => await stopChildProcessTree(chrome),
+    removeProfile: async () => {
+      const profileRemoved = await profileCleanup.removeProfile()
+      return {
+        profileRemoved,
+        exactProfileProcessesGone: profileRemoved,
+        profilePath: profileDir,
+      }
+    },
+    additionalCleanup: [() => devServer?.close()],
+  })
 }

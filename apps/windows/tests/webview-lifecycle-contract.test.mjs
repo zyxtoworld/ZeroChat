@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
-const [header, windowSource, textSource, secretSource, notificationSource] = await Promise.all([
+  const [header, windowSource, textSource, secretSource, notificationSource] = await Promise.all([
   readFile(new URL('../ZeroChat/MainWindow.xaml.h', import.meta.url), 'utf8'),
   readFile(new URL('../ZeroChat/MainWindow.xaml.cpp', import.meta.url), 'utf8'),
   readFile(new URL('../ZeroChat/MainWindowText.cpp', import.meta.url), 'utf8'),
@@ -64,6 +64,34 @@ test('invalidates prior WebView sessions before retry and fallback', () => {
     fallback.indexOf('InvalidateWebViewSession();') <
       fallback.indexOf('InitializeFallbackSurface();'),
   )
+  assert.match(
+    fallback,
+    /repairButton\.Content\(box_value\(Text\(L"button\.repairWebView"\)\)\);/,
+  )
+  assert.match(textSource, /name == L"button\.repairWebView"/)
+
+  const constructor = functionBody(
+    windowSource,
+    'MainWindow::MainWindow(hstring const& startupArguments)',
+    'MainWindow::~MainWindow()',
+  )
+  assert.match(constructor, /m_locale = ResolveLocale\(L"system"\);/)
+
+  const jumpList = functionBody(
+    windowSource,
+    'void MainWindow::ConfigureWindowsJumpList()',
+    'hstring MainWindow::WindowsStartupRouteHash() const',
+  )
+  for (const key of [
+    'shortcut.quickAsk',
+    'shortcut.quickAskDescription',
+    'shortcut.searchChats',
+    'shortcut.searchChatsDescription',
+    'shortcut.settingsDescription',
+  ]) {
+    assert.match(jumpList, new RegExp(`Text\\(L"${key}"\\)`))
+    assert.match(textSource, new RegExp(`name == L"${key}"`))
+  }
 })
 
 test('rejects callbacks that do not belong to the current WebView session', () => {
@@ -181,7 +209,7 @@ test('navigation failure recovery is localized and never exposes diagnostic valu
 test('drops Credential Locker responses after their WebView session is replaced', () => {
   const process = functionBody(
     secretSource,
-    'winrt::fire_and_forget MainWindow::ProcessSecretWebMessageAsync(',
+    'winrt::Windows::Foundation::IAsyncAction MainWindow::ProcessSecretWebMessageAsync(',
     '\n}',
   )
   assert.match(
@@ -196,5 +224,72 @@ test('drops Credential Locker responses after their WebView session is replaced'
   assert.match(
     notificationSource,
     /HandleWebMessage\([\s\S]*IsCurrentWebViewSession\(webViewSession\)[\s\S]*TryHandleSecretWebMessage\(json, webViewSession\)/,
+  )
+})
+
+test('contains WebView event failures inside the native callback boundary', () => {
+  const initialize = functionBody(
+    windowSource,
+    'bool MainWindow::TryInitializeWebViewShell()',
+    'void MainWindow::ShowWebViewInitializationFallback(',
+  )
+
+  assert.match(
+    windowSource,
+    /void InvokeWebViewCallbackSafely\(Callback&& callback, FailureCallback&& onFailure\) noexcept/,
+  )
+  assert.match(
+    initialize,
+    /CoreWebView2Initialized\([\s\S]*InvokeWebViewCallbackSafely\(/,
+  )
+  assert.match(
+    initialize,
+    /NewWindowRequested\([\s\S]*InvokeWebViewCallbackSafely\([\s\S]*args\.Handled\(true\)/,
+  )
+  assert.match(
+    initialize,
+    /WebMessageReceived\([\s\S]*InvokeWebViewCallbackSafely\(/,
+  )
+  assert.match(
+    initialize,
+    /NavigationCompleted\([\s\S]*InvokeWebViewCallbackSafely\(/,
+  )
+  assert.match(
+    initialize,
+    /NavigationStarting\([\s\S]*InvokeWebViewCallbackSafely\([\s\S]*args\.Cancel\(true\)/,
+  )
+})
+
+test('captures Credential Locker bridge failures in a non-terminating async action', () => {
+  assert.match(
+    header,
+    /winrt::Windows::Foundation::IAsyncAction ProcessSecretWebMessageAsync\(/,
+  )
+  assert.match(
+    secretSource,
+    /winrt::Windows::Foundation::IAsyncAction MainWindow::ProcessSecretWebMessageAsync\(/,
+  )
+  assert.doesNotMatch(
+    secretSource,
+    /winrt::fire_and_forget MainWindow::ProcessSecretWebMessageAsync\(/,
+  )
+})
+
+test('contains DispatcherQueue acquisition inside the secret bridge async boundary', () => {
+  const process = functionBody(
+    secretSource,
+    'winrt::Windows::Foundation::IAsyncAction MainWindow::ProcessSecretWebMessageAsync(',
+    '\n}',
+  )
+  const firstTry = process.search(/try\s*\{/)
+  const dispatcherAssignment = process.indexOf(
+    'dispatcherQueue = DispatcherQueue();',
+  )
+
+  assert.ok(firstTry >= 0)
+  assert.ok(dispatcherAssignment > firstTry)
+  assert.doesNotMatch(
+    process.slice(0, firstTry),
+    /DispatcherQueue\(\)/,
   )
 })

@@ -12,6 +12,7 @@ import {
 } from './browser-cdp.mjs'
 import {
   removeBrowserProfileWithRetry,
+  settleBrowserRuntimeCleanup,
   stopChildProcessTree,
 } from './browser-runtime-cleanup.mjs'
 
@@ -195,10 +196,12 @@ try {
       'about:blank',
     ],
     {
+      detached: process.platform !== 'win32',
       stdio: 'ignore',
       windowsHide: true,
     },
   )
+  chrome.zerochatProcessGroupLeader = process.platform !== 'win32'
 
   await waitForCdpChrome(cdpPort, { childProcess: chrome })
 
@@ -221,6 +224,9 @@ try {
         constructed: 0,
         disconnected: 0,
         observed: 0,
+        observedBorderBoxes: 0,
+        observedMessageLists: 0,
+        observedMessageRows: 0,
       }
       globalThis.__zeroChatVirtualResizeObserverStats = stats
       globalThis.ResizeObserver = class ZeroChatQaResizeObserver extends NativeResizeObserver {
@@ -239,6 +245,9 @@ try {
 
         observe(target, options) {
           stats.observed += 1
+          if (options?.box === 'border-box') stats.observedBorderBoxes += 1
+          if (target.classList?.contains('message-list')) stats.observedMessageLists += 1
+          if (target.matches?.('[data-message-id]')) stats.observedMessageRows += 1
           return super.observe(target, options)
         }
       }
@@ -319,7 +328,7 @@ try {
           url: location.href,
           readyState: document.readyState,
           bodyText: document.body?.innerText?.slice(0, 1000) ?? '',
-          renderedMessages: document.querySelectorAll('.message[data-message-id]').length,
+          renderedMessages: document.querySelectorAll('[data-message-id]').length,
           snapshot,
         })))
       }))()`,
@@ -388,18 +397,18 @@ try {
   await cdp.send('Page.navigate', { url: appUrl })
   await waitForLoad()
   await waitForCondition(
-    `document.querySelectorAll('.message[data-message-id]').length > 0`,
+    `document.querySelectorAll('[data-message-id]').length > 0`,
     'seeded virtualized messages',
   )
   await waitForCondition(
-    `Array.from(document.querySelectorAll('.message[data-message-id]'))
+    `Array.from(document.querySelectorAll('[data-message-id]'))
       .some((message) => (message.textContent || '').includes('Virtualized message 72'))`,
     'latest virtualized message',
   )
 
   const stateExpression = `(() => {
     const list = document.querySelector('.message-list')
-    const messages = Array.from(document.querySelectorAll('.message[data-message-id]'))
+    const messages = Array.from(document.querySelectorAll('[data-message-id]'))
     const topSpacer = document.querySelector('[data-message-virtual-spacer="top"]')
     const bottomSpacer = document.querySelector('[data-message-virtual-spacer="bottom"]')
     const text = (message) => (message?.textContent || '').replace(/\\s+/g, ' ').trim()
@@ -510,7 +519,7 @@ try {
     return true
   })()`)
   await waitForCondition(
-    `Array.from(document.querySelectorAll('.message[data-message-id]'))
+    `Array.from(document.querySelectorAll('[data-message-id]'))
       .some((message) => (message.textContent || '').includes('Virtualized message 01'))`,
     'first virtualized message after scrolling to top',
   )
@@ -538,7 +547,7 @@ try {
       return true
     })()`)
     await waitForCondition(
-      `Array.from(document.querySelectorAll('.message[data-message-id]'))
+      `Array.from(document.querySelectorAll('[data-message-id]'))
         .some((message) => (message.textContent || '').includes('Virtualized message 72'))`,
       `latest message during geometry convergence cycle ${cycle}`,
     )
@@ -595,8 +604,11 @@ try {
     `dynamic message row should grow before observer measurement: ${JSON.stringify(resizedMessageHeight)}`,
   )
   await waitForCondition(
-    `globalThis.__zeroChatVirtualResizeObserverStats.callbacks > ${JSON.stringify(resizeObserverStatsBefore.callbacks)}`,
-    'ResizeObserver callback after dynamic row resize',
+    `(() => {
+      const stats = globalThis.__zeroChatVirtualResizeObserverStats
+      return stats.callbacks > ${JSON.stringify(resizeObserverStatsBefore.callbacks)}
+    })()`,
+    'virtual row measurement after dynamic row resize',
   )
   await waitForVirtualStateStability('resized top virtual window')
 
@@ -607,7 +619,7 @@ try {
     return true
   })()`)
   await waitForCondition(
-    `Array.from(document.querySelectorAll('.message[data-message-id]'))
+    `Array.from(document.querySelectorAll('[data-message-id]'))
       .some((message) => (message.textContent || '').includes('Virtualized message 72'))`,
     'latest message after dynamic row resize',
   )
@@ -624,9 +636,11 @@ try {
     `({ ...globalThis.__zeroChatVirtualResizeObserverStats })`,
   )
   assert.ok(
-    resizeObserverStatsAfter.constructed > 0 &&
-      resizeObserverStatsAfter.observed > 1 &&
-      resizeObserverStatsAfter.callbacks > resizeObserverStatsBefore.callbacks,
+    resizeObserverStatsAfter.callbacks > resizeObserverStatsBefore.callbacks &&
+      resizeObserverStatsAfter.constructed > 0 &&
+      resizeObserverStatsAfter.observedMessageLists > 0 &&
+      resizeObserverStatsAfter.observedMessageRows > 0 &&
+      resizeObserverStatsAfter.observedBorderBoxes === resizeObserverStatsAfter.observed,
     `dynamic message resize should reach the installed observer: ${JSON.stringify({
       resizeObserverStatsBefore,
       resizeObserverStatsAfter,
@@ -691,9 +705,21 @@ try {
   )
 } finally {
   cdp?.close()
-  await stopChildProcessTree(chrome)
-  await devServer?.close()
-  if (!(await removeBrowserProfileWithRetry(profileDir))) {
-    throw new Error(`Unable to remove temporary browser profile: ${profileDir}`)
+  const profileCleanup = {
+    removeProfile: async () => await removeBrowserProfileWithRetry(profileDir),
   }
+  await settleBrowserRuntimeCleanup({
+    child: chrome,
+    profilePath: profileDir,
+    stopProcessTree: async () => await stopChildProcessTree(chrome),
+    removeProfile: async () => {
+      const profileRemoved = await profileCleanup.removeProfile()
+      return {
+        profileRemoved,
+        exactProfileProcessesGone: profileRemoved,
+        profilePath: profileDir,
+      }
+    },
+    additionalCleanup: [() => devServer?.close()],
+  })
 }

@@ -1,10 +1,13 @@
 import Foundation
 import Testing
 
-@Test func appleSyncDefersSecretsUntilSnapshotDurabilityAndGenerationAcceptance() throws {
+@Test func appleCompletedSyncUsesEncryptedDurableRecoveryTransaction() throws {
     let source = try appleSource("App/AppleChatViewModel.swift")
     let network = try appleFunctionBody("private func syncIfConfigured(", in: source)
     let acceptance = try appleFunctionBody("private func applySyncedSnapshot(", in: source)
+    let completed = try appleFunctionBody("private func applyCompletedSyncedSnapshot(", in: source)
+    let ordinary = try appleFunctionBody("private func applyOrdinarySyncedSnapshot(", in: source)
+    let recovery = try appleFunctionBody("private func recoverPendingLocalDataTransition(", in: source)
     let manual = try appleFunctionBody("private func runManualCloudSync(", in: source)
 
     #expect(!network.contains("appleApplyProviderKeys("))
@@ -13,8 +16,66 @@ import Testing
     #expect(acceptance.contains("AppleSyncAcceptanceResult"))
     #expect(acceptance.contains("appleIsStaleSyncResult("))
     #expect(acceptance.contains("sourceRevision: sourceRevision"))
-    #expect(try appleAppearsBefore("try await store.save(accepted)", "try appleApplyProviderKeys(", in: acceptance))
-    #expect(try appleAppearsBefore("try appleApplyProviderKeys(", "snapshot = accepted", in: acceptance))
+    #expect(acceptance.contains("appleIsCompletedSyncStatus(syncStatus)"))
+    #expect(acceptance.contains("applyCompletedSyncedSnapshot("))
+    #expect(acceptance.contains("applyOrdinarySyncedSnapshot("))
+
+    #expect(completed.contains("try beginLocalSnapshotRecovery()"))
+    #expect(completed.contains("defer { recoveringLocalSnapshot = false }"))
+    #expect(completed.contains("await quiesceSnapshotPersistenceForRecovery()"))
+    #expect(completed.contains("let targetVault = SyncVault("))
+    #expect(completed.contains("try await crypto.makeRandomPassphrase()"))
+    #expect(completed.contains("try await crypto.encryptVault("))
+    #expect(completed.contains("kind: .syncCommit"))
+    #expect(completed.contains("encryptedBackup: encryptedTargetVault"))
+    #expect(completed.contains("try await stageLocalDataTransition("))
+    #expect(completed.contains("try await recoverPendingLocalDataTransition("))
+    #expect(try appleAppearsBefore(
+        "try beginLocalSnapshotRecovery()",
+        "await quiesceSnapshotPersistenceForRecovery()",
+        in: completed
+    ))
+    #expect(try appleAppearsBefore(
+        "await quiesceSnapshotPersistenceForRecovery()",
+        "guard !appleIsStaleSyncResult(",
+        in: completed
+    ))
+    #expect(try appleAppearsBefore(
+        "guard !appleIsStaleSyncResult(",
+        "try await crypto.encryptVault(",
+        in: completed
+    ))
+    #expect(try appleAppearsBefore(
+        "try await crypto.encryptVault(",
+        "try await stageLocalDataTransition(",
+        in: completed
+    ))
+    #expect(try appleAppearsBefore(
+        "try await stageLocalDataTransition(",
+        "try await recoverPendingLocalDataTransition(",
+        in: completed
+    ))
+    #expect(!completed.contains("try await store.save(accepted)"))
+    #expect(!completed.contains("try keychain.set(value, account: \"provider:"))
+
+    #expect(ordinary.contains("try await store.save(accepted)"))
+    #expect(ordinary.contains("snapshot = accepted"))
+    #expect(!ordinary.contains("appleApplyProviderKeyValues("))
+    #expect(recovery.contains("case .syncCommit:"))
+    #expect(recovery.contains("try await crypto.decryptVault("))
+    #expect(recovery.contains("targetVault.data.updatedAt == targetUpdatedAt"))
+    #expect(recovery.contains("target = targetVault.data"))
+    #expect(recovery.contains("recoveredProviderKeys.keys.sorted() == transition.providerIds"))
+    #expect(try appleAppearsBefore(
+        "try appleApplyProviderKeyValues(",
+        "try await recoverLocalSnapshot(target, interruptAutoSync: interruptAutoSync)",
+        in: recovery
+    ))
+    #expect(try appleAppearsBefore(
+        "try await recoverLocalSnapshot(target, interruptAutoSync: interruptAutoSync)",
+        "try await store.completeLocalDataTransition()",
+        in: recovery
+    ))
     #expect(try appleAppearsBefore("await applySyncedSnapshot(", "notifySyncCompleteIfNeeded", in: manual))
 }
 
@@ -79,21 +140,31 @@ import Testing
     #expect(importBackup.contains("try await stageLocalDataTransition("))
     #expect(importBackup.contains("try await recoverPendingLocalDataTransition("))
     #expect(try appleAppearsBefore(
+        "let imported = try await appleImportedBackup(",
+        "try beginLocalSnapshotRecovery(expectedEpoch: observedReplacementEpoch)",
+        in: importBackup
+    ))
+    #expect(try appleAppearsBefore(
+        "let imported = try await appleImportedBackup(",
+        "await quiesceSnapshotPersistenceForRecovery()",
+        in: importBackup
+    ))
+    #expect(try appleAppearsBefore(
         "try await stageLocalDataTransition(",
         "try await recoverPendingLocalDataTransition(",
         in: importBackup
     ))
     #expect(recovery.contains("localDataTransitionPassphrase("))
     #expect(recovery.contains("try appleApplyProviderKeyValues("))
-    #expect(recovery.contains("try await recoverLocalSnapshot(target)"))
+    #expect(recovery.contains("try await recoverLocalSnapshot(target, interruptAutoSync: interruptAutoSync)"))
     #expect(recovery.contains("try await store.completeLocalDataTransition()"))
     #expect(try appleAppearsBefore(
         "try appleApplyProviderKeyValues(",
-        "try await recoverLocalSnapshot(target)",
+        "try await recoverLocalSnapshot(target, interruptAutoSync: interruptAutoSync)",
         in: recovery
     ))
     #expect(try appleAppearsBefore(
-        "try await recoverLocalSnapshot(target)",
+        "try await recoverLocalSnapshot(target, interruptAutoSync: interruptAutoSync)",
         "try await store.completeLocalDataTransition()",
         in: recovery
     ))
@@ -126,21 +197,33 @@ import Testing
     ))
     #expect(recovery.contains("case .reset:"))
     #expect(recovery.contains("try clearSecrets()"))
-    #expect(recovery.contains("try await recoverLocalSnapshot(target)"))
-    #expect(try appleAppearsBefore("try clearSecrets()", "try await recoverLocalSnapshot(target)", in: recovery))
+    #expect(recovery.contains("try await recoverLocalSnapshot(target, interruptAutoSync: interruptAutoSync)"))
+    #expect(try appleAppearsBefore(
+        "try clearSecrets()",
+        "try await recoverLocalSnapshot(target, interruptAutoSync: interruptAutoSync)",
+        in: recovery
+    ))
 }
 
 @Test func appleBackupImportAndResetShareOneWholeTransactionRecoveryGate() throws {
     let source = try appleSource("App/AppleChatViewModel.swift")
-    let begin = try appleFunctionBody("private func beginLocalSnapshotRecovery()", in: source)
+    let begin = try appleFunctionBody("private func beginLocalSnapshotRecovery(", in: source)
     let importBackup = try appleFunctionBody("func importEncryptedBackup(", in: source)
     let reset = try appleFunctionBody("func resetLocalData()", in: source)
 
     #expect(source.contains("@Published private(set) var recoveringLocalSnapshot = false"))
     #expect(begin.contains("guard !recoveringLocalSnapshot"))
+    #expect(begin.contains("expectedEpoch != dataReplacementEpoch"))
+    #expect(begin.contains("dataReplacementEpoch &+= 1"))
     #expect(begin.contains("recoveringLocalSnapshot = true"))
+    #expect(importBackup.contains(
+        "let observedReplacementEpoch = dataReplacementEpoch"
+    ))
+    #expect(importBackup.contains(
+        "try beginLocalSnapshotRecovery(expectedEpoch: observedReplacementEpoch)"
+    ))
+    #expect(reset.contains("try beginLocalSnapshotRecovery()"))
     for operation in [importBackup, reset] {
-        #expect(operation.contains("try beginLocalSnapshotRecovery()"))
         #expect(operation.contains("defer { recoveringLocalSnapshot = false }"))
         #expect(operation.contains("await quiesceSnapshotPersistenceForRecovery()"))
     }
@@ -158,6 +241,77 @@ import Testing
     #expect(commit.contains("!recoveringLocalSnapshot"))
 }
 
+@Test func appleSyncCommitPreservesAutoSyncUntilRecoveryAndNotificationFinish() throws {
+    let source = try appleSource("App/AppleChatViewModel.swift")
+    let recovery = try appleFunctionBody("private func recoverPendingLocalDataTransition(", in: source)
+    let snapshotRecovery = try appleFunctionBody("private func recoverLocalSnapshot(", in: source)
+    let automatic = try appleFunctionBody("private func drainAutoSyncQueue(", in: source)
+
+    #expect(recovery.contains("let interruptAutoSync = transition.kind != .syncCommit"))
+    #expect(recovery.contains(
+        "try await recoverLocalSnapshot(target, interruptAutoSync: interruptAutoSync)"
+    ))
+    #expect(!recovery.contains("Task.checkCancellation()"))
+    #expect(!recovery.contains("Task.isCancelled"))
+    #expect(snapshotRecovery.contains("if interruptAutoSync"))
+    #expect(snapshotRecovery.contains("autoSyncTask?.cancel()"))
+    #expect(try appleAppearsBefore(
+        "if interruptAutoSync",
+        "autoSyncTask?.cancel()",
+        in: snapshotRecovery
+    ))
+    #expect(automatic.contains("case .accepted(let synced):"))
+    #expect(try appleAppearsBefore(
+        "switch await applySyncedSnapshot(",
+        "notifySyncCompleteIfNeeded(synced)",
+        in: automatic
+    ))
+    #expect(try appleAppearsBefore(
+        "notifySyncCompleteIfNeeded(synced)",
+        "autoSyncTask = nil",
+        in: automatic
+    ))
+    #expect(try appleAppearsBefore(
+        "autoSyncTask = nil",
+        "if let pending = pendingAutoSync",
+        in: automatic
+    ))
+}
+
+@Test func appleSyncCommitKeepsJournalUntilTargetIsDurableAndCleanupFailsClosed() throws {
+    let source = try appleSource("App/AppleChatViewModel.swift")
+    let completed = try appleFunctionBody("private func applyCompletedSyncedSnapshot(", in: source)
+    let recovery = try appleFunctionBody("private func recoverPendingLocalDataTransition(", in: source)
+    let load = try appleFunctionBody("func load()", in: source)
+
+    #expect(recovery.components(separatedBy: "store.completeLocalDataTransition()").count - 1 == 1)
+    #expect(!recovery.contains("discardLocalDataTransition()"))
+    #expect(try appleAppearsBefore(
+        "try appleApplyProviderKeyValues(",
+        "try await recoverLocalSnapshot(target, interruptAutoSync: interruptAutoSync)",
+        in: recovery
+    ))
+    #expect(try appleAppearsBefore(
+        "try await recoverLocalSnapshot(target, interruptAutoSync: interruptAutoSync)",
+        "try await store.completeLocalDataTransition()",
+        in: recovery
+    ))
+    #expect(try appleAppearsBefore(
+        "try await store.completeLocalDataTransition()",
+        "try keychain.clearLocalDataTransitionPassphrase(transitionId: transition.id)",
+        in: recovery
+    ))
+    #expect(try appleAppearsBefore(
+        "try await stageLocalDataTransition(",
+        "try await recoverPendingLocalDataTransition(",
+        in: completed
+    ))
+    #expect(completed.contains("snapshotLoadState = .failed"))
+    #expect(completed.contains("reportLocalSnapshotIssue(.snapshotLoadFailed, error: error)"))
+    #expect(load.contains("snapshotLoadState = .failed"))
+    #expect(load.contains("reportLocalSnapshotIssue(.snapshotLoadFailed, error: error)"))
+}
+
 @Test func appleStartupRecoversDurableLocalDataTransitionBeforeHydration() throws {
     let viewModel = try appleSource("App/AppleChatViewModel.swift")
     let keychain = try appleSource("Sources/ZeroChatCore/KeychainStore.swift")
@@ -170,6 +324,13 @@ import Testing
         "loadedStore.load()",
         in: load
     ))
+    #expect(load.contains("recoveringLocalSnapshot = true"))
+    #expect(load.contains("defer { recoveringLocalSnapshot = false }"))
+    #expect(try appleAppearsBefore(
+        "recoveringLocalSnapshot = true",
+        "recoverPendingLocalDataTransition(using: loadedStore)",
+        in: load
+    ))
     #expect(recovery.contains("sourceSnapshotFingerprint"))
     #expect(recovery.contains("currentFingerprint == sourceFingerprint || currentFingerprint == targetFingerprint"))
     #expect(keychain.contains("app.zerochat.client.local-data-transition"))
@@ -177,6 +338,61 @@ import Testing
     #expect(store.contains("snapshot.v1.local-data-transition.json"))
     #expect(store.contains("options: [.atomic]"))
     #expect(store.contains("maxLocalDataTransitionFileBytes"))
+}
+
+@Test func appleProviderRequestsGateRecoveryAndCaptureCredentialsBeforeTasks() throws {
+    let viewModel = try appleSource("App/AppleChatViewModel.swift")
+    let modelSettings = try appleSource("App/ModelSettingsView.swift")
+    let providerEditor = try appleSource("App/ProviderEditor.swift")
+    let send = try appleFunctionBody("func sendCurrentInput(conversationId:", in: viewModel)
+    let chat = try appleFunctionBody("private func sendChat(", in: viewModel)
+    let image = try appleFunctionBody("private func sendImagePrompt(", in: viewModel)
+    let speech = try appleFunctionBody("func speakMessage(", in: viewModel)
+    let modelFetch = try appleFunctionBody("private func startModelFetch(", in: modelSettings)
+    let connectivity = try appleFunctionBody("private func startConnectivityCheck()", in: providerEditor)
+
+    #expect(send.contains("guard localSnapshotIssue == nil, !recoveringLocalSnapshot else"))
+    for request in [chat, image, speech] {
+        #expect(request.contains("guard localSnapshotIssue == nil, !recoveringLocalSnapshot else"))
+        #expect(try appleAppearsBefore(
+            "guard localSnapshotIssue == nil, !recoveringLocalSnapshot else",
+            "let requestProvider = providerRequest(",
+            in: request
+        ))
+        #expect(try appleAppearsBefore(
+            "let requestProvider = providerRequest(",
+            "let apiKey = providerKey(",
+            in: request
+        ))
+        #expect(try appleAppearsBefore(
+            "let apiKey = providerKey(",
+            "let proxyToken = providerProxyToken(",
+            in: request
+        ))
+        #expect(try appleAppearsBefore("let proxyToken = providerProxyToken(", "Task {", in: request))
+
+        let taskStart = try #require(request.range(of: "Task {"))
+        let task = String(request[taskStart.lowerBound...])
+        #expect(!task.contains("providerKey("))
+        #expect(!task.contains("providerRequest("))
+        #expect(!task.contains("providerProxyToken("))
+    }
+
+    for settingsRequest in [modelFetch, connectivity] {
+        #expect(settingsRequest.contains(
+            "guard model.localSnapshotIssue == nil, !model.recoveringLocalSnapshot else"
+        ))
+        #expect(try appleAppearsBefore(
+            "guard model.localSnapshotIssue == nil, !model.recoveringLocalSnapshot else",
+            "let requestProvider = model.providerRequest(",
+            in: settingsRequest
+        ))
+        #expect(try appleAppearsBefore(
+            "let apiKey = model.providerKey(",
+            "Task {",
+            in: settingsRequest
+        ))
+    }
 }
 
 @Test func appleProviderDeletionCommitsKeychainAndSnapshotAsOneCompensatedTransaction() throws {

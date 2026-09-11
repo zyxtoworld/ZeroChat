@@ -49,11 +49,13 @@ export async function streamAssistantText({
   snapshot,
   streamChat = defaultStreamChat,
 }: StreamAssistantTextOptions): Promise<void> {
+  signal.throwIfAborted()
   const messages = await requestMessagesWithSkills({
     snapshot,
     messages: baseMessages,
     latestInput,
   })
+  signal.throwIfAborted()
 
   await streamChat({
     provider,

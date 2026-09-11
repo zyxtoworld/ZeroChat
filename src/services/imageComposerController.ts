@@ -20,7 +20,10 @@ import {
   namedPastedImageSource,
   transferHasFile,
 } from './imageAttachments'
-import { setDataTransferDropEffect } from './dragDropEffects'
+import {
+  installDragDropCancelListeners,
+  setDataTransferDropEffect,
+} from './dragDropEffects'
 
 export interface MaskKeyboardCursor {
   x: number
@@ -128,6 +131,10 @@ interface UseImageComposerControllerResult {
   imageSourceDragRejected: boolean
   imageSourceFile: File | null
   imageSourceUrl: string
+  isCurrentImagePreview: (
+    image: Pick<HTMLImageElement, 'currentSrc' | 'src'>,
+    renderedSourceUrl: string,
+  ) => boolean
   maskBrushSize: number
   maskCanvasRef: RefObject<HTMLCanvasElement | null>
   maskFileFromCanvas: () => Promise<File>
@@ -201,6 +208,29 @@ export function imageSourcePickerSelection(
 
 export function imageSourcePreviewUrl(file: File | null): string {
   return file ? URL.createObjectURL(file) : ''
+}
+
+export function imagePreviewBelongsToSource(
+  image: Pick<HTMLImageElement, 'currentSrc' | 'src'>,
+  sourceUrl: string,
+): boolean {
+  if (!sourceUrl) {
+    return false
+  }
+
+  return (image.currentSrc || image.src) === sourceUrl
+}
+
+export function imagePreviewBelongsToCurrentSource(
+  image: Pick<HTMLImageElement, 'currentSrc' | 'src'>,
+  renderedSourceUrl: string,
+  currentSourceUrl: string,
+): boolean {
+  return (
+    renderedSourceUrl.length > 0 &&
+    renderedSourceUrl === currentSourceUrl &&
+    imagePreviewBelongsToSource(image, renderedSourceUrl)
+  )
 }
 
 export function revokeImageSourcePreviewUrl(url: string): boolean {
@@ -282,6 +312,16 @@ export function useImageComposerController({
     [],
   )
 
+  const clearImageSourceDragState = useCallback(() => {
+    setImageSourceDragActive(false)
+    setImageSourceDragRejected(false)
+  }, [])
+
+  useEffect(
+    () => installDragDropCancelListeners(clearImageSourceDragState),
+    [clearImageSourceDragState],
+  )
+
   const resetMaskKeyboardCursor = useCallback(() => {
     maskKeyboardCursorRef.current = INITIAL_MASK_KEYBOARD_CURSOR
     setMaskKeyboardCursor(INITIAL_MASK_KEYBOARD_CURSOR)
@@ -323,6 +363,19 @@ export function useImageComposerController({
       resetMaskKeyboardCursor,
       resetMaskUndoStack,
     ],
+  )
+
+  const isCurrentImagePreview = useCallback(
+    (
+      image: Pick<HTMLImageElement, 'currentSrc' | 'src'>,
+      renderedSourceUrl: string,
+    ): boolean =>
+      imagePreviewBelongsToCurrentSource(
+        image,
+        renderedSourceUrl,
+        imageSourceUrlOwnerRef.current,
+      ),
+    [],
   )
 
   const pushMaskUndoSnapshot = useCallback(
@@ -724,6 +777,7 @@ export function useImageComposerController({
     imageSourceDragRejected: visibleImageSourceDragState.rejected,
     imageSourceFile,
     imageSourceUrl,
+    isCurrentImagePreview,
     maskBrushSize,
     maskCanvasRef,
     maskFileFromCanvas,

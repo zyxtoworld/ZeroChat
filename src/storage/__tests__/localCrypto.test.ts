@@ -245,6 +245,44 @@ describe('local crypto key installation', () => {
     expect(cryptoMock.encrypt.mock.calls[0]?.[1]).toBe(competingKey)
   })
 
+  it('rejects a blocked database open and closes a late success', async () => {
+    const candidateKey = { id: 'candidate' } as unknown as CryptoKey
+    const close = vi.fn()
+    const database = {
+      close,
+    } as unknown as IDBDatabase
+    const request = {
+      error: null,
+      result: database,
+      onblocked: null,
+      onerror: null,
+      onsuccess: null,
+      onupgradeneeded: null,
+    } as unknown as IDBOpenDBRequest
+    let resolveOpenStarted!: () => void
+    const openStarted = new Promise<void>((resolve) => {
+      resolveOpenStarted = resolve
+    })
+    const open = vi.fn(() => {
+      resolveOpenStarted()
+      return request
+    })
+    installCryptoMock(candidateKey)
+    vi.stubGlobal('indexedDB', { open } as unknown as IDBFactory)
+
+    const { encryptLocalString } = await import('../localCrypto')
+    const operation = encryptLocalString('app-data', 'value')
+
+    await openStarted
+    expect(open).toHaveBeenCalledOnce()
+    expect(request.onblocked).toEqual(expect.any(Function))
+    request.onblocked?.(new Event('blocked') as IDBVersionChangeEvent)
+    await expect(operation).rejects.toThrow('IndexedDB open blocked')
+
+    request.onsuccess?.(new Event('success'))
+    expect(close).toHaveBeenCalledOnce()
+  })
+
   it('installs the generated key only when the readwrite transaction is still empty', async () => {
     const candidateKey = { id: 'candidate' } as unknown as CryptoKey
     const indexedDbMock = createLocalCryptoIndexedDbMock([

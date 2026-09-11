@@ -1,6 +1,6 @@
 use crate::{
     LinuxAppState,
-    background::poll_background_result,
+    background::{BACKGROUND_TASK_DISCONNECTED, poll_background_result},
     i18n::{localize_sync_error, localize_sync_status, tr},
     models::SyncConfig,
     sync::FirstSyncStrategy,
@@ -181,26 +181,30 @@ fn run_manual_sync(locale: &str, state: LinuxAppState, status: gtk::Label, butto
     state.request_manual_sync(sender);
 
     let locale = locale.to_owned();
-    poll_background_result(receiver, move |result| {
-        button.set_sensitive(true);
+    poll_background_result(
+        receiver,
+        move |result| {
+            button.set_sensitive(true);
 
-        match result {
-            Ok(snapshot) => {
-                let message = snapshot
-                    .sync
-                    .last_sync_status
-                    .as_deref()
-                    .map(|value| localize_sync_status(&locale, value))
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or_else(|| tr(&locale, "sync.status.complete").to_owned());
-                state.adopt_committed_sync_snapshot(snapshot);
-                status.set_text(&message);
+            match result {
+                Ok(snapshot) => {
+                    let message = snapshot
+                        .sync
+                        .last_sync_status
+                        .as_deref()
+                        .map(|value| localize_sync_status(&locale, value))
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or_else(|| tr(&locale, "sync.status.complete").to_owned());
+                    state.adopt_committed_sync_snapshot(snapshot);
+                    status.set_text(&message);
+                }
+                Err(message) => {
+                    status.set_text(&localize_sync_error(&locale, &message));
+                }
             }
-            Err(message) => {
-                status.set_text(&localize_sync_error(&locale, &message));
-            }
-        }
-    });
+        },
+        || Err(BACKGROUND_TASK_DISCONNECTED.to_owned()),
+    );
 }
 
 fn run_first_sync_strategy(
@@ -219,26 +223,30 @@ fn run_first_sync_strategy(
     state.request_first_sync_strategy(first_sync_strategy, sender);
 
     let locale = locale.to_owned();
-    poll_background_result(receiver, move |result| {
-        for button in &buttons {
-            button.set_sensitive(true);
-        }
+    poll_background_result(
+        receiver,
+        move |result| {
+            for button in &buttons {
+                button.set_sensitive(true);
+            }
 
-        match result {
-            Ok(snapshot) => {
-                let message = snapshot
-                    .sync
-                    .last_sync_status
-                    .as_deref()
-                    .map(|value| localize_sync_status(&locale, value))
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or_else(|| tr(&locale, "sync.status.complete").to_owned());
-                state.adopt_committed_sync_snapshot(snapshot);
-                status.set_text(&message);
+            match result {
+                Ok(snapshot) => {
+                    let message = snapshot
+                        .sync
+                        .last_sync_status
+                        .as_deref()
+                        .map(|value| localize_sync_status(&locale, value))
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or_else(|| tr(&locale, "sync.status.complete").to_owned());
+                    state.adopt_committed_sync_snapshot(snapshot);
+                    status.set_text(&message);
+                }
+                Err(message) => {
+                    status.set_text(&localize_sync_error(&locale, &message));
+                }
             }
-            Err(message) => {
-                status.set_text(&localize_sync_error(&locale, &message));
-            }
-        }
-    });
+        },
+        || Err(BACKGROUND_TASK_DISCONNECTED.to_owned()),
+    );
 }

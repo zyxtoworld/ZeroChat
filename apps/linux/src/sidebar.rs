@@ -86,10 +86,8 @@ pub(crate) fn sidebar(
 
     let list = gtk::ListBox::new();
     list.add_css_class("boxed-list");
-    let snapshot = state.snapshot.borrow();
-    let active_id = snapshot.preferences.active_conversation_id.clone();
-    let conversations = snapshot.conversations.clone();
-    drop(snapshot);
+    let active_id = state.active_conversation_id();
+    let conversations = state.conversations();
 
     let rows = if conversations.is_empty() {
         vec![(
@@ -244,7 +242,7 @@ fn sync_status_button(
     content.set_margin_start(panel_spacing(compact));
     content.set_margin_end(panel_spacing(compact));
 
-    let sync_mode = state.snapshot.borrow().sync.mode.clone();
+    let sync_mode = state.sync_config().mode;
     let icon = gtk::Image::from_icon_name(sync_icon_name(&sync_mode));
     icon.add_css_class("dim-label");
     content.append(&icon);
@@ -289,7 +287,7 @@ fn sync_icon_name(mode: &str) -> &'static str {
 }
 
 fn cloud_sync_summary(locale: &str, state: &LinuxAppState) -> String {
-    let sync = state.snapshot.borrow().sync.clone();
+    let sync = state.sync_config();
     if sync.mode == "local" {
         return tr(locale, "sync.localSummary").to_owned();
     }

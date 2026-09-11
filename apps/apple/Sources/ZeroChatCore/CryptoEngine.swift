@@ -99,6 +99,10 @@ public actor CryptoEngine {
         encoder.outputFormatting = [.sortedKeys]
     }
 
+    public func makeRandomPassphrase() throws -> String {
+        try randomData(count: 32).base64EncodedString()
+    }
+
     public func encryptVault(
         _ vault: SyncVault,
         passphrase: String
@@ -314,9 +318,19 @@ public actor CryptoEngine {
     }
 
     private func randomData(count: Int) throws -> Data {
+        guard count >= 0 else {
+            throw SnapshotCryptoError.randomFailed
+        }
+        if count == 0 {
+            return Data()
+        }
+
         var data = Data(count: count)
-        let status = data.withUnsafeMutableBytes { buffer in
-            SecRandomCopyBytes(kSecRandomDefault, count, buffer.baseAddress!)
+        let status = data.withUnsafeMutableBytes { buffer -> OSStatus in
+            guard let baseAddress = buffer.baseAddress else {
+                return errSecParam
+            }
+            return SecRandomCopyBytes(kSecRandomDefault, count, baseAddress)
         }
         guard status == errSecSuccess else {
             throw SnapshotCryptoError.randomFailed

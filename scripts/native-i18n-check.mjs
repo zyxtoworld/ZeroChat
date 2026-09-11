@@ -416,6 +416,7 @@ const expectedNativeShellKeys = [
 const expectedWindowsShellKeys = [
   ...expectedNativeShellKeys,
   ...expectedNativeCapabilityKeys,
+  'button.repairWebView',
   'field.clientProvidesKey',
   'message.backupWebViewFallback',
   'message.skillsWebViewFallback',
@@ -433,6 +434,11 @@ const expectedWindowsShellKeys = [
   'settings.capabilityReadinessReady',
   'settings.interfaces',
   'settings.providerKeyToggleNote',
+  'shortcut.quickAsk',
+  'shortcut.quickAskDescription',
+  'shortcut.searchChats',
+  'shortcut.searchChatsDescription',
+  'shortcut.settingsDescription',
 ]
 const expectedLinuxShellKeys = [
   ...expectedNativeShellKeys,
@@ -642,7 +648,7 @@ function expectLinuxNoPlaceholderEnglish(source) {
 
 function expectLinuxTrCoverage(source) {
   const usedKeys = [
-    ...source.matchAll(/tr\([^,]+,\s*"([^"]+)"\)/g),
+    ...source.matchAll(/\btr\([^,]+,\s*"([^"]+)"\)/g),
   ].map((match) => match[1])
   const handledKeys = [
     ...source.matchAll(/"([^"]+)"\s*(?:if\s+\w+\s*)?=>/g),

@@ -260,6 +260,15 @@ internal suspend fun HttpResponse.readAiProviderHttpException(
     )
 }
 
+internal fun aiProviderEmptyResponseException(): AiProviderHttpException =
+    AiProviderHttpException(
+        status = 200,
+        providerDetail = "",
+        code = AiProviderErrorCode.Server,
+        retryable = true,
+        message = "Service unavailable",
+    )
+
 internal fun HttpResponse.discardAiProviderBody() {
     cancel(CancellationException("AI provider fallback selected"))
 }

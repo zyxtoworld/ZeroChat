@@ -150,6 +150,9 @@ struct ModelSettingsView: View {
     }
 
     private func startModelFetch(_ provider: ProviderConfig) {
+        guard model.localSnapshotIssue == nil, !model.recoveringLocalSnapshot else {
+            return
+        }
         if model.providerKeyMissing(provider) {
             model.settingsNotice = AppNotice(message: i18n.t("error.providerKeyRequired"), kind: .warning)
             return

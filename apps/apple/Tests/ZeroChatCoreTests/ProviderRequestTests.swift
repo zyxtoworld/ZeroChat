@@ -28,6 +28,37 @@ final class ProviderRequestTests: XCTestCase {
         }
     }
 
+    func testImageAttachmentBase64SizeAccountingEnforcesDecodedFileLimit() throws {
+        XCTAssertEqual(
+            imageAttachmentDecodedBase64ByteCount(encodedByteCount: 4, paddingCount: 2),
+            1
+        )
+        XCTAssertEqual(
+            imageAttachmentDecodedBase64ByteCount(encodedByteCount: 4, paddingCount: 1),
+            2
+        )
+        XCTAssertEqual(
+            imageAttachmentDecodedBase64ByteCount(encodedByteCount: 4, paddingCount: 0),
+            3
+        )
+
+        let encodedLimit = ((maxImageFileBytes + 2) / 3) * 4
+        XCTAssertEqual(
+            imageAttachmentDecodedBase64ByteCount(
+                encodedByteCount: encodedLimit,
+                paddingCount: 1
+            ),
+            maxImageFileBytes
+        )
+        XCTAssertEqual(
+            imageAttachmentDecodedBase64ByteCount(
+                encodedByteCount: encodedLimit,
+                paddingCount: 0
+            ),
+            maxImageFileBytes + 1
+        )
+    }
+
     func testGeneratedImageParserRejectsUnsafeProviderSources() throws {
         for value in [
             "intent://open/image",
@@ -371,6 +402,13 @@ final class ProviderRequestTests: XCTestCase {
         )
     }
 
+    func testChatModelPreferenceIgnoresDatedSnapshotTokens() throws {
+        XCTAssertEqual(
+            preferredChatModel(["gpt-5.5", "gpt-5-2025-08-07"]),
+            "gpt-5.5"
+        )
+    }
+
     func testFetchedModelRefreshUpdatesAdvancedCapabilityDefaultsAndPreservesExplicitSelection() throws {
         var configured = provider()
         configured.model = "gpt-5.4-mini"
@@ -447,6 +485,50 @@ final class ProviderRequestTests: XCTestCase {
         XCTAssertEqual(configured.embeddingModel, "text-embedding-3-large")
         XCTAssertEqual(configured.moderationModel, "omni-moderation-latest")
         XCTAssertEqual(configured.realtimeModel, "gpt-realtime-2")
+    }
+
+    func testOpaqueCatalogModelsRemainSelectableForDeclaredCapabilities() throws {
+        let catalog = ["vendor-chat-v4", "vendor-vector-v7", "vendor-vision-v2"]
+        var configured = provider()
+        configured.capabilities = [
+            "chat", "audio", "embeddings", "image-generation", "image-editing",
+            "moderation", "realtime", "model-list"
+        ]
+        configured.models = catalog
+        configured.imageModel = "vendor-vision-v2"
+        configured.audioSpeechModel = "vendor-voice-v1"
+        configured.audioTranscriptionModel = "vendor-listen-v1"
+        configured.embeddingModel = "vendor-vector-v7"
+        configured.moderationModel = "vendor-filter-v1"
+        configured.realtimeModel = "vendor-session-v1"
+        configured.models.append(contentsOf: [
+            "vendor-voice-v1",
+            "vendor-listen-v1",
+            "vendor-filter-v1",
+            "vendor-session-v1"
+        ])
+
+        XCTAssertEqual(modelsForProviderCapability(configured, capability: .embeddings), configured.models)
+        XCTAssertEqual(modelForProviderCapability(configured, capability: .embeddings), "vendor-vector-v7")
+        XCTAssertEqual(imageModelsForProvider(configured), configured.models)
+        XCTAssertEqual(modelForProviderCapability(configured, capability: .imageGeneration), "vendor-vision-v2")
+        XCTAssertEqual(modelForProviderAudioSpeech(configured), "vendor-voice-v1")
+        XCTAssertEqual(modelForProviderAudioTranscription(configured), "vendor-listen-v1")
+        XCTAssertEqual(modelForProviderCapability(configured, capability: .moderation), "vendor-filter-v1")
+        XCTAssertEqual(modelForProviderCapability(configured, capability: .realtime), "vendor-session-v1")
+
+        configured.embeddingModel = ""
+        configured.imageModel = ""
+        configured.audioSpeechModel = ""
+        configured.audioTranscriptionModel = ""
+        configured.moderationModel = ""
+        configured.realtimeModel = ""
+        XCTAssertEqual(modelForProviderCapability(configured, capability: .embeddings), "")
+        XCTAssertEqual(modelForProviderCapability(configured, capability: .imageGeneration), "")
+        XCTAssertEqual(modelForProviderAudioSpeech(configured), "")
+        XCTAssertEqual(modelForProviderAudioTranscription(configured), "")
+        XCTAssertEqual(modelForProviderCapability(configured, capability: .moderation), "")
+        XCTAssertEqual(modelForProviderCapability(configured, capability: .realtime), "")
     }
 
     func testAudioModelResolversRejectStaleConfiguredModels() throws {

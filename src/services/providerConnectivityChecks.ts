@@ -1,4 +1,4 @@
-import type { NoticeTarget } from '../components/Notice'
+import type { NoticeTarget } from './noticeTypes'
 import type { Translator } from '../i18n'
 import type {
   AppData,
@@ -162,6 +162,16 @@ function assertProviderCheckRunCurrent(controller: AbortController): void {
   }
 }
 
+function providerCheckRunIsStale(
+  controller: AbortController,
+  error: unknown,
+): boolean {
+  return (
+    error === staleProviderCheckRun ||
+    activeProviderCheckController !== controller
+  )
+}
+
 function claimProviderCheckRun(): AbortController {
   const controller = new AbortController()
   activeProviderCheckController = controller
@@ -288,6 +298,7 @@ async function prepareProviderProxyHostsForCheck(
   context: ProviderConnectivityCheckContext,
   services: ProviderConnectivityCheckServices,
   proxyToken: string,
+  signal: AbortSignal,
 ): Promise<void> {
   const groups = managedProxyHostGroupsForRequest(
     context.dataRef.current,
@@ -299,7 +310,7 @@ async function prepareProviderProxyHostsForCheck(
     return
   }
 
-  await services.replaceManagedProxyHosts(groups, [])
+  await services.replaceManagedProxyHosts(groups, [], { signal })
 }
 
 async function runChatConnectivityProbe({
@@ -360,12 +371,28 @@ function shouldProbeNextConnectivityModel(error: unknown): boolean {
   )
 }
 
+function explicitProviderConnectivityModel(provider: ProviderConfig): string {
+  const configuredModel = provider.model.trim()
+  const previousModels = uniqueModels(provider.models ?? [])
+
+  if (!configuredModel) {
+    return ''
+  }
+
+  return previousModels.includes(configuredModel) ? '' : configuredModel
+}
+
 function providerConnectivityProbeCandidates(
   provider: ProviderConfig,
+  explicitModel = '',
 ): string[] {
   const chatModels = chatModelsForProvider(provider)
   const preferredModel = preferredChatModel(chatModels)
   const candidates = new Set<string>()
+
+  if (explicitModel && chatModels.includes(explicitModel)) {
+    candidates.add(explicitModel)
+  }
 
   if (preferredModel) {
     candidates.add(preferredModel)
@@ -490,12 +517,14 @@ export function createProviderConnectivityCheckActions(
         context,
         services,
         proxyToken,
+        controller.signal,
       )
       assertProviderCheckRunCurrent(controller)
       failureContext = {
         endpointPath: providerModelListConnectivityEndpointPath(),
       }
-      let uniqueFetchedModels: string[] | null = null
+      let connectivityModels: string[] | null = null
+      const explicitProbeModel = explicitProviderConnectivityModel(requestProvider)
       let modelListFailureMessage = ''
       let probeProvider = requestProvider
 
@@ -507,12 +536,17 @@ export function createProviderConnectivityCheckActions(
           signal: controller.signal,
         })
         assertProviderCheckRunCurrent(controller)
-        uniqueFetchedModels = uniqueModels(models)
+        const fetchedModels = uniqueModels(models)
+        const explicitModelMissingFromCatalog =
+          explicitProbeModel && !fetchedModels.includes(explicitProbeModel)
+        connectivityModels = explicitModelMissingFromCatalog
+          ? uniqueModels([explicitProbeModel, ...fetchedModels])
+          : fetchedModels
         probeProvider = {
           ...requestProvider,
           ...providerModelPatchFromFetchedModels(
             requestProvider,
-            uniqueFetchedModels,
+            connectivityModels,
           ),
         }
       } catch (modelListError: unknown) {
@@ -533,7 +567,10 @@ export function createProviderConnectivityCheckActions(
         }
       }
 
-      const probeModels = providerConnectivityProbeCandidates(probeProvider)
+      const probeModels = providerConnectivityProbeCandidates(
+        probeProvider,
+        explicitProbeModel,
+      )
       failureContext = null
 
       if (probeModels.length === 0) {
@@ -578,9 +615,9 @@ export function createProviderConnectivityCheckActions(
         throw probeError ?? new Error(context.t('error.providerConnectivityEmptyReply'))
       }
 
-      if (uniqueFetchedModels) {
+      if (connectivityModels) {
         assertProviderCheckRunCurrent(controller)
-        context.setProviderModels(providerId, uniqueFetchedModels, probeModel)
+        context.setProviderModels(providerId, connectivityModels, probeModel)
       } else {
         context.setProviderModels(
           providerId,
@@ -591,16 +628,16 @@ export function createProviderConnectivityCheckActions(
 
       const result: ProviderConnectivityResult = {
         field: 'none',
-        message: uniqueFetchedModels
+        message: connectivityModels
           ? context.t('notice.providerConnectivityPassed', {
-              count: uniqueFetchedModels.length,
+              count: connectivityModels.length,
               model: probeModel,
             })
           : context.t('notice.providerConnectivityPassedWithConfiguredModel', {
               message: modelListFailureMessage,
               model: probeModel,
             }),
-        ...(uniqueFetchedModels ? { models: uniqueFetchedModels } : {}),
+        ...(connectivityModels ? { models: connectivityModels } : {}),
         retryable: false,
         tone: 'success',
       }
@@ -611,19 +648,20 @@ export function createProviderConnectivityCheckActions(
       }))
       return result
     } catch (error: unknown) {
-      if (error === staleProviderCheckRun) {
+      if (providerCheckRunIsStale(controller, error)) {
         return null
       }
+      const message = context.t('notice.providerConnectivityFailed', {
+        message: providerConnectivityFailureNoticeMessage({
+          error,
+          failureContext,
+          formatErrorMessage: context.formatErrorMessage,
+          t: context.t,
+        }),
+      })
       const result: ProviderConnectivityResult = {
         field: providerConnectivityErrorField(requestProvider, error),
-        message: context.t('notice.providerConnectivityFailed', {
-          message: providerConnectivityFailureNoticeMessage({
-            error,
-            failureContext,
-            formatErrorMessage: context.formatErrorMessage,
-            t: context.t,
-          }),
-        }),
+        message,
         retryable: providerErrorRetryable(error) !== false,
         tone: 'error',
       }
@@ -632,6 +670,7 @@ export function createProviderConnectivityCheckActions(
         ...current,
         [providerId]: result,
       }))
+      reportProviderConnectivityNotice(context, () => message, 'error', 'providers')
       return result
     } finally {
       if (activeProviderCheckController === controller) {
@@ -715,10 +754,11 @@ export function createProviderConnectivityCheckActions(
           context,
           services,
           proxyToken,
+          controller.signal,
         )
         assertProviderCheckRunCurrent(controller)
       } catch (error: unknown) {
-        if (error === staleProviderCheckRun) {
+        if (providerCheckRunIsStale(controller, error)) {
           throw error
         }
         const capabilityModel =
@@ -857,11 +897,12 @@ export function createProviderConnectivityCheckActions(
         context,
         services,
         proxyToken,
+        controller.signal,
       )
       assertProviderCheckRunCurrent(controller)
     } catch (error: unknown) {
       assertProviderCheckRunCurrent(controller)
-      if (error === staleProviderCheckRun) {
+      if (providerCheckRunIsStale(controller, error)) {
         throw error
       }
       return {
@@ -912,7 +953,7 @@ export function createProviderConnectivityCheckActions(
       }
     } catch (error: unknown) {
       assertProviderCheckRunCurrent(controller)
-      if (error === staleProviderCheckRun) {
+      if (providerCheckRunIsStale(controller, error)) {
         throw error
       }
       const endpointPath = providerCapabilityRequestEndpointPath(plan.kind)
@@ -987,7 +1028,7 @@ export function createProviderConnectivityCheckActions(
       }
     } catch (error: unknown) {
       assertProviderCheckRunCurrent(controller)
-      if (error === staleProviderCheckRun) {
+      if (providerCheckRunIsStale(controller, error)) {
         throw error
       }
       return {
@@ -1081,14 +1122,6 @@ export function createProviderConnectivityCheckActions(
     )
   }
 
-  function providerCapabilityRunSummary(
-    result: ProviderCapabilityRunResult,
-  ): string {
-    return `${providerCapabilityCheckLabel(result.capability, context.t)}: ${
-      result.message
-    }`
-  }
-
   function providerFullCapabilityFailureField(
     provider: ProviderConfig,
     failures: ProviderCapabilityRunResult[],
@@ -1180,7 +1213,7 @@ export function createProviderConnectivityCheckActions(
         showProviderCapabilityRunResult(result)
       }
     } catch (error: unknown) {
-      if (error !== staleProviderCheckRun) {
+      if (!providerCheckRunIsStale(controller, error)) {
         throw error
       }
     } finally {
@@ -1291,7 +1324,7 @@ export function createProviderConnectivityCheckActions(
         results.push(result)
       }
     } catch (error: unknown) {
-      if (error === staleProviderCheckRun) {
+      if (providerCheckRunIsStale(controller, error)) {
         return
       }
       throw error
@@ -1307,7 +1340,6 @@ export function createProviderConnectivityCheckActions(
 
     if (failures.length) {
       const message = context.t('notice.providerFullCapabilityCheckFailed', {
-        details: failures.map(providerCapabilityRunSummary).join(' · '),
         failed: failures.length,
         total: results.length,
       })
@@ -1422,6 +1454,7 @@ export function createProviderConnectivityCheckActions(
         context,
         services,
         proxyToken,
+        controller.signal,
       )
       assertProviderCheckRunCurrent(controller)
 
@@ -1480,7 +1513,7 @@ export function createProviderConnectivityCheckActions(
         modelNoticeTarget(kind),
       )
     } catch (error: unknown) {
-      if (error === staleProviderCheckRun) {
+      if (providerCheckRunIsStale(controller, error)) {
         return
       }
       reportProviderConnectivityNotice(
@@ -1552,6 +1585,7 @@ export function createProviderConnectivityCheckActions(
         context,
         services,
         proxyToken,
+        controller.signal,
       )
       assertProviderCheckRunCurrent(controller)
       const models = await services.listProviderModels({
@@ -1582,7 +1616,7 @@ export function createProviderConnectivityCheckActions(
         noticeTarget,
       )
     } catch (error: unknown) {
-      if (error === staleProviderCheckRun) {
+      if (providerCheckRunIsStale(controller, error)) {
         return
       }
       reportProviderConnectivityNotice(

@@ -3,51 +3,46 @@ import type {
   ProviderConfig,
   ProviderPreset,
 } from '../types'
+import { createRuntimeId } from '../services/runtimeId'
+import {
+  ANTHROPIC_CAPABILITIES,
+  OPENAI_COMPATIBLE_CAPABILITIES,
+  OPENAI_FULL_CAPABILITIES,
+  OPENAI_RESPONSES_CAPABILITIES,
+  uniquePresetModels,
+} from '../services/providerStaticDefaults'
 
-export const OPENAI_FULL_CAPABILITIES: ProviderCapability[] = [
-  'chat',
-  'vision',
-  'tools',
-  'image-generation',
-  'image-editing',
-  'audio',
-  'realtime',
-  'embeddings',
-  'moderation',
-  'model-list',
-]
+export {
+  ANTHROPIC_CAPABILITIES,
+  OPENAI_COMPATIBLE_CAPABILITIES,
+  OPENAI_DEFAULT_AUDIO_SPEECH_MODEL,
+  OPENAI_DEFAULT_AUDIO_TRANSCRIPTION_MODEL,
+  OPENAI_DEFAULT_CHAT_MODEL,
+  OPENAI_DEFAULT_EMBEDDING_MODEL,
+  OPENAI_DEFAULT_IMAGE_MODEL,
+  OPENAI_DEFAULT_MODERATION_MODEL,
+  OPENAI_DEFAULT_REALTIME_MODEL,
+  OPENAI_FULL_CAPABILITIES,
+  OPENAI_RESPONSES_CAPABILITIES,
+  uniquePresetModels,
+} from '../services/providerStaticDefaults'
 
-export const OPENAI_DEFAULT_CHAT_MODEL = 'gpt-5.5'
-export const OPENAI_DEFAULT_IMAGE_MODEL = 'gpt-image-2'
-export const OPENAI_DEFAULT_AUDIO_SPEECH_MODEL = 'gpt-4o-mini-tts'
-export const OPENAI_DEFAULT_AUDIO_TRANSCRIPTION_MODEL = 'gpt-4o-transcribe'
-export const OPENAI_DEFAULT_EMBEDDING_MODEL = 'text-embedding-3-large'
-export const OPENAI_DEFAULT_MODERATION_MODEL = 'omni-moderation-latest'
-export const OPENAI_DEFAULT_REALTIME_MODEL = 'gpt-realtime-2'
-
-export const OPENAI_RESPONSES_CAPABILITIES: ProviderCapability[] = [
-  'chat',
-  'vision',
-  'tools',
-  'image-generation',
-  'image-editing',
-  'model-list',
-]
-
-export const OPENAI_COMPATIBLE_CAPABILITIES: ProviderCapability[] = [
-  'chat',
-  'vision',
-  'tools',
-  'embeddings',
-  'model-list',
-]
-
-export const ANTHROPIC_CAPABILITIES: ProviderCapability[] = [
-  'chat',
-  'vision',
-  'tools',
-  'model-list',
-]
+const DEFAULT_OPENAI_PRESET: ProviderPreset = {
+  id: 'openai',
+  name: 'OpenAI',
+  kind: 'openai-responses',
+  baseUrl: 'https://api.openai.com/v1',
+  model: 'gpt-5.5',
+  imageModel: 'gpt-image-2',
+  audioSpeechModel: 'gpt-4o-mini-tts',
+  audioTranscriptionModel: 'gpt-4o-transcribe',
+  embeddingModel: 'text-embedding-3-large',
+  moderationModel: 'omni-moderation-latest',
+  realtimeModel: 'gpt-realtime-2',
+  apiKeyUrl: 'https://platform.openai.com/api-keys',
+  needsApiKey: true,
+  capabilities: OPENAI_FULL_CAPABILITIES,
+}
 
 export function presetCapabilities(preset: ProviderPreset): ProviderCapability[] {
   if (preset.capabilities?.length) {
@@ -66,22 +61,7 @@ export function presetCapabilities(preset: ProviderPreset): ProviderCapability[]
 }
 
 export const providerPresets: ProviderPreset[] = [
-  {
-    id: 'openai',
-    name: 'OpenAI',
-    kind: 'openai-responses',
-    baseUrl: 'https://api.openai.com/v1',
-    model: OPENAI_DEFAULT_CHAT_MODEL,
-    imageModel: OPENAI_DEFAULT_IMAGE_MODEL,
-    audioSpeechModel: OPENAI_DEFAULT_AUDIO_SPEECH_MODEL,
-    audioTranscriptionModel: OPENAI_DEFAULT_AUDIO_TRANSCRIPTION_MODEL,
-    embeddingModel: OPENAI_DEFAULT_EMBEDDING_MODEL,
-    moderationModel: OPENAI_DEFAULT_MODERATION_MODEL,
-    realtimeModel: OPENAI_DEFAULT_REALTIME_MODEL,
-    apiKeyUrl: 'https://platform.openai.com/api-keys',
-    needsApiKey: true,
-    capabilities: OPENAI_FULL_CAPABILITIES,
-  },
+  DEFAULT_OPENAI_PRESET,
   {
     id: 'anthropic',
     name: 'Anthropic',
@@ -327,7 +307,7 @@ export function providerFromPreset(preset: ProviderPreset): ProviderConfig {
   ])
 
   return {
-    id: crypto.randomUUID(),
+    id: createRuntimeId('provider'),
     name: preset.name,
     kind: preset.kind,
     baseUrl: preset.baseUrl,
@@ -346,18 +326,4 @@ export function providerFromPreset(preset: ProviderPreset): ProviderConfig {
     createdAt: now,
     updatedAt: now,
   }
-}
-
-export function uniquePresetModels(values: string[]): string[] {
-  const seen = new Set<string>()
-
-  for (const value of values) {
-    const model = value.trim()
-
-    if (model) {
-      seen.add(model)
-    }
-  }
-
-  return [...seen]
 }

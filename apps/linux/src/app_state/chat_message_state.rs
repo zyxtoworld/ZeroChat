@@ -1,9 +1,6 @@
 use crate::{
     conversations::title_from_message,
-    models::{
-        AppSnapshot, ChatMessage, Conversation, MessageAttachment, MessageRole, Preferences,
-        SkillSettings, SyncConfig,
-    },
+    models::{AppSnapshot, ChatMessage, MessageAttachment, MessageRole},
 };
 
 pub(crate) fn active_conversation_index(snapshot: &AppSnapshot) -> Option<usize> {
@@ -210,6 +207,7 @@ fn stopped_message_content(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{Conversation, Preferences, SkillSettings, SyncConfig};
 
     fn message(id: &str, role: MessageRole, content: &str, created_at: i64) -> ChatMessage {
         ChatMessage {

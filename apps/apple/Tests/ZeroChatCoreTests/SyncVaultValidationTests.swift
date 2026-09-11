@@ -139,6 +139,18 @@ final class SyncVaultValidationTests: XCTestCase {
         XCTAssertThrowsError(try decode(unknownCapability))
     }
 
+    func testCanonicalVaultRejectsDuplicateProviderIdentifiers() throws {
+        var vault = canonicalVault()
+        vault.data.providers.append(vault.data.providers[0])
+
+        XCTAssertThrowsError(
+            try decodeValidatedSyncVault(
+                try JSONEncoder().encode(vault),
+                decoder: JSONDecoder()
+            )
+        )
+    }
+
     func testCanonicalVaultRejectsOfflineReplayClaimMissingRequiredField() throws {
         let value = try mutateFirstMessage(canonicalVault()) { message in
             message["offlineReplayClaim"] = ["claimId": "claim-1"]

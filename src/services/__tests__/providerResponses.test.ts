@@ -86,10 +86,17 @@ describe('provider response parsing', () => {
       'https://user:secret@cdn.example/image.png',
       'https://localhost/image.png',
       'https://192.168.1.2/image.png',
+      'https://0x7f000001/image.png',
+      'https://[64:ff9b::7f00:1]/image.png',
+      '\nhttps://cdn.example/image.png',
     ]) {
-      expect(() =>
-        generatedImageFromProviderResponse({ data: [{ url }] }),
-      ).toThrow()
+      let rejected = false
+      try {
+        generatedImageFromProviderResponse({ data: [{ url }] })
+      } catch {
+        rejected = true
+      }
+      expect(rejected, url).toBe(true)
     }
 
     expect(() =>
@@ -100,6 +107,11 @@ describe('provider response parsing', () => {
     expect(() =>
       generatedImageFromProviderResponse({
         data: [{ b64_json: 'data:text/html;base64,PGgxPkJvb208L2gxPg==' }],
+      }),
+    ).toThrow()
+    expect(() =>
+      generatedImageFromProviderResponse({
+        data: [{ b64_json: '\ndata:image/png;base64,abc123' }],
       }),
     ).toThrow()
   })

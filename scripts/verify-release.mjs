@@ -5,11 +5,22 @@ import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { withReleaseReportLock } from './release-report-lock.mjs'
 import { sanitizeReleaseReportText } from './release-report-sanitizer.mjs'
-import { stopChildProcessTree } from './browser-runtime-cleanup.mjs'
 import { startVitePreviewLoopbackServer } from './vite-loopback-server.mjs'
-import { checksWithReleaseDiagnosticsBootstrap } from './verify-release-check-order.mjs'
-import { preCheckpointAuditOptions } from './verify-release-preflight-policy.mjs'
+import { terminateTimedOutChild } from './verify-release-child-runner.mjs'
 import {
+  checksWithReleaseDiagnosticsBootstrap,
+  reconcileDeferredRuntimeArtifactStep,
+  shouldRefreshWebCurrentPageEvidenceBeforeValidation,
+} from './verify-release-check-order.mjs'
+import {
+  preCheckpointAuditOptions,
+  releaseAuditMigrationContractsTimeoutMs,
+  strictReleasePreflightFreshnessTimeoutMs,
+} from './verify-release-preflight-policy.mjs'
+import {
+  classifyAuditedRuntimeArtifactFailure,
+  EXPECTED_RUNTIME_ARTIFACT_FAILURE_KIND,
+  TRUSTED_MSIX_HOST_PREFLIGHT_BLOCKER_KINDS,
   WINDOWS_TRUSTED_MSIX_ONLY_SCOPE_MARKER,
   isWindowsTrustedMsixOnlyExpectedFailureSummary,
   isWindowsTrustedMsixOnlyRuntimeArtifactFailure,
@@ -20,6 +31,7 @@ import {
   verifyReleaseUsage,
 } from './verify-release-cli.mjs'
 import { windowsTrustedMsixNextProofGate } from './windows-msix-remediation.mjs'
+import { createVerifyReleaseCheckpointBinding } from './verify-release-checkpoint-binding.mjs'
 
 const cliResult = parseVerifyReleaseCliArgs(process.argv.slice(2))
 
@@ -57,9 +69,11 @@ const liveSyncReleasePassReport = '.manual-qa/live-sync-release-drill.json'
 const hostedNativeCiEvidenceReport = '.manual-qa/hosted-native-ci-evidence.json'
 const liveProviderFullCapabilityReport = '.manual-qa/live-provider-smoke-full-current.json'
 const strictReleasePreflightReport = '.manual-qa/strict-release-preflight.json'
+const releaseDiagnosticsSummaryReport = '.manual-qa/release-diagnostics-current.json'
 const releaseBlockerSummaryReport = '.manual-qa/release-blockers-current.json'
 const verifyReleaseCheckpointReport = '.manual-qa/verify-release-current.json'
 const skipVerifyReleaseCheckpoint = process.env.ZEROCHAT_SKIP_VERIFY_RELEASE_CHECKPOINT === '1'
+const shouldRefreshVerifyReleaseCheckpoint = !skipVerifyReleaseCheckpoint
 const skipStrictReleasePreflightRefresh =
   process.env.ZEROCHAT_SKIP_STRICT_RELEASE_PREFLIGHT_REFRESH === '1'
 const configuredVerifyCheckTimeoutMs = Number(process.env.ZEROCHAT_VERIFY_CHECK_TIMEOUT_MS)
@@ -92,12 +106,34 @@ function fromRoot(path) {
   return resolve(root, path)
 }
 
+const runtimeSmokeArtifactsCheck = [
+  'Runtime smoke artifacts',
+  [fromRoot('scripts/runtime-smoke-artifact-check.mjs')],
+]
+
 const baseChecks = [
+  ['Project-local boundary', [fromRoot('scripts/project-local-boundary-check.mjs')]],
   ['Service Worker source build', [fromRoot('scripts/build-service-worker.mjs')]],
   ['TypeScript', [fromRoot('node_modules/typescript/bin/tsc'), '-b']],
+  ['Web production reachability', [fromRoot('scripts/web-production-reachability.mjs')]],
   ['Vite production build', [fromRoot('node_modules/vite/bin/vite.js'), 'build']],
   ['ESLint', [fromRoot('node_modules/eslint/bin/eslint.js'), '.']],
   ['Android Lint', [fromRoot('scripts/android-debug-build.mjs'), 'lintDebug']],
+  [
+    'Release audit preserve provenance',
+    [fromRoot('scripts/release-audit-preserve-provenance.mjs')],
+  ],
+  [
+    'Release audit migration contracts',
+    [
+      '--test',
+      fromRoot('scripts/__tests__/release-audit-migration-contract.test.mjs'),
+    ],
+  ],
+  [
+    'Native runtime package contract',
+    [fromRoot('scripts/__tests__/native-runtime-package-contract.test.mjs')],
+  ],
   ['Repository health', [fromRoot('scripts/repository-health-check.mjs')]],
   ['Shared schema', [fromRoot('scripts/shared-schema-check.mjs')]],
   ['Release report lock', [fromRoot('scripts/release-report-lock-check.mjs')]],
@@ -108,13 +144,16 @@ const baseChecks = [
   ['Bundle size', [fromRoot('scripts/bundle-size-check.mjs')]],
   ['Copy consistency', [fromRoot('scripts/copy-consistency-check.mjs')]],
   ['Documentation links', [fromRoot('scripts/docs-link-check.mjs')]],
-  ['Completion audit', [fromRoot('scripts/completion-audit-check.mjs')]],
   ['Release blocker summary', [fromRoot('scripts/release-blocker-report.mjs'), '--check']],
-  ['Runtime smoke artifacts', [fromRoot('scripts/runtime-smoke-artifact-check.mjs')]],
+  runtimeSmokeArtifactsCheck,
   ['UI accessibility', [fromRoot('scripts/ui-accessibility-check.mjs')]],
   ['Axe accessibility', [fromRoot('scripts/axe-accessibility-check.mjs')]],
   ['Lighthouse performance', [fromRoot('scripts/lighthouse-check.mjs')]],
   ['Hosted native CI evidence', [fromRoot('scripts/hosted-native-ci-evidence-check.mjs')]],
+  [
+    'Hosted CI workflow contract',
+    ['--test', fromRoot('scripts/contract-tests/hosted-ci-workflow-contract.mjs')],
+  ],
   ['Windows WebView shell', [fromRoot('scripts/windows-webview-shell-check.mjs')]],
   ['Windows MSIX readiness', [fromRoot('scripts/windows-msix-readiness-check.mjs')]],
   [
@@ -123,7 +162,16 @@ const baseChecks = [
   ],
   [
     'Linux native contract tests',
-    ['--test', fromRoot('apps/linux/contract-tests/linux-chat-retry-contract.test.mjs')],
+    [
+      '--test',
+      fromRoot('apps/linux/contract-tests/linux-background-spawn-contract.test.mjs'),
+      fromRoot('apps/linux/contract-tests/linux-backup-atomicity-contract.test.mjs'),
+      fromRoot('apps/linux/contract-tests/linux-chat-retry-contract.test.mjs'),
+      fromRoot('apps/linux/contract-tests/linux-local-persistence-contract.test.mjs'),
+      fromRoot('apps/linux/contract-tests/linux-media-lifecycle-contract.test.mjs'),
+      fromRoot('apps/linux/contract-tests/linux-sync-credential-atomicity-contract.test.mjs'),
+      fromRoot('apps/linux/contract-tests/linux-sync-manifest-contract.test.mjs'),
+    ],
   ],
   ['Windows native contract tests', [fromRoot('scripts/windows-native-contract-check.mjs')]],
   [
@@ -143,7 +191,6 @@ const baseChecks = [
   ['Android device selection', [fromRoot('scripts/android-device-selection-check.mjs')]],
   ['Native parity', [fromRoot('scripts/native-parity-check.mjs')]],
 ]
-
 const releaseChecks = [
   ['Browser smoke', [fromRoot('scripts/browser-skill-smoke.mjs')]],
   ['Locale runtime smoke', [fromRoot('scripts/locale-runtime-smoke.mjs')]],
@@ -160,8 +207,10 @@ const releaseChecks = [
 ]
 
 const webLocalBaseCheckLabels = new Set([
+  'Project-local boundary',
   'Service Worker source build',
   'TypeScript',
+  'Web production reachability',
   'Vite production build',
   'ESLint',
   'Repository health',
@@ -284,6 +333,14 @@ const releaseDiagnosticsFreshnessBootstrapCheck = [
     '--allow-refreshable-web-current-page-stale',
   ],
 ]
+const currentEvidencePreCheckpointSyncCheck = [
+  'Current evidence docs pre-checkpoint sync',
+  [fromRoot('scripts/release-current-evidence-summary.mjs'), '--write-docs'],
+]
+const verifyReleaseCheckpointBootstrapCheck = [
+  'Current source-bound checkpoint bootstrap',
+  [fromRoot('scripts/verify-release-checkpoint-bootstrap.mjs')],
+]
 const strictReleasePreflightFreshnessCheck = [
   'Strict release preflight freshness refresh',
   [fromRoot('scripts/strict-release-preflight-report.mjs')],
@@ -300,6 +357,10 @@ function displayArgs(args) {
 }
 
 function checkTimeoutMs(label) {
+  if (label === 'Release audit migration contracts') {
+    return releaseAuditMigrationContractsTimeoutMs(verifyCheckTimeoutMs)
+  }
+
   if (label === 'Live provider smoke safety') {
     return liveProviderSmokeCheckTimeoutMs
   }
@@ -352,12 +413,8 @@ function currentWindowsTrustedMsixBlocker() {
     evidence.currentTrustedQaState === 'host-clear-needs-elevated-trusted-msix-rerun' &&
     evidence.needsElevatedTrustedQaRerun === true &&
     hostPreflight.currentShellElevated === false
-  const hostAppxDeploymentBlockerKinds = new Set([
-    'windows-appx-deployment-deleted-package-cleanup-access-denied',
-    'windows-appx-deployment-deleted-package-cleanup-failure',
-  ])
   const hostAppxDeploymentBlocked =
-    hostAppxDeploymentBlockerKinds.has(blocker?.blockerKind) &&
+    TRUSTED_MSIX_HOST_PREFLIGHT_BLOCKER_KINDS.includes(blocker?.blockerKind) &&
     hostPreflight.blockerKind === blocker.blockerKind &&
     evidence.currentTrustedQaState === 'host-preflight-blocked-or-unproven' &&
     evidence.needsHostRepairBeforeTrustedQa === true &&
@@ -376,6 +433,17 @@ function currentWindowsTrustedMsixBlocker() {
   }
 
   return blocker
+}
+
+function currentRuntimeArtifactExpectedBlockerAudit() {
+  try {
+    const report = JSON.parse(
+      readFileSync(resolve(root, releaseDiagnosticsSummaryReport), 'utf8'),
+    )
+    return report?.runtimeArtifactExpectedBlocker ?? null
+  } catch {
+    return null
+  }
 }
 
 function formatWindowsTrustedMsixExpectedFailure(label, status, output) {
@@ -456,14 +524,20 @@ function formatWindowsTrustedMsixExpectedFailure(label, status, output) {
 }
 
 function shouldContinueAfterExpectedRuntimeArtifactFailure([label], error) {
+  const failureText = errorMessage(error)
+
   return (
     release &&
     label === 'Runtime smoke artifacts' &&
     currentWindowsTrustedMsixBlocker() !== null &&
-    errorMessage(error).includes(
+    ((failureText.includes(
       'Expected release blocker: windows-trusted-msix-release-pass-missing',
     ) &&
-    errorMessage(error).includes(WINDOWS_TRUSTED_MSIX_ONLY_SCOPE_MARKER)
+      failureText.includes(WINDOWS_TRUSTED_MSIX_ONLY_SCOPE_MARKER)) ||
+      classifyAuditedRuntimeArtifactFailure(
+        failureText,
+        currentRuntimeArtifactExpectedBlockerAudit(),
+      ) === EXPECTED_RUNTIME_ARTIFACT_FAILURE_KIND)
   )
 }
 
@@ -485,30 +559,17 @@ function formatCapturedFailure(label, code, signal, output) {
   return compactOutput ? `${status}\n${compactOutput}` : status
 }
 
-const timedOutChildSettlementMs = 15_000
-
-function terminateTimedOutChild(child, settleTimeout) {
-  const settlementTimer = setTimeout(settleTimeout, timedOutChildSettlementMs)
-
-  void stopChildProcessTree(child)
-    .catch(() => undefined)
-    .finally(() => {
-      clearTimeout(settlementTimer)
-      settleTimeout()
-    })
-
-  return settlementTimer
-}
-
 async function runCheck([label, args], options = {}) {
   const {
     captureOutput = false,
     env = process.env,
+    recordResult = true,
+    timeoutMs: timeoutOverrideMs,
   } = options
   const shouldCaptureOutput = captureOutput
   const startedAt = new Date().toISOString()
   const command = `node ${displayArgs(args)}`
-  const timeoutMs = checkTimeoutMs(label)
+  const timeoutMs = timeoutOverrideMs ?? checkTimeoutMs(label)
   console.log(`\n==> ${label}`)
   console.log(command)
 
@@ -524,41 +585,56 @@ async function runCheck([label, args], options = {}) {
       }
 
       recorded = true
-      verifyRunSteps.push({
-        label: sanitizeReportText(label),
-        command: sanitizeReportText(command),
-        startedAt,
-        finishedAt: new Date().toISOString(),
-        expectedExitCode: 0,
-        ...result,
-      })
+      if (recordResult) {
+        verifyRunSteps.push({
+          label: sanitizeReportText(label),
+          command: sanitizeReportText(command),
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          expectedExitCode: 0,
+          ...result,
+        })
+      }
     }
     const child = spawn(node, args, {
       cwd: root,
       env,
+      detached: process.platform !== 'win32',
       stdio: shouldCaptureOutput ? ['ignore', 'pipe', 'pipe'] : 'inherit',
       windowsHide: true,
     })
     const timeoutMessage = `${label} timed out after ${timeoutMs} ms`
-    const rejectTimedOutCheck = (code = child.exitCode, signal = child.signalCode) => {
+    const timeoutDiagnostic =
+      label === 'Release audit migration contracts'
+        ? `; migration runner pid=${child.pid ?? 'unknown'}; phases=release-audit-migration-contract`
+        : ''
+    const rejectTimedOutCheck = ({ childQuiesced = false, error: cleanupError = null } = {}) => {
       if (!timedOut || recorded) {
         return
       }
 
       recordStep({
-        actualExitCode: code ?? null,
-        signal: signal ?? 'TIMEOUT',
+        actualExitCode: child.exitCode ?? null,
+        signal: child.signalCode ?? 'TIMEOUT',
         passed: false,
         timedOut: true,
-        error: timeoutMessage,
+        childQuiesced,
+        error: `${timeoutMessage}${timeoutDiagnostic}`,
       })
-      rejectRun(new Error(timeoutMessage))
+      const timeoutError = new Error(
+        cleanupError
+          ? `${timeoutMessage}${timeoutDiagnostic}; child process tree cleanup failed`
+          : `${timeoutMessage}${timeoutDiagnostic}`,
+        cleanupError ? { cause: cleanupError } : undefined,
+      )
+      timeoutError.childQuiesced = childQuiesced
+      rejectRun(timeoutError)
     }
 
     timeoutTimer = setTimeout(() => {
       timedOut = true
       console.error(
-        `${label} timed out after ${timeoutMs} ms; killing child process tree.`,
+        `${label} timed out after ${timeoutMs} ms${timeoutDiagnostic}; killing child process tree.`,
       )
       timeoutSettlementTimer = terminateTimedOutChild(child, rejectTimedOutCheck)
     }, timeoutMs)
@@ -576,11 +652,11 @@ async function runCheck([label, args], options = {}) {
 
     child.on('error', (error) => {
       clearTimeout(timeoutTimer)
-      clearTimeout(timeoutSettlementTimer)
       if (timedOut) {
-        rejectTimedOutCheck()
         return
       }
+
+      clearTimeout(timeoutSettlementTimer)
 
       recordStep({
         actualExitCode: null,
@@ -592,12 +668,12 @@ async function runCheck([label, args], options = {}) {
     })
     child.on('exit', (code, signal) => {
       clearTimeout(timeoutTimer)
-      clearTimeout(timeoutSettlementTimer)
 
       if (timedOut) {
-        rejectTimedOutCheck(code, signal)
         return
       }
+
+      clearTimeout(timeoutSettlementTimer)
 
       if (code === 0) {
         recordStep({
@@ -626,10 +702,22 @@ async function runCheck([label, args], options = {}) {
 function checkOptions(check) {
   const [label] = check
   const options = preCheckpointAuditOptions(label, process.env)
+  const environment =
+    label === 'Current evidence docs pre-checkpoint sync'
+      ? {
+          ...process.env,
+          ZEROCHAT_ALLOW_STALE_VERIFY_RELEASE_CHECKPOINT: '1',
+        }
+      : options.env
+
+  const timeoutOptions =
+    label === 'Strict release preflight freshness refresh'
+      ? { timeoutMs: strictReleasePreflightFreshnessTimeoutMs(verifyCheckTimeoutMs) }
+      : {}
 
   return capturedFailureCheckLabels.has(label)
-    ? { ...options, captureOutput: true }
-    : options
+    ? { ...options, ...timeoutOptions, env: environment, captureOutput: true }
+    : { ...options, ...timeoutOptions, ...(environment ? { env: environment } : {}) }
 }
 
 async function runPostCheckpointValidationCheck([label, args]) {
@@ -642,14 +730,24 @@ async function runPostCheckpointValidationCheck([label, args]) {
     const child = spawn(node, args, {
       cwd: root,
       env: process.env,
+      detached: process.platform !== 'win32',
       stdio: 'inherit',
       windowsHide: true,
     })
     const timeoutMessage = `${label} timed out after ${verifyCheckTimeoutMs} ms`
-    const rejectTimedOutCheck = () => {
-      if (timedOut) {
-        rejectRun(new Error(timeoutMessage))
+    const rejectTimedOutCheck = ({ childQuiesced = false, error: cleanupError = null } = {}) => {
+      if (!timedOut) {
+        return
       }
+
+      const timeoutError = new Error(
+        cleanupError
+          ? `${timeoutMessage}; child process tree cleanup failed`
+          : timeoutMessage,
+        cleanupError ? { cause: cleanupError } : undefined,
+      )
+      timeoutError.childQuiesced = childQuiesced
+      rejectRun(timeoutError)
     }
     const timeoutTimer = setTimeout(() => {
       timedOut = true
@@ -661,22 +759,22 @@ async function runPostCheckpointValidationCheck([label, args]) {
 
     child.on('error', (error) => {
       clearTimeout(timeoutTimer)
-      clearTimeout(timeoutSettlementTimer)
       if (timedOut) {
-        rejectTimedOutCheck()
         return
       }
+
+      clearTimeout(timeoutSettlementTimer)
 
       rejectRun(error)
     })
     child.on('exit', (code, signal) => {
       clearTimeout(timeoutTimer)
-      clearTimeout(timeoutSettlementTimer)
 
       if (timedOut) {
-        rejectTimedOutCheck()
         return
       }
+
+      clearTimeout(timeoutSettlementTimer)
 
       if (code === 0) {
         resolveRun()
@@ -715,6 +813,23 @@ async function runWebCurrentPageQa() {
     ])
   } finally {
     await preview.close()
+  }
+}
+
+async function refreshDeferredRuntimeArtifactFailure() {
+  try {
+    await runCheck(runtimeSmokeArtifactsCheck, {
+      ...checkOptions(runtimeSmokeArtifactsCheck),
+      recordResult: false,
+    })
+    reconcileDeferredRuntimeArtifactStep(verifyRunSteps, null)
+    return null
+  } catch (error) {
+    reconcileDeferredRuntimeArtifactStep(
+      verifyRunSteps,
+      sanitizeReportText(errorMessage(error)),
+    )
+    return error
   }
 }
 
@@ -803,11 +918,19 @@ function classifyExpectedVerifyFailure(failedSteps, failureSummary) {
     return null
   }
 
+  const auditedFailureKind = classifyAuditedRuntimeArtifactFailure(
+    failureSummary,
+    currentRuntimeArtifactExpectedBlockerAudit(),
+  )
+  if (auditedFailureKind !== null && currentWindowsTrustedMsixBlocker()) {
+    return auditedFailureKind
+  }
+
   if (
     isWindowsTrustedMsixOnlyExpectedFailureSummary(failureSummary) &&
     currentWindowsTrustedMsixBlocker()
   ) {
-    return 'windows-trusted-msix-release-pass-missing'
+    return EXPECTED_RUNTIME_ARTIFACT_FAILURE_KIND
   }
 
   return null
@@ -884,6 +1007,7 @@ async function writeVerifyReleaseCheckpoint(status, error = null) {
   const firstFailedStep = failedSteps[0] ?? null
   const failureSummary = error ? sanitizeReportText(errorMessage(error)) : null
   const expectedFailureKind = classifyExpectedVerifyFailure(failedSteps, failureSummary)
+  const inputBinding = await createVerifyReleaseCheckpointBinding({ repoRoot: root })
   const report = {
     kind: 'zerochat.verifyReleaseCheckpoint.v1',
     version: 1,
@@ -916,6 +1040,7 @@ async function writeVerifyReleaseCheckpoint(status, error = null) {
     expectedFailure: expectedFailureKind !== null,
     expectedFailureKind,
     failureSummary,
+    inputBinding,
     steps: verifyRunSteps,
     nextSteps: {
       validationCommands: [
@@ -949,14 +1074,24 @@ async function syncCurrentEvidenceDocsAfterCheckpoint() {
     const child = spawn(node, args, {
       cwd: root,
       env: process.env,
+      detached: process.platform !== 'win32',
       stdio: 'inherit',
       windowsHide: true,
     })
     const timeoutMessage = `Current evidence doc sync timed out after ${verifyCheckTimeoutMs} ms`
-    const rejectTimedOutCheck = () => {
-      if (timedOut) {
-        rejectRun(new Error(timeoutMessage))
+    const rejectTimedOutCheck = ({ childQuiesced = false, error: cleanupError = null } = {}) => {
+      if (!timedOut) {
+        return
       }
+
+      const timeoutError = new Error(
+        cleanupError
+          ? `${timeoutMessage}; child process tree cleanup failed`
+          : timeoutMessage,
+        cleanupError ? { cause: cleanupError } : undefined,
+      )
+      timeoutError.childQuiesced = childQuiesced
+      rejectRun(timeoutError)
     }
     const timeoutTimer = setTimeout(() => {
       timedOut = true
@@ -968,22 +1103,22 @@ async function syncCurrentEvidenceDocsAfterCheckpoint() {
 
     child.on('error', (error) => {
       clearTimeout(timeoutTimer)
-      clearTimeout(timeoutSettlementTimer)
       if (timedOut) {
-        rejectTimedOutCheck()
         return
       }
+
+      clearTimeout(timeoutSettlementTimer)
 
       rejectRun(error)
     })
     child.on('close', (code, signal) => {
       clearTimeout(timeoutTimer)
-      clearTimeout(timeoutSettlementTimer)
 
       if (timedOut) {
-        rejectTimedOutCheck()
         return
       }
+
+      clearTimeout(timeoutSettlementTimer)
 
       if (code === 0) {
         resolveRun()
@@ -1005,10 +1140,40 @@ async function refreshCheckpointSyncDocsAndValidate(status, error = null) {
   // Keep this refresh separate from the preflight bootstrap: checks after the
   // bootstrap can change the host/runtime diagnostics that the checkpoint and
   // generated current-evidence docs must summarize.
-  await refreshReleaseDiagnosticsBeforeCheckpoint()
-  await writeVerifyReleaseCheckpoint(status, error)
-  await syncCurrentEvidenceDocsAfterCheckpoint()
-  await runPostCheckpointValidations()
+  let diagnosticsError = null
+  try {
+    await refreshReleaseDiagnosticsBeforeCheckpoint()
+  } catch (refreshError) {
+    diagnosticsError = refreshError
+  }
+
+  const checkpointStatus = diagnosticsError ? 'failed' : status
+  const checkpointError = diagnosticsError
+    ? new Error(
+        [error ? errorMessage(error) : null, errorMessage(diagnosticsError)]
+          .filter(Boolean)
+          .join('\n'),
+      )
+    : error
+
+  await writeVerifyReleaseCheckpoint(checkpointStatus, checkpointError)
+
+  let postCheckpointError = null
+  try {
+    await syncCurrentEvidenceDocsAfterCheckpoint()
+    await runPostCheckpointValidations()
+  } catch (validationError) {
+    postCheckpointError = validationError
+  }
+
+  if (diagnosticsError || postCheckpointError) {
+    throw new Error(
+      [diagnosticsError, postCheckpointError]
+        .filter(Boolean)
+        .map((failure) => errorMessage(failure))
+        .join('\n'),
+    )
+  }
 }
 
 async function refreshReleaseDiagnosticsBeforeCheckpoint() {
@@ -1019,14 +1184,24 @@ async function refreshReleaseDiagnosticsBeforeCheckpoint() {
     const child = spawn(node, args, {
       cwd: root,
       env: process.env,
+      detached: process.platform !== 'win32',
       stdio: 'inherit',
       windowsHide: true,
     })
     const timeoutMessage = `Release diagnostics refresh timed out after ${verifyCheckTimeoutMs} ms`
-    const rejectTimedOutCheck = () => {
-      if (timedOut) {
-        rejectRun(new Error(timeoutMessage))
+    const rejectTimedOutCheck = ({ childQuiesced = false, error: cleanupError = null } = {}) => {
+      if (!timedOut) {
+        return
       }
+
+      const timeoutError = new Error(
+        cleanupError
+          ? `${timeoutMessage}; child process tree cleanup failed`
+          : timeoutMessage,
+        cleanupError ? { cause: cleanupError } : undefined,
+      )
+      timeoutError.childQuiesced = childQuiesced
+      rejectRun(timeoutError)
     }
     const timeoutTimer = setTimeout(() => {
       timedOut = true
@@ -1038,22 +1213,22 @@ async function refreshReleaseDiagnosticsBeforeCheckpoint() {
 
     child.on('error', (error) => {
       clearTimeout(timeoutTimer)
-      clearTimeout(timeoutSettlementTimer)
       if (timedOut) {
-        rejectTimedOutCheck()
         return
       }
+
+      clearTimeout(timeoutSettlementTimer)
 
       rejectRun(error)
     })
     child.on('close', (code, signal) => {
       clearTimeout(timeoutTimer)
-      clearTimeout(timeoutSettlementTimer)
 
       if (timedOut) {
-        rejectTimedOutCheck()
         return
       }
+
+      clearTimeout(timeoutSettlementTimer)
 
       if (code === 0) {
         resolveRun()
@@ -1179,7 +1354,8 @@ async function main() {
         webLocalBaseChecks,
         releaseDiagnosticsFreshnessBootstrapCheck,
         true,
-        releaseDiagnosticsPrerequisiteChecks,
+        [],
+        [verifyReleaseCheckpointBootstrapCheck, currentEvidencePreCheckpointSyncCheck],
       )
 
       for (const check of webLocalChecks) {
@@ -1250,6 +1426,7 @@ async function main() {
 
   let runError = null
   let deferredExpectedRuntimeArtifactError = null
+  let webCurrentPageEvidenceRefreshed = false
   try {
     // Fail fast before slower Web/browser checks, but audit every requested
     // external release-evidence gate so strict release attempts expose the full
@@ -1270,10 +1447,22 @@ async function main() {
       releaseDiagnosticsFreshnessBootstrapCheck,
       release,
       releaseDiagnosticsPrerequisiteChecks,
+      [verifyReleaseCheckpointBootstrapCheck, currentEvidencePreCheckpointSyncCheck],
     )
 
     for (const check of checks) {
       try {
+        if (
+          shouldRefreshWebCurrentPageEvidenceBeforeValidation({
+            release,
+            checkLabel: check[0],
+            audit: currentRuntimeArtifactExpectedBlockerAudit(),
+          })
+        ) {
+          await runWebCurrentPageQa()
+          webCurrentPageEvidenceRefreshed = true
+        }
+
         await runCheck(check, checkOptions(check))
       } catch (error) {
         if (shouldContinueAfterExpectedRuntimeArtifactFailure(check, error)) {
@@ -1283,6 +1472,10 @@ async function main() {
 
         throw error
       }
+    }
+
+    if (webCurrentPageEvidenceRefreshed && deferredExpectedRuntimeArtifactError) {
+      deferredExpectedRuntimeArtifactError = await refreshDeferredRuntimeArtifactFailure()
     }
 
     if (deferredExpectedRuntimeArtifactError) {
@@ -1325,11 +1518,11 @@ async function main() {
 
 try {
   await main()
-  if (!skipVerifyReleaseCheckpoint) {
+  if (shouldRefreshVerifyReleaseCheckpoint) {
     await refreshCheckpointSyncDocsAndValidate('passed')
   }
 } catch (error) {
-  if (!skipVerifyReleaseCheckpoint) {
+  if (shouldRefreshVerifyReleaseCheckpoint) {
     try {
       await refreshCheckpointSyncDocsAndValidate('failed', error)
     } catch (checkpointError) {

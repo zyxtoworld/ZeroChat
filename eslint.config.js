@@ -5,14 +5,21 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
+import { projectLocalBoundaryGlob } from './scripts/project-local-boundary.mjs'
+
 export default defineConfig([
   globalIgnores([
     'dist',
     'dist-ssr',
+    '.manual-qa*/',
+    '.visual-audit/',
+    '.i18n-qa/',
     '.codex-*-profile*/',
     '.codex-edge-qa-profile*/',
+    projectLocalBoundaryGlob,
     'apps/**/build/',
     'apps/**/.gradle/',
+    'apps/**/obj/',
     'apps/**/DerivedData/',
     'apps/**/.build/',
     'apps/**/target/',

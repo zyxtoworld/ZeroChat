@@ -114,4 +114,37 @@ describe('chat generation text streaming helper', () => {
     expect(onToken).toHaveBeenNthCalledWith(1, 'Hel')
     expect(onToken).toHaveBeenNthCalledWith(2, 'lo')
   })
+
+  it('does not start the Provider when Skill context finishes after cancellation', async () => {
+    const controller = new AbortController()
+    let releaseContext!: () => void
+    const contextReady = new Promise<void>((resolve) => {
+      releaseContext = resolve
+    })
+    const streamChat = vi.fn(async () => undefined)
+
+    const pending = streamAssistantText({
+      provider: providerFromPreset(providerPresets[0]),
+      apiKey: 'sk-test',
+      proxyToken: '',
+      model: 'gpt-5',
+      baseMessages: [message()],
+      latestInput: 'cancelled Skill context',
+      contextMessageLimit: 6,
+      signal: controller.signal,
+      snapshot: appData(),
+      onToken: vi.fn(),
+      requestMessagesWithSkills: vi.fn(async ({ messages }) => {
+        await contextReady
+        return messages
+      }),
+      streamChat,
+    })
+
+    controller.abort()
+    releaseContext()
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(streamChat).not.toHaveBeenCalled()
+  })
 })

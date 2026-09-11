@@ -44,6 +44,7 @@ import {
 } from './syncCloudflareClear'
 import {
   assertRemoteWriteAllowed,
+  isSyncRemoteWriteDeferredError,
   isPassphraseDecryptionError,
   markSynced,
   parseRemoteVault,
@@ -81,6 +82,7 @@ function incrementalCleanupTasks(
   next: IncrementalManifest,
   generation: string,
   signal?: AbortSignal,
+  shouldDeferRemoteWrite?: () => boolean,
 ): Promise<void>[] {
   if (!previous) {
     return []
@@ -112,7 +114,14 @@ function incrementalCleanupTasks(
   }
 
   return Array.from(stale).map((key) =>
-    deleteIncrementalObject(endpoint, token, key, generation, signal),
+    deleteIncrementalObject(
+      endpoint,
+      token,
+      key,
+      generation,
+      signal,
+      shouldDeferRemoteWrite,
+    ),
   )
 }
 
@@ -230,7 +239,9 @@ async function writeCloudflareSnapshot(
   expectedEtag: string | null,
   generation: string,
   signal?: AbortSignal,
+  shouldDeferRemoteWrite?: () => boolean,
 ): Promise<void> {
+  assertRemoteWriteAllowed({ shouldDeferRemoteWrite })
   await fetchSync(
     `${endpoint}/snapshot`,
     {
@@ -303,6 +314,7 @@ async function syncWithCloudflareSnapshot(
       snapshot.state?.etag ?? null,
       snapshot.generation,
       context.signal,
+      context.shouldDeferRemoteWrite,
     )
 
     return {
@@ -338,6 +350,7 @@ async function syncWithCloudflareSnapshot(
     snapshot.state?.etag ?? null,
     snapshot.generation,
     context.signal,
+    context.shouldDeferRemoteWrite,
   )
 
   return {
@@ -379,6 +392,7 @@ async function pullWithCloudflareSnapshot(
       remoteState?.etag ?? null,
       snapshot.generation,
       context.signal,
+      context.shouldDeferRemoteWrite,
     )
 
     return {
@@ -442,20 +456,45 @@ async function uploadCloudflareIncrementalVault(
   )
   assertRemoteWriteAllowed(context)
   let headPublishAttempted = false
+  let chunkUploadSucceeded = false
+  const chunkUploadController = new AbortController()
+  const abortChunkUploads = (): void => {
+    chunkUploadController.abort()
+  }
+
+  if (context.signal?.aborted) {
+    abortChunkUploads()
+  } else {
+    context.signal?.addEventListener('abort', abortChunkUploads, { once: true })
+  }
 
   try {
-    await Promise.all(
-      upload.chunks.map((chunk) =>
-        writeIncrementalObject(
-          endpoint,
-          token,
-          chunk.key,
-          chunk.envelope,
-          generation,
-          context.signal,
-        ),
-      ),
+    let chunkUploadFailed = false
+    let firstChunkUploadError: unknown
+    const chunkPromises = upload.chunks.map((chunk) =>
+      writeIncrementalObject(
+        endpoint,
+        token,
+        chunk.key,
+        chunk.envelope,
+        generation,
+        chunkUploadController.signal,
+        context.shouldDeferRemoteWrite,
+      ).then(() => {
+        chunkUploadSucceeded = true
+      }).catch((error: unknown) => {
+        if (!chunkUploadFailed) {
+          chunkUploadFailed = true
+          firstChunkUploadError = error
+        }
+        abortChunkUploads()
+        throw error
+      }),
     )
+    await Promise.allSettled(chunkPromises)
+    if (chunkUploadFailed) {
+      throw firstChunkUploadError
+    }
     await writeIncrementalObject(
       endpoint,
       token,
@@ -463,6 +502,7 @@ async function uploadCloudflareIncrementalVault(
       upload.manifestEnvelope,
       generation,
       context.signal,
+      context.shouldDeferRemoteWrite,
     )
     headPublishAttempted = true
     await writeIncrementalHead(
@@ -472,6 +512,7 @@ async function uploadCloudflareIncrementalVault(
       remote?.head ?? null,
       generation,
       context.signal,
+      context.shouldDeferRemoteWrite,
     )
   } catch (error) {
     if (
@@ -485,6 +526,14 @@ async function uploadCloudflareIncrementalVault(
       throw error
     }
 
+    if (
+      isSyncRemoteWriteDeferredError(error) &&
+      !chunkUploadSucceeded &&
+      !headPublishAttempted
+    ) {
+      throw error
+    }
+
     if (!headPublishAttempted || isIncrementalHeadConflictError(error)) {
       await assertCloudflareCleanupCompleted([
         ...upload.chunks.map((chunk) =>
@@ -494,6 +543,7 @@ async function uploadCloudflareIncrementalVault(
             chunk.key,
             generation,
             context.signal,
+            context.shouldDeferRemoteWrite,
           ),
         ),
         deleteIncrementalObject(
@@ -502,10 +552,13 @@ async function uploadCloudflareIncrementalVault(
           upload.head.manifestKey,
           generation,
           context.signal,
+          context.shouldDeferRemoteWrite,
         ),
       ])
     }
     throw error
+  } finally {
+    context.signal?.removeEventListener('abort', abortChunkUploads)
   }
 
   await assertCloudflareCleanupCompleted([
@@ -516,8 +569,15 @@ async function uploadCloudflareIncrementalVault(
       upload.manifest,
       generation,
       context.signal,
+      context.shouldDeferRemoteWrite,
     ),
-    deleteLegacySnapshot(endpoint, token, generation, context.signal),
+    deleteLegacySnapshot(
+      endpoint,
+      token,
+      generation,
+      context.signal,
+      context.shouldDeferRemoteWrite,
+    ),
   ])
 
   return {
@@ -809,7 +869,12 @@ export async function syncWithCloudflare(
   }
 
   if (context.allowPassphraseRotation) {
-    await clearCloudflareViaBulkEndpoint(endpoint, token, context.signal)
+    await clearCloudflareViaBulkEndpoint(
+      endpoint,
+      token,
+      context.signal,
+      context.shouldDeferRemoteWrite,
+    )
   }
 
   const incremental = await syncWithCloudflareIncremental(

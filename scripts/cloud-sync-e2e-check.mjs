@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'vite'
 import worker, { ZeroChatSyncCoordinator } from '../cloudflare/sync-worker.js'
+import { createBoundedViteSsrModuleRunner } from './vite-ssr-module-runner.mjs'
 
 class MemoryDurableStorage {
   constructor() {
@@ -166,11 +167,12 @@ const server = await createServer({
     },
   },
 })
+const moduleRunner = createBoundedViteSsrModuleRunner(server)
 
 try {
-  const sync = await server.ssrLoadModule('/src/services/sync.ts')
-  const skills = await server.ssrLoadModule('/src/services/skills.ts')
-  const accessKey = await server.ssrLoadModule('/src/services/accessKey.ts')
+  const sync = await moduleRunner.import('/src/services/sync.ts')
+  const skills = await moduleRunner.import('/src/services/skills.ts')
+  const accessKey = await moduleRunner.import('/src/services/accessKey.ts')
 
   const token = await accessKey.accessKeyFromPassword(passphrase)
   const env = createEnv(token)
@@ -337,5 +339,9 @@ try {
 
   console.log('Cloud sync E2E check passed')
 } finally {
-  await server.close()
+  try {
+    await moduleRunner.close()
+  } finally {
+    await server.close()
+  }
 }

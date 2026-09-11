@@ -1,11 +1,11 @@
 import { now as currentNow } from './appData'
-import type { GeneratedImage } from './chat'
 import {
   attachmentByPurpose,
   fileFromAttachment,
 } from './imageAttachments'
 import type {
   ChatMessage,
+  GeneratedImage,
   MessageAttachment,
 } from '../types'
 

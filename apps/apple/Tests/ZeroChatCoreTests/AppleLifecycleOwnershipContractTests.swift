@@ -43,6 +43,28 @@ import Testing
     #expect(reporter.contains("commandCenter?.unregisterWindow(registeredWindowId)"))
 }
 
+@Test func appleDetachedWindowCannotBeResurrectedByQueuedAttachment() throws {
+    let reporter = try appleOwnershipSource("App/AppleWindowActivationReporter.swift")
+    let attach = try appleOwnershipFunctionBody(
+        "func attach(to view: NSView)",
+        in: reporter
+    )
+
+    #expect(reporter.contains("private var attachmentGeneration: UInt64 = 0"))
+    #expect(attach.contains("attachmentGeneration &+= 1"))
+    #expect(attach.contains("let generation = attachmentGeneration"))
+    #expect(attach.contains("self.attachmentGeneration == generation"))
+    #expect(attach.contains("[weak self, weak view]"))
+
+    let generation = try #require(attach.range(of: "attachmentGeneration &+= 1"))
+    let dispatch = try #require(attach.range(of: "DispatchQueue.main.async"))
+    let ownerGuard = try #require(attach.range(of: "self.attachmentGeneration == generation"))
+    let register = try #require(attach.range(of: "commandCenter?.registerWindow"))
+
+    #expect(generation.lowerBound < dispatch.lowerBound)
+    #expect(ownerGuard.lowerBound < register.lowerBound)
+}
+
 @Test func appleMessageEditReturnsFocusToTheWindowLocalComposer() throws {
     let pane = try appleOwnershipSource("App/AppleChatConversationPane.swift")
     let edit = try #require(pane.range(of: "edit: {"))

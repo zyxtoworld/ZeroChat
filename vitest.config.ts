@@ -2,6 +2,7 @@ import { availableParallelism } from 'node:os'
 import { configDefaults, defineConfig, mergeConfig } from 'vitest/config'
 
 import viteConfig from './vite.config'
+import { projectLocalBoundaryGlob } from './scripts/project-local-boundary.mjs'
 
 const maxWorkers = Math.min(4, Math.max(1, availableParallelism()))
 
@@ -24,7 +25,7 @@ export default mergeConfig(
             functions: 90,
             lines: 90,
           },
-          'src/services/autoSyncController.ts': {
+          'src/app/automaticSync.ts': {
             statements: 60,
             branches: 75,
             functions: 45,
@@ -46,12 +47,6 @@ export default mergeConfig(
             statements: 85,
             branches: 70,
             functions: 90,
-            lines: 85,
-          },
-          'src/services/syncRuntimeController.ts': {
-            statements: 85,
-            branches: 75,
-            functions: 85,
             lines: 85,
           },
           'src/storage/db.ts': {
@@ -76,9 +71,22 @@ export default mergeConfig(
       },
       exclude: [
         ...configDefaults.exclude,
+        // Project-local recovery/temp output can contain copied test trees; never discover it as source.
+        projectLocalBoundaryGlob,
         'apps/apple/ContractTests/**',
         'apps/linux/contract-tests/**',
         'apps/windows/tests/**',
+        // These contract files are executed by Node's test runner in their dedicated gates.
+        'scripts/__tests__/bundle-static-imports.test.mjs',
+        'scripts/__tests__/browser-evaluate.test.mjs',
+        'scripts/__tests__/browser-indexeddb-cleanup.test.mjs',
+        'scripts/__tests__/live-sync-release-documentation-state.test.mjs',
+        'scripts/__tests__/native-runtime-package-contract.test.mjs',
+        'scripts/__tests__/release-audit-contract-map.test.mjs',
+        'scripts/__tests__/release-audit-migration-contract.test.mjs',
+        'scripts/__tests__/ui-accessibility-contracts.test.mjs',
+        'scripts/__tests__/verify-release-checkpoint-binding.test.mjs',
+        'scripts/__tests__/web-current-shell-evidence.test.mjs',
       ],
       maxWorkers,
     },

@@ -182,4 +182,22 @@ class SkillSettingsHelpersTest {
 
         assertEquals(listOf(imported, existing), updated.skills)
     }
+
+    @Test
+    fun skillImportFailureNoticeDoesNotExposeRawExceptionText() {
+        val sentinel =
+            "C:\\private\\skills\\secret.json /home/runner/.config/token " +
+                "https://provider.invalid/v1 sk-test-not-a-real-key"
+
+        val notice = skillImportFailureNotice(
+            NativeI18n.forMode("en-US"),
+            IllegalStateException(sentinel),
+        )
+
+        assertFalse(notice.contains(sentinel))
+        assertFalse(notice.contains("C:\\private"))
+        assertFalse(notice.contains("/home/runner"))
+        assertFalse(notice.contains("provider.invalid"))
+        assertFalse(notice.contains("sk-test-not-a-real-key"))
+    }
 }

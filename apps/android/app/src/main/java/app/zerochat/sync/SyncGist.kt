@@ -36,7 +36,7 @@ internal data class ReconciledGistVault(
     val vaultJson: kotlinx.serialization.json.JsonObject,
 )
 
-internal suspend fun syncGistVaultV2(
+internal suspend fun performGistVaultSync(
     client: HttpClient,
     json: Json,
     crypto: CryptoEngine,
@@ -59,7 +59,7 @@ internal suspend fun syncGistVaultV2(
     val localOperation = createGistStateOperation(json, emptyList(), vault, emptyList())
     val localVaultJson = localOperation.vaultJson
     if (resolvedGistId == null) {
-        val created = createGistV2(
+        val created = createGist(
             client = client,
             json = json,
             crypto = crypto,
@@ -154,7 +154,7 @@ internal suspend fun syncGistVaultV2(
     return result
 }
 
-internal suspend fun clearGistV2(
+internal suspend fun performGistClear(
     client: HttpClient,
     json: Json,
     crypto: CryptoEngine,
@@ -360,7 +360,7 @@ private data class CreatedGist(
     val operation: GistStateOperation,
 )
 
-private suspend fun createGistV2(
+private suspend fun createGist(
     client: HttpClient,
     json: Json,
     crypto: CryptoEngine,

@@ -63,6 +63,7 @@ const trustedElevatedRerunScript = await read('scripts/windows-msix-trusted-elev
 const hostPreflightScript = await read('scripts/windows-msix-host-preflight.ps1')
 const hostPreflightCheck = await read('scripts/windows-msix-host-preflight-check.mjs')
 const hostPreflightTest = await read('scripts/__tests__/windows-msix-host-preflight.test.mjs')
+const trustScopeTest = await read('scripts/__tests__/windows-msix-trust-scope.test.mjs')
 const runtimeSmokeScript = await read('scripts/windows-webview-runtime-smoke.ps1')
 const packageJson = JSON.parse(await read('package.json'))
 
@@ -158,7 +159,6 @@ expect(
     has(installQaScript, 'Signed, but this Windows profile does not trust the certificate.') &&
     has(installQaScript, 'Dry run did not change this Windows profile') &&
     has(installQaScript, 'Import-Certificate') &&
-    has(installQaScript, 'Cert:\\CurrentUser\\TrustedPeople') &&
     has(installQaScript, 'TrustMachineCertificate') &&
     has(installQaScript, 'Cert:\\LocalMachine\\TrustedPeople') &&
     has(installQaScript, 'TrustSigningRoot') &&
@@ -166,14 +166,22 @@ expect(
     has(installQaScript, 'RemoveTrustedSigningRoot') &&
     has(installQaScript, 'RemoveTrustedMachineCertificate') &&
     has(installQaScript, 'Assert-MachineCertificateAccess') &&
-    has(installQaScript, 'signing root to be trusted') &&
-    has(installQaScript, '-TrustCertificate') &&
-    has(installQaScript, 'RemoveTrustedCertificate') &&
+    has(
+      installQaScript,
+      '[System.Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]',
+    ) &&
+    has(
+      installQaScript,
+      'Refusing to trust a non-CA package signing certificate as a machine root.',
+    ) &&
+    !has(installQaScript, '[switch] $TrustCertificate') &&
+    !has(installQaScript, '[switch] $RemoveTrustedCertificate') &&
+    !has(installQaScript, 'Cert:\\CurrentUser\\TrustedPeople') &&
     has(installQaScript, '-Update') &&
     has(installQaScript, 'PreviousInstalledVersion') &&
     has(installQaScript, 'must be greater than installed version') &&
     has(installQaScript, 'DryRun = $true'),
-  'Windows MSIX install QA script must inspect the newest local package, default to an explanatory dry-run, report unsigned packages without mutation, and require explicit trust/install/update/uninstall actions including explicit disposable Root trust cleanup.',
+  'Windows MSIX install QA script must inspect the newest local package, default to an explanatory dry-run, report unsigned packages without mutation, use machine TrustedPeople for leaf trust, and reserve Root trust for CA certificates.',
 )
 expect(
   !has(nativeChecklist, 'prefers the newest `_signed.msix`') &&
@@ -212,6 +220,16 @@ expect(
     has(trustedInstallQaScript, 'ConvertTo-IsoTimestamp') &&
     has(trustedInstallQaScript, 'ToString("o"') &&
     has(trustedInstallQaScript, 'processStartTime = ConvertTo-IsoTimestamp'),
+    has(trustedInstallQaScript, '"-TrustMachineCertificate"') &&
+    has(trustedInstallQaScript, '"-RemoveTrustedMachineCertificate"') &&
+    !has(trustedInstallQaScript, '"-TrustCertificate"') &&
+    !has(trustedInstallQaScript, '"-TrustSigningRoot"') &&
+    !has(trustedInstallQaScript, '"-RemoveTrustedCertificate"') &&
+    !has(trustedInstallQaScript, '"-RemoveTrustedSigningRoot"') &&
+    has(
+      trustScopeTest,
+      'does not expose ineffective CurrentUser package trust switches',
+    ),
   'Windows trusted MSIX QA script must keep disposable elevated signing/install/update/capture/cleanup safeguards, verify the packaged title-bar app icon, and hash-bind the packaged evidence to current dist.',
 )
 expect(

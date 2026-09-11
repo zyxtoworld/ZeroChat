@@ -55,6 +55,47 @@ describe('local file limits', () => {
     expect(FileReaderConstructor).not.toHaveBeenCalled()
   })
 
+  it('rejects when FileReader is aborted instead of leaving the read pending', async () => {
+    class AbortableFileReader {
+      static latest: AbortableFileReader | undefined
+      onabort: ((event: ProgressEvent<FileReader>) => void) | null = null
+      error = new DOMException('The file read was aborted.', 'AbortError')
+
+      constructor() {
+        AbortableFileReader.latest = this
+      }
+
+      readAsDataURL(): void {}
+    }
+
+    vi.stubGlobal('FileReader', AbortableFileReader)
+
+    const pending = readLocalFileAsDataUrl(
+      { size: 1 } as File,
+      4,
+      'too large',
+    )
+    let settled = false
+    void pending.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      },
+    )
+
+    AbortableFileReader.latest?.onabort?.(
+      new Event('abort') as ProgressEvent<FileReader>,
+    )
+    await Promise.resolve()
+
+    expect(settled).toBe(true)
+    if (settled) {
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    }
+  })
+
   it('rejects invalid limits instead of silently disabling the boundary', () => {
     expect(() => assertLocalFileSize({ size: 0 }, -1, 'too large')).toThrow(
       RangeError,

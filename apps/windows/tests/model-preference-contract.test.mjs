@@ -36,6 +36,17 @@ test('prefers frontier relay variants when numeric GPT revisions tie', () => {
   assert.match(chatBody, /ModelVersionScore\(normalized, L"gpt"\)[\s\S]*ModelVariantPreferenceScore\(normalized\)/)
 })
 
+test('ignores dated GPT snapshot tokens when scoring revisions', () => {
+  assert.match(
+    source,
+    /std::wstring StripModelDateToken\(std::wstring const& model\)[\s\S]*return model\.substr\(0, index\) \+ model\.substr\(index \+ 11\)/,
+  )
+  assert.match(
+    source,
+    /auto versionSource = StripModelDateToken\(model\);[\s\S]*auto index = versionSource\.find\(family\)/,
+  )
+})
+
 test('keeps DALL-E 3 out of image editing requests', () => {
   const editingBody = functionBody(
     'bool IsLikelyImageEditingModel(std::wstring const& model)',

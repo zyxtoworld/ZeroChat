@@ -8,12 +8,14 @@ use crate::{
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::fs::File;
 use std::{
     ffi::OsString,
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, MutexGuard},
 };
 use uuid::Uuid;
 
@@ -25,6 +27,7 @@ const MAX_LOCAL_DATA_TRANSITION_FILE_BYTES: usize = MAX_ENCRYPTED_BACKUP_FILE_BY
 pub(crate) enum LocalDataTransitionKind {
     Reset,
     EncryptedBackupImport,
+    SyncCommit,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -34,9 +37,11 @@ pub(crate) struct LocalDataTransition {
     pub(crate) id: String,
     pub(crate) kind: LocalDataTransitionKind,
     pub(crate) source_snapshot_fingerprint: Option<String>,
+    pub(crate) target_snapshot_fingerprint: Option<String>,
     pub(crate) target_snapshot: Option<AppSnapshot>,
     pub(crate) target_updated_at: Option<i64>,
     pub(crate) encrypted_backup: Option<EncryptedSnapshotEnvelope>,
+    pub(crate) encrypted_vault: Option<EncryptedSnapshotEnvelope>,
     pub(crate) provider_ids: Vec<String>,
 }
 
@@ -51,9 +56,11 @@ impl LocalDataTransition {
             id: Uuid::new_v4().to_string(),
             kind: LocalDataTransitionKind::Reset,
             source_snapshot_fingerprint,
+            target_snapshot_fingerprint: None,
             target_snapshot: Some(target_snapshot),
             target_updated_at: None,
             encrypted_backup: None,
+            encrypted_vault: None,
             provider_ids,
         }
     }
@@ -69,9 +76,31 @@ impl LocalDataTransition {
             id: Uuid::new_v4().to_string(),
             kind: LocalDataTransitionKind::EncryptedBackupImport,
             source_snapshot_fingerprint,
+            target_snapshot_fingerprint: None,
             target_snapshot: None,
             target_updated_at: Some(target_updated_at),
             encrypted_backup: Some(encrypted_backup),
+            encrypted_vault: None,
+            provider_ids,
+        }
+    }
+
+    pub(crate) fn sync_commit(
+        source_snapshot_fingerprint: String,
+        target_snapshot_fingerprint: String,
+        encrypted_vault: EncryptedSnapshotEnvelope,
+        provider_ids: Vec<String>,
+    ) -> Self {
+        Self {
+            version: LOCAL_DATA_TRANSITION_VERSION,
+            id: Uuid::new_v4().to_string(),
+            kind: LocalDataTransitionKind::SyncCommit,
+            source_snapshot_fingerprint: Some(source_snapshot_fingerprint),
+            target_snapshot_fingerprint: Some(target_snapshot_fingerprint),
+            target_snapshot: None,
+            target_updated_at: None,
+            encrypted_backup: None,
+            encrypted_vault: Some(encrypted_vault),
             provider_ids,
         }
     }
@@ -180,7 +209,12 @@ fn snapshots_match(current: Option<&AppSnapshot>, expected: Option<&AppSnapshot>
 
 pub struct SnapshotStore {
     file: PathBuf,
-    file_lock: Mutex<()>,
+    local_data_commit_lock: Mutex<()>,
+}
+
+pub(crate) struct LocalDataCommitGuard<'a> {
+    store: &'a SnapshotStore,
+    _lock: MutexGuard<'a, ()>,
 }
 
 pub enum SnapshotCompareAndSave {
@@ -195,7 +229,7 @@ impl SnapshotStore {
         fs::create_dir_all(&dir)?;
         Ok(Self {
             file: dir.join("snapshot.v1.json"),
-            file_lock: Mutex::new(()),
+            local_data_commit_lock: Mutex::new(()),
         })
     }
 
@@ -203,15 +237,30 @@ impl SnapshotStore {
     pub(crate) fn for_test_file(file: PathBuf) -> Self {
         Self {
             file,
-            file_lock: Mutex::new(()),
+            local_data_commit_lock: Mutex::new(()),
+        }
+    }
+
+    pub(crate) fn lock_local_data_commit(&self) -> LocalDataCommitGuard<'_> {
+        LocalDataCommitGuard {
+            store: self,
+            _lock: self
+                .local_data_commit_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
         }
     }
 
     pub fn load(&self) -> Result<Option<AppSnapshot>> {
-        let _guard = self
-            .file_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = self.lock_local_data_commit();
+        self.load_during_local_data_commit(&guard)
+    }
+
+    pub(crate) fn load_during_local_data_commit(
+        &self,
+        guard: &LocalDataCommitGuard<'_>,
+    ) -> Result<Option<AppSnapshot>> {
+        self.validate_local_data_commit_guard(guard)?;
         self.load_unlocked()
     }
 
@@ -234,10 +283,17 @@ impl SnapshotStore {
     }
 
     pub fn save(&self, snapshot: &AppSnapshot) -> Result<()> {
-        let _guard = self
-            .file_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = self.lock_local_data_commit();
+        self.save_during_local_data_commit(&guard, snapshot)
+    }
+
+    pub(crate) fn save_during_local_data_commit(
+        &self,
+        guard: &LocalDataCommitGuard<'_>,
+        snapshot: &AppSnapshot,
+    ) -> Result<()> {
+        self.validate_local_data_commit_guard(guard)?;
+        self.ensure_no_pending_local_data_transition_unlocked()?;
         let text = serde_json::to_string_pretty(snapshot)?;
         write_snapshot_text_atomically(&self.file, &text, MAX_LOCAL_SNAPSHOT_FILE_BYTES)
     }
@@ -247,10 +303,18 @@ impl SnapshotStore {
         expected: Option<&AppSnapshot>,
         snapshot: &AppSnapshot,
     ) -> Result<SnapshotCompareAndSave> {
-        let _guard = self
-            .file_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = self.lock_local_data_commit();
+        self.save_if_unchanged_during_local_data_commit(&guard, expected, snapshot)
+    }
+
+    pub(crate) fn save_if_unchanged_during_local_data_commit(
+        &self,
+        guard: &LocalDataCommitGuard<'_>,
+        expected: Option<&AppSnapshot>,
+        snapshot: &AppSnapshot,
+    ) -> Result<SnapshotCompareAndSave> {
+        self.validate_local_data_commit_guard(guard)?;
+        self.ensure_no_pending_local_data_transition_unlocked()?;
         let current = self.load_unlocked()?;
         if !snapshots_match(current.as_ref(), expected)? {
             return Ok(SnapshotCompareAndSave::Changed(current));
@@ -262,12 +326,10 @@ impl SnapshotStore {
 
     pub(crate) fn stage_local_data_transition(
         &self,
+        guard: &LocalDataCommitGuard<'_>,
         transition: &LocalDataTransition,
     ) -> Result<()> {
-        let _guard = self
-            .file_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.validate_local_data_commit_guard(guard)?;
         if self.load_local_data_transition_unlocked()?.is_some() {
             anyhow::bail!("A local data recovery operation is already pending.");
         }
@@ -281,10 +343,15 @@ impl SnapshotStore {
     }
 
     pub(crate) fn load_local_data_transition(&self) -> Result<Option<LocalDataTransition>> {
-        let _guard = self
-            .file_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = self.lock_local_data_commit();
+        self.load_local_data_transition_during_local_data_commit(&guard)
+    }
+
+    pub(crate) fn load_local_data_transition_during_local_data_commit(
+        &self,
+        guard: &LocalDataCommitGuard<'_>,
+    ) -> Result<Option<LocalDataTransition>> {
+        self.validate_local_data_commit_guard(guard)?;
         self.load_local_data_transition_unlocked()
     }
 
@@ -309,13 +376,11 @@ impl SnapshotStore {
 
     pub(crate) fn save_local_data_transition_target(
         &self,
+        guard: &LocalDataCommitGuard<'_>,
         source_fingerprint: Option<&str>,
         target: &AppSnapshot,
     ) -> Result<SnapshotCompareAndSave> {
-        let _guard = self
-            .file_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.validate_local_data_commit_guard(guard)?;
         if let Some(source_fingerprint) = source_fingerprint {
             let current = self.load_unlocked()?;
             let current_fingerprint = snapshot_fingerprint(current.as_ref())?;
@@ -333,12 +398,10 @@ impl SnapshotStore {
 
     pub(crate) fn complete_local_data_transition(
         &self,
+        guard: &LocalDataCommitGuard<'_>,
         expected_target_fingerprint: &str,
     ) -> Result<()> {
-        let _guard = self
-            .file_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.validate_local_data_commit_guard(guard)?;
         let current = self.load_unlocked()?;
         if snapshot_fingerprint(current.as_ref())? != expected_target_fingerprint {
             anyhow::bail!("The recovered local snapshot changed before recovery completed.");
@@ -356,11 +419,11 @@ impl SnapshotStore {
         Ok(())
     }
 
-    pub(crate) fn discard_local_data_transition(&self) -> Result<()> {
-        let _guard = self
-            .file_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    pub(crate) fn discard_local_data_transition(
+        &self,
+        guard: &LocalDataCommitGuard<'_>,
+    ) -> Result<()> {
+        self.validate_local_data_commit_guard(guard)?;
         let file = local_data_transition_path(&self.file);
         for candidate in [&file, &snapshot_temp_path(&file)] {
             if candidate.exists() {
@@ -371,16 +434,29 @@ impl SnapshotStore {
     }
 
     pub fn clear(&self) -> Result<()> {
-        let _guard = self
-            .file_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = self.lock_local_data_commit();
+        self.validate_local_data_commit_guard(&guard)?;
+        self.ensure_no_pending_local_data_transition_unlocked()?;
         if self.file.exists() {
             fs::remove_file(&self.file)?;
         }
         let temp_file = snapshot_temp_path(&self.file);
         if temp_file.exists() {
             fs::remove_file(temp_file)?;
+        }
+        Ok(())
+    }
+
+    fn validate_local_data_commit_guard(&self, guard: &LocalDataCommitGuard<'_>) -> Result<()> {
+        if !std::ptr::eq(self, guard.store) {
+            anyhow::bail!("The local data commit guard belongs to another snapshot store.");
+        }
+        Ok(())
+    }
+
+    fn ensure_no_pending_local_data_transition_unlocked(&self) -> Result<()> {
+        if self.load_local_data_transition_unlocked()?.is_some() {
+            anyhow::bail!("A local data recovery operation is pending.");
         }
         Ok(())
     }
@@ -404,12 +480,11 @@ fn validate_local_data_transition(transition: &LocalDataTransition) -> Result<()
         || transition
             .source_snapshot_fingerprint
             .as_deref()
-            .is_some_and(|fingerprint| {
-                fingerprint.len() != 64
-                    || !fingerprint
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            })
+            .is_some_and(|fingerprint| !is_valid_snapshot_fingerprint(fingerprint))
+        || transition
+            .target_snapshot_fingerprint
+            .as_deref()
+            .is_some_and(|fingerprint| !is_valid_snapshot_fingerprint(fingerprint))
     {
         anyhow::bail!("The pending local data recovery record is invalid.");
     }
@@ -417,24 +492,47 @@ fn validate_local_data_transition(transition: &LocalDataTransition) -> Result<()
     match transition.kind {
         LocalDataTransitionKind::Reset => {
             if transition.target_snapshot.is_none()
+                || transition.target_snapshot_fingerprint.is_some()
                 || transition.target_updated_at.is_some()
                 || transition.encrypted_backup.is_some()
+                || transition.encrypted_vault.is_some()
             {
                 anyhow::bail!("The pending local data recovery record is invalid.");
             }
         }
         LocalDataTransitionKind::EncryptedBackupImport => {
             if transition.target_snapshot.is_some()
+                || transition.target_snapshot_fingerprint.is_some()
                 || transition
                     .target_updated_at
                     .is_none_or(|timestamp| timestamp <= 0)
                 || transition.encrypted_backup.is_none()
+                || transition.encrypted_vault.is_some()
+            {
+                anyhow::bail!("The pending local data recovery record is invalid.");
+            }
+        }
+        LocalDataTransitionKind::SyncCommit => {
+            if transition.source_snapshot_fingerprint.is_none()
+                || transition.target_snapshot_fingerprint.is_none()
+                || transition.target_snapshot.is_some()
+                || transition.target_updated_at.is_some()
+                || transition.encrypted_backup.is_some()
+                || transition.encrypted_vault.is_none()
+                || transition.provider_ids.is_empty()
             {
                 anyhow::bail!("The pending local data recovery record is invalid.");
             }
         }
     }
     Ok(())
+}
+
+fn is_valid_snapshot_fingerprint(fingerprint: &str) -> bool {
+    fingerprint.len() == 64
+        && fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(test)]
@@ -475,7 +573,7 @@ mod tests {
         .unwrap();
         let store = SnapshotStore {
             file: file.clone(),
-            file_lock: Mutex::new(()),
+            local_data_commit_lock: Mutex::new(()),
         };
 
         assert!(store.load().unwrap().is_some());
@@ -489,7 +587,7 @@ mod tests {
         let file = test_snapshot_path();
         let store = SnapshotStore {
             file: file.clone(),
-            file_lock: Mutex::new(()),
+            local_data_commit_lock: Mutex::new(()),
         };
         let mut observed = default_snapshot();
         observed.updated_at = 10;
@@ -521,7 +619,7 @@ mod tests {
         fs::write(&file, "{broken").unwrap();
         let store = SnapshotStore {
             file: file.clone(),
-            file_lock: Mutex::new(()),
+            local_data_commit_lock: Mutex::new(()),
         };
 
         assert!(store.load().is_err());

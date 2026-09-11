@@ -449,6 +449,7 @@ const nativeBackupImplementationChecks = [
     paths: [
       'apps/android/app/src/main/java/app/zerochat/ui/settings/DataSettings.kt',
       'apps/android/app/src/main/java/app/zerochat/ui/settings/DataSettingsBackup.kt',
+      'apps/android/app/src/main/java/app/zerochat/ui/settings/BackupTaskOwner.kt',
       'apps/android/app/src/main/java/app/zerochat/ui/settings/ProviderKeyImportTransaction.kt',
       'apps/android/app/src/main/java/app/zerochat/ui/ZeroChatApp.kt',
       'apps/android/app/src/main/java/app/zerochat/security/SecretStore.kt',
@@ -458,13 +459,21 @@ const nativeBackupImplementationChecks = [
       'ActivityResultContracts.OpenDocument()',
       'backupCrypto.encryptVault',
       'backupCrypto.decryptVault',
-      'onSnapshotImport(vault.data, vault.secrets.providerKeys).getOrThrow()',
-      'SnapshotPersistence.launch {',
+      'backupTasks.requestImport(vault.data, vault.secrets.providerKeys).getOrThrow()',
+      'backupTasks.launch {',
+      'backupTaskViewModel.tasks.importRequests.collect { requests ->',
+      'request.executionMutex.withLock {',
+      'backupTaskViewModel.tasks.completeImport(',
+      'class BackupTaskViewModel : ViewModel()',
       'commitProviderKeyImportTransaction(',
       'PENDING_PROVIDER_KEY_IMPORT_KEY',
       'secretStore.stageProviderKeyImport(intent, replacements)',
       'secretStore.finishProviderKeyImport(intent)',
       'secretStore.restoreProviderKeyImport(intent)',
+    ],
+    mustNotInclude: [
+      'onSnapshotImport(vault.data, vault.secrets.providerKeys).getOrThrow()',
+      'SnapshotPersistence.launch {',
     ],
   },
   {
@@ -1000,168 +1009,69 @@ const linuxPreviewDisabledChecks = [
 
 const webI18nBindingChecks = [
   {
-    paths: [
-      'src/components/FirstRunGuide.tsx',
-      'src/components/FirstRunGuideProviderPicker.tsx',
-      'src/components/FirstRunGuideProviderFields.tsx',
-      'src/components/FirstRunGuideSyncPanel.tsx',
-    ],
+    path: 'src/app/components/Onboarding.tsx',
     mustInclude: [
-      "t('field.provider')",
-      "t('field.baseUrl')",
-      "t('field.providerKey')",
-      "t('placeholder.providerKey')",
-      "t('placeholder.manualOrFetchModel')",
-      "t('guide.providerKeyHelpLink')",
-      "t('guide.providerKeyLocalOnly')",
-      "t('settings.providerGroupOfficial')",
-      "t('settings.providerGroupCustom')",
-      "t('settings.providerNameHint')",
-      "t('settings.interfaceTypeNoteCustom')",
-      "t('settings.providerBaseUrlHint')",
-      "'field.proxyUrl'",
-      "'placeholder.optionalProxy'",
-      "t('settings.proxyUrlNote')",
-      "t('label.clientRequestMode')",
-      "t('settings.clientRequestModeNote')",
-      "t('label.workerHostsProviderKey')",
-      "t('settings.workerHostedKeyNote')",
-      "t('setting.sync')",
-      "t('mode.local')",
-      "t('mode.gistShort')",
-      "t('mode.workerShort')",
-      "t('placeholder.baseUrl')",
+      "t('onboarding.addProvider')",
+      "t('onboarding.skip')",
+      "'empty.noConversationTitle'",
     ],
     mustNotInclude: [
+      'Add a provider',
+      'Skip for now',
+    ],
+  },
+  {
+    path: 'src/app/components/SettingsView.tsx',
+    mustInclude: [
+      "t('settings.providerName')",
+      "t('settings.baseUrl')",
+      "t('settings.apiKey')",
+      "t('sync.syncNow')",
+      "t('settings.language')",
+    ],
+    mustNotInclude: [
+      'Provider name',
+      'Base URL',
+      'API key',
+    ],
+  },
+  {
+    path: 'src/app/components/Composer.tsx',
+    mustInclude: [
+      "t('composer.modeChat')",
+      "t('composer.modeImage')",
+      "t('composer.placeholder')",
+      "t('composer.send')",
+    ],
+    mustNotInclude: [
+      'Send message',
+      'Describe the image',
+    ],
+  },
+  {
+    path: 'src/app/components/MessageList.tsx',
+    mustInclude: [
+      "t('message.retry')",
+      "t('message.regenerate')",
+      "t('message.transcriptLabel')",
+      "t('button.newMessages')",
+    ],
+    mustNotInclude: [
+      'Retry response',
+      'New messages',
+    ],
+  },
+  {
+    path: 'src/app/components/Sidebar.tsx',
+    mustInclude: [
+      "t('app.newChat')",
+      "t('app.search')",
+      "t('app.settings')",
+    ],
+    mustNotInclude: [
+      'New chat',
+      'Search conversations',
       'Gist ID',
-      'GitHub Token',
-      'Fine-grained token',
-      'placeholder="https://api.example.com/v1"',
-    ],
-  },
-  {
-    path: 'src/components/ProviderSettingsPanel.tsx + src/components/ProviderSettingsEditor.tsx',
-    paths: [
-      'src/components/ProviderSettingsPanel.tsx',
-      'src/components/ProviderSettingsEditor.tsx',
-    ],
-    mustInclude: [
-      "t('field.baseUrl')",
-      "t('placeholder.baseUrl')",
-      "t('settings.providerNameHint')",
-      "t('settings.providerKeyHint')",
-      "t('settings.providerBaseUrlHint')",
-      "t('settings.proxyUrlNote')",
-    ],
-    mustNotInclude: [
-      'Gist ID',
-      'GitHub Token',
-      'Fine-grained token',
-      'placeholder="https://api.example.com/v1"',
-    ],
-  },
-  {
-    path: 'src/components/ModelDefaultsPanel.tsx',
-    mustInclude: [
-      "fieldKey: 'field.defaultModel'",
-      "fieldKey: 'field.imageModel'",
-      "fieldKey: 'field.audioSpeechModel'",
-      "fieldKey: 'field.audioTranscriptionModel'",
-      "fieldKey: 'field.embeddingModel'",
-      "fieldKey: 'field.moderationModel'",
-      "fieldKey: 'field.realtimeModel'",
-      "hintKey: 'settings.defaultModelHint'",
-      "hintKey: 'settings.imageModelHint'",
-      "hintKey: 'settings.audioSpeechModelHint'",
-      "hintKey: 'settings.audioTranscriptionModelHint'",
-      "hintKey: 'settings.embeddingModelHint'",
-      "hintKey: 'settings.moderationModelHint'",
-      "hintKey: 'settings.realtimeModelHint'",
-      "t('settings.chatContextWindowNote'",
-    ],
-    mustNotInclude: [
-      'Default model',
-      'Image model',
-      'Chat context messages',
-      'placeholder="gpt-4"',
-    ],
-  },
-  {
-    path: 'src/components/ModelCatalogEditor.tsx',
-    mustInclude: [
-      "t('field.models')",
-      "t('field.modelName')",
-      "t('placeholder.modelList')",
-      "t('settings.modelListNote')",
-    ],
-    mustNotInclude: [
-      'Model list',
-      'Model name',
-      'Type a model name',
-      'Fetch models from the provider first',
-    ],
-  },
-  {
-    path: 'src/components/DataSettingsPanel.tsx',
-    mustInclude: [
-      "t('field.syncPassphrase')",
-      "t('placeholder.syncPassphrase')",
-      "t('settings.syncEncryptedNote')",
-    ],
-    mustNotInclude: [
-      'Data encryption password',
-      'Sync password',
-      'placeholder="sync password"',
-    ],
-  },
-  {
-    path: 'src/components/SkillComposerPanel.tsx',
-    mustInclude: [
-      "t('label.skillGlobalAutoMatch')",
-      "t('field.skillContextBudget')",
-      "t('field.skillAutoCount')",
-      "t('settings.skillBudgetNote')",
-      "t('settings.skillsHelp')",
-      "t('notice.skillContentRequired')",
-      "t('field.skillName')",
-      "t('field.skillContent')",
-    ],
-    mustNotInclude: [
-      'Context budget',
-      'Auto-match count',
-      'Skill name',
-      'Skill content',
-    ],
-  },
-  {
-    path: 'src/components/SkillRow.tsx',
-    mustInclude: [
-      "t('field.skillName')",
-      "t('field.skillContent')",
-      "t('settings.skillsHelp')",
-      "t('notice.skillContentRequired')",
-      "t('button.save')",
-      "t('button.cancel')",
-    ],
-    mustNotInclude: ['Skill name', 'Skill content'],
-  },
-  {
-    path: 'src/components/SyncSettingsPanel.tsx',
-    mustInclude: [
-      "t('field.gistId')",
-      "t('field.githubToken')",
-      "t('placeholder.githubToken')",
-      "t('settings.gistIdHint')",
-      "t('settings.gistFileHint')",
-      "t('settings.githubTokenHint')",
-      "t('settings.cloudflareWorkerUrlHint')",
-      "t('settings.cloudflareAccessKeyFieldHint')",
-    ],
-    mustNotInclude: [
-      'Gist ID',
-      'GitHub Token',
-      'Fine-grained token',
-      'placeholder="https://api.example.com/v1"',
     ],
   },
   {
@@ -1958,6 +1868,12 @@ for (const check of nativeBackupImplementationChecks) {
   for (const expected of check.mustInclude) {
     if (!text.includes(expected)) {
       failures.push(`${label} is missing native backup implementation marker: ${expected}`)
+    }
+  }
+
+  for (const blocked of check.mustNotInclude ?? []) {
+    if (text.includes(blocked)) {
+      failures.push(`${label} contains retired native backup ownership marker: ${blocked}`)
     }
   }
 

@@ -1,15 +1,19 @@
-use super::{LinuxAppState, LinuxLocalStorageIssue, now_millis, persist_snapshot_candidate};
+use super::{LinuxAppState, LinuxLocalStorageIssue, now_millis};
 use crate::{
-    background::poll_background_result,
+    auto_sync::collect_provider_keys,
+    background::{BACKGROUND_TASK_DISCONNECTED, poll_background_result},
     crypto::SnapshotCrypto,
     defaults::default_snapshot,
-    local_data_transition::recover_pending_local_data_transition,
+    local_data_transition::recover_pending_local_data_transition_during_local_data_commit,
     models::{AppSnapshot, EncryptedSnapshotEnvelope, ProviderSecrets, SyncConfig, SyncVault},
     secret_store::{
         SecretValueTransaction, SyncSecretStore, github_token_transaction_after_direct_set,
         rollback_secret_value_after_failure, sync_passphrase_transaction_after_direct_set,
     },
-    storage::{LocalDataTransition, SnapshotCompareAndSave, snapshot_fingerprint},
+    storage::{
+        LocalDataCommitGuard, LocalDataTransition, SnapshotCompareAndSave, SnapshotStore,
+        snapshot_fingerprint,
+    },
     sync::FirstSyncStrategy,
 };
 use std::{
@@ -29,26 +33,22 @@ impl LinuxAppState {
 
     pub(crate) fn save_sync_passphrase(&self, value: &str) -> anyhow::Result<()> {
         self.ensure_sync_secret_snapshot_commit_ready()?;
-        let previous_secret = self.secrets.sync_passphrase()?;
-        if previous_secret == value.trim() {
-            self.snapshot.borrow_mut().updated_at = now_millis();
-            self.save();
-            if let Some(message) = self.local_storage_blocker_message() {
-                anyhow::bail!(message);
-            }
-            return Ok(());
-        }
-
+        let store = self.store.as_ref().expect("storage readiness was checked");
+        let guard = store.lock_local_data_commit();
         let previous = self.snapshot.borrow().clone();
+        self.ensure_snapshot_generation_during_local_data_commit(store, &guard, &previous)?;
         let mut candidate = previous.clone();
         candidate.updated_at = now_millis();
-        self.secrets.set_sync_passphrase(value.trim())?;
+        let previous_secret = self.secrets.sync_passphrase()?;
+        if previous_secret != value.trim() {
+            self.secrets.set_sync_passphrase(value.trim())?;
+        }
         let transaction = sync_passphrase_transaction_after_direct_set(
             self.secrets.as_ref(),
             previous_secret,
             value,
         )?;
-        self.commit_sync_secret_snapshot(&previous, candidate, transaction)
+        self.commit_sync_secret_snapshot(&previous, candidate, transaction, store, &guard)
     }
 
     pub(crate) fn sync_passphrase(&self) -> String {
@@ -57,7 +57,10 @@ impl LinuxAppState {
 
     pub(crate) fn reset_sync_passphrase(&self) -> anyhow::Result<()> {
         self.ensure_sync_secret_snapshot_commit_ready()?;
+        let store = self.store.as_ref().expect("storage readiness was checked");
+        let guard = store.lock_local_data_commit();
         let previous = self.snapshot.borrow().clone();
+        self.ensure_snapshot_generation_during_local_data_commit(store, &guard, &previous)?;
         let mut candidate = previous.clone();
         candidate.updated_at = now_millis();
         let previous_secret = self.secrets.sync_passphrase()?;
@@ -69,7 +72,7 @@ impl LinuxAppState {
             previous_secret,
             "",
         )?;
-        self.commit_sync_secret_snapshot(&previous, candidate, transaction)
+        self.commit_sync_secret_snapshot(&previous, candidate, transaction, store, &guard)
     }
 
     pub(crate) fn cloudflare_access_key(&self) -> String {
@@ -82,7 +85,10 @@ impl LinuxAppState {
 
     pub(crate) fn save_github_token(&self, value: &str) -> anyhow::Result<()> {
         self.ensure_sync_secret_snapshot_commit_ready()?;
+        let store = self.store.as_ref().expect("storage readiness was checked");
+        let guard = store.lock_local_data_commit();
         let previous = self.snapshot.borrow().clone();
+        self.ensure_snapshot_generation_during_local_data_commit(store, &guard, &previous)?;
         let mut candidate = previous.clone();
         candidate.updated_at = now_millis();
         let previous_secret = self.secrets.github_token()?;
@@ -94,7 +100,7 @@ impl LinuxAppState {
             previous_secret,
             value,
         )?;
-        self.commit_sync_secret_snapshot(&previous, candidate, transaction)
+        self.commit_sync_secret_snapshot(&previous, candidate, transaction, store, &guard)
     }
 
     pub(crate) fn update_sync_config(&self, mutate: impl FnOnce(&mut SyncConfig)) {
@@ -121,12 +127,10 @@ impl LinuxAppState {
         previous: &AppSnapshot,
         candidate: AppSnapshot,
         transaction: SecretValueTransaction<'_, S>,
+        store: &SnapshotStore,
+        guard: &LocalDataCommitGuard<'_>,
     ) -> anyhow::Result<()> {
-        let store = self
-            .store
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Local storage is unavailable."))?;
-        match store.save_if_unchanged(Some(previous), &candidate) {
+        match store.save_if_unchanged_during_local_data_commit(guard, Some(previous), &candidate) {
             Ok(SnapshotCompareAndSave::Saved) => {}
             Ok(SnapshotCompareAndSave::Changed(_)) => {
                 return Err(rollback_secret_value_after_failure(
@@ -148,17 +152,49 @@ impl LinuxAppState {
         Ok(())
     }
 
+    fn ensure_snapshot_generation_during_local_data_commit(
+        &self,
+        store: &SnapshotStore,
+        guard: &LocalDataCommitGuard<'_>,
+        expected: &AppSnapshot,
+    ) -> anyhow::Result<()> {
+        if store
+            .load_local_data_transition_during_local_data_commit(guard)?
+            .is_some()
+        {
+            anyhow::bail!("A local data recovery operation is pending.");
+        }
+        let current = store.load_during_local_data_commit(guard)?;
+        if snapshot_fingerprint(current.as_ref())? != snapshot_fingerprint(Some(expected))? {
+            anyhow::bail!("Local data changed before the secret transaction started.");
+        }
+        Ok(())
+    }
+
     pub(crate) fn export_encrypted_backup(&self) -> anyhow::Result<String> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Local storage is unavailable."))?;
+        let guard = store.lock_local_data_commit();
+        if store
+            .load_local_data_transition_during_local_data_commit(&guard)?
+            .is_some()
+        {
+            anyhow::bail!("A local data recovery operation is pending.");
+        }
         let passphrase = self.secrets.sync_passphrase()?;
         if passphrase.trim().is_empty() {
             anyhow::bail!("Data encryption password is required.");
         }
 
-        let snapshot = self.snapshot.borrow().clone();
+        let snapshot = store
+            .load_during_local_data_commit(&guard)?
+            .ok_or_else(|| anyhow::anyhow!("Local snapshot is unavailable."))?;
         let vault = SyncVault {
             data: snapshot.clone(),
             secrets: ProviderSecrets {
-                provider_keys: self.provider_keys_for_backup(&snapshot),
+                provider_keys: self.provider_keys_for_backup(&guard, &snapshot)?,
             },
         };
         let envelope = SnapshotCrypto::new().encrypt_vault(&vault, &passphrase)?;
@@ -185,11 +221,23 @@ impl LinuxAppState {
             .store
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Local storage is unavailable."))?;
+        let guard = store.lock_local_data_commit();
+        if self.secrets.sync_passphrase()? != passphrase {
+            anyhow::bail!("The data encryption password changed during backup import.");
+        }
+        if store
+            .load_local_data_transition_during_local_data_commit(&guard)?
+            .is_some()
+        {
+            anyhow::bail!("A local data recovery operation is pending.");
+        }
         let recovering = self.local_persistence_blocked();
         let source_snapshot_fingerprint = if recovering {
             None
         } else {
-            Some(snapshot_fingerprint(store.load()?.as_ref())?)
+            Some(snapshot_fingerprint(
+                store.load_during_local_data_commit(&guard)?.as_ref(),
+            )?)
         };
         let provider_ids = previous
             .providers
@@ -211,8 +259,12 @@ impl LinuxAppState {
             envelope,
             provider_ids,
         );
-        store.stage_local_data_transition(&transition)?;
-        let imported = match recover_pending_local_data_transition(store, self.secrets.as_ref()) {
+        store.stage_local_data_transition(&guard, &transition)?;
+        let imported = match recover_pending_local_data_transition_during_local_data_commit(
+            store,
+            self.secrets.as_ref(),
+            &guard,
+        ) {
             Ok(Some(imported)) => imported,
             Ok(None) => anyhow::bail!("The encrypted backup recovery record disappeared."),
             Err(error) => {
@@ -230,16 +282,12 @@ impl LinuxAppState {
 
     pub(crate) fn provider_keys_for_backup(
         &self,
+        _guard: &LocalDataCommitGuard<'_>,
         snapshot: &AppSnapshot,
-    ) -> BTreeMap<String, String> {
-        snapshot
-            .providers
-            .iter()
-            .filter_map(|provider| {
-                let value = self.secrets.provider_key(&provider.id).unwrap_or_default();
-                (!value.trim().is_empty()).then_some((provider.id.clone(), value))
-            })
-            .collect()
+    ) -> anyhow::Result<BTreeMap<String, String>> {
+        collect_provider_keys(snapshot, |provider_id| {
+            self.secrets.provider_key(provider_id)
+        })
     }
 
     pub(crate) fn save(&self) {
@@ -279,23 +327,35 @@ impl LinuxAppState {
             });
 
             let state = self.clone();
-            poll_background_result(receiver, move |result| {
-                if !matches!(result, Ok(Some(_))) {
-                    return;
-                }
+            poll_background_result(
+                receiver,
+                move |result| {
+                    if !matches!(result, Ok(Some(_))) {
+                        return;
+                    }
 
-                // The coordinator may merge edits queued while the remote request
-                // is in flight. Reload its committed snapshot instead of applying
-                // the older request result to GTK memory.
-                if let Some(snapshot) = state
-                    .store
-                    .as_ref()
-                    .and_then(|store| store.load().ok().flatten())
-                {
-                    *state.snapshot.borrow_mut() = snapshot.clone();
-                    *state.committed_snapshot.borrow_mut() = snapshot;
-                }
-            });
+                    // The coordinator may merge edits queued while the remote request
+                    // is in flight. Reload its committed snapshot instead of applying
+                    // the older request result to GTK memory.
+                    let loaded = state
+                        .store
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("Local storage is unavailable."))
+                        .and_then(|store| store.load());
+                    match classify_synced_snapshot_reload(loaded) {
+                        Ok(snapshot) => {
+                            *state.snapshot.borrow_mut() = snapshot.clone();
+                            *state.committed_snapshot.borrow_mut() = snapshot;
+                        }
+                        Err(issue) => {
+                            // A successful remote operation cannot make a failed local
+                            // reload safe. Block ordinary writes until explicit recovery.
+                            state.report_local_storage_issue(issue);
+                        }
+                    }
+                },
+                || Err(BACKGROUND_TASK_DISCONNECTED.to_owned()),
+            );
         }
     }
 
@@ -306,12 +366,21 @@ impl LinuxAppState {
             return None;
         };
 
-        match persist_snapshot_candidate(&self.snapshot, &self.committed_snapshot, |snapshot| {
-            store.save(snapshot)
-        }) {
-            Ok(snapshot) => Some(snapshot),
-            Err(issue) => {
-                self.report_local_storage_issue(issue);
+        let candidate = self.snapshot.borrow().clone();
+        let expected = self.committed_snapshot.borrow().clone();
+        match store.save_if_unchanged(Some(&expected), &candidate) {
+            Ok(SnapshotCompareAndSave::Saved) => {
+                *self.committed_snapshot.borrow_mut() = candidate.clone();
+                Some(candidate)
+            }
+            Ok(SnapshotCompareAndSave::Changed(Some(current))) => {
+                *self.snapshot.borrow_mut() = current.clone();
+                *self.committed_snapshot.borrow_mut() = current;
+                None
+            }
+            Ok(SnapshotCompareAndSave::Changed(None)) | Err(_) => {
+                self.restore_committed_snapshot();
+                self.report_local_storage_issue(LinuxLocalStorageIssue::SnapshotSaveFailed);
                 None
             }
         }
@@ -340,7 +409,10 @@ impl LinuxAppState {
                 let _ = sender.send(result);
             });
         } else {
-            let _ = sender.send(Err("Cloud sync is not configured.".to_owned()));
+            let message = self
+                .sync_initialization_issue
+                .unwrap_or("Cloud sync is not configured.");
+            let _ = sender.send(Err(message.to_owned()));
         }
     }
 
@@ -363,7 +435,46 @@ impl LinuxAppState {
                 let _ = sender.send(result);
             });
         } else {
-            let _ = sender.send(Err("Cloud sync is not configured.".to_owned()));
+            let message = self
+                .sync_initialization_issue
+                .unwrap_or("Cloud sync is not configured.");
+            let _ = sender.send(Err(message.to_owned()));
         }
+    }
+}
+
+fn classify_synced_snapshot_reload<E>(
+    loaded: Result<Option<AppSnapshot>, E>,
+) -> Result<AppSnapshot, LinuxLocalStorageIssue> {
+    match loaded {
+        Ok(Some(snapshot)) => Ok(snapshot),
+        Ok(None) | Err(_) => Err(LinuxLocalStorageIssue::SnapshotLoadFailed),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LinuxLocalStorageIssue, classify_synced_snapshot_reload};
+    use crate::defaults::default_snapshot;
+
+    #[test]
+    fn synced_snapshot_reload_accepts_a_present_snapshot() {
+        assert!(classify_synced_snapshot_reload::<()>(Ok(Some(default_snapshot()))).is_ok());
+    }
+
+    #[test]
+    fn synced_snapshot_reload_blocks_when_the_file_is_missing() {
+        assert_eq!(
+            classify_synced_snapshot_reload::<()>(Ok(None)).err(),
+            Some(LinuxLocalStorageIssue::SnapshotLoadFailed)
+        );
+    }
+
+    #[test]
+    fn synced_snapshot_reload_blocks_when_reading_fails() {
+        assert_eq!(
+            classify_synced_snapshot_reload::<()>(Err(())).err(),
+            Some(LinuxLocalStorageIssue::SnapshotLoadFailed)
+        );
     }
 }

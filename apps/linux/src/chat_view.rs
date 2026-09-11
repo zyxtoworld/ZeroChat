@@ -1,9 +1,8 @@
 use crate::{
-    LinuxAppState,
-    app_state::preference_state::LINUX_PROVIDER_MODEL_FEATURE_HINT_ID,
+    LINUX_PROVIDER_MODEL_FEATURE_HINT_ID, LinuxAppState,
     chat_composer::composer,
     i18n::tr,
-    messages::message_row,
+    messages::{message_display_text, message_row},
     models::MessageRole,
     providers::{chat_composer_hint, provider_key_missing, provider_model_options},
     settings_window::{open_linux_settings_window, settings_page},

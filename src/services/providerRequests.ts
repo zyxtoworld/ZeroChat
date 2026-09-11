@@ -9,7 +9,7 @@ import {
 import {
   assertSafeRemoteBaseUrl,
   normalizeProviderProxyRootUrl,
-} from './providerSafety'
+} from './providerUrlSafety'
 
 interface ProviderRequestAuth {
   provider: ProviderConfig

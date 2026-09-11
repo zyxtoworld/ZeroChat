@@ -72,7 +72,7 @@ internal suspend fun runStreamingChatGenerationWithRetry(
             val finalText = stream { delta ->
                 receivedText.append(delta)
                 val visibleText = receivedText.toString()
-                if (visibleText.isNotEmpty()) {
+                if (visibleText.isNotBlank()) {
                     onVisibleText(visibleText)
                 }
             }
@@ -86,6 +86,7 @@ internal suspend fun runStreamingChatGenerationWithRetry(
                 retryIndex < MAX_CHAT_AUTO_RETRIES &&
                 isRetryableChatGenerationError(error, receivedText)
             ) {
+                receivedText.clear()
                 retryIndex += 1
                 onRetry(retryIndex, MAX_CHAT_AUTO_RETRIES)
                 retryDelay(retryIndex - 1)

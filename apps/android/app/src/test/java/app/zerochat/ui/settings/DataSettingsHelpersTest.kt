@@ -4,6 +4,7 @@ import app.zerochat.data.AppSnapshot
 import app.zerochat.data.ProviderConfig
 import app.zerochat.data.ProviderKind
 import app.zerochat.data.SyncConfig
+import app.zerochat.ui.NativeI18n
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertInstanceOf
@@ -143,6 +144,23 @@ class DataSettingsHelpersTest {
         assertEquals("abc123", gist.gistId)
         assertEquals("zerochat-sync.json", gist.gistFile)
         assertEquals("gh-token", gist.token)
+    }
+
+    @Test
+    fun backupFailureNoticeUsesLocalizedCopyWithoutExceptionText() {
+        val sentinel =
+            "C:\\private\\backup\\secret.json /home/runner/.config/token https://provider.invalid/v1 " +
+                "sk-test-not-a-real-key"
+        val zh = NativeI18n.forMode("zh-CN")
+        val en = NativeI18n.forMode("en-US")
+
+        val exportNotice = backupFailureNotice(zh, BackupOperation.Export)
+        val importNotice = backupFailureNotice(en, BackupOperation.Import)
+
+        assertEquals(zh.t("notice.backupExportFailedPrefix"), exportNotice)
+        assertEquals(en.t("notice.backupImportFailedPrefix"), importNotice)
+        assertFalse(exportNotice.contains(sentinel))
+        assertFalse(importNotice.contains(sentinel))
     }
 
     private fun provider(id: String): ProviderConfig = ProviderConfig(

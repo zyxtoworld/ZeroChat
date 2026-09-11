@@ -5,7 +5,7 @@ private enum ShareExtensionBridge {
     static let appGroupIdentifier = "group.app.zerochat.client"
     static let pendingTextKey = "pendingShareText.v1"
     static let pendingTextCreatedAtKey = "pendingShareTextCreatedAt.v1"
-    static let openAppURL = URL(string: "zerochat://share")!
+    static let openAppURLString = "zerochat://share"
 
     @discardableResult
     static func save(_ text: String) -> Bool {
@@ -233,7 +233,12 @@ final class ShareViewController: UIViewController {
             ShareExtensionBridge.clear()
             return
         }
-        extensionContext.open(ShareExtensionBridge.openAppURL) { opened in
+        guard let openAppURL = URL(string: ShareExtensionBridge.openAppURLString) else {
+            ShareExtensionBridge.clear()
+            extensionContext.completeRequest(returningItems: nil)
+            return
+        }
+        extensionContext.open(openAppURL) { opened in
             if !opened {
                 ShareExtensionBridge.clear()
             }

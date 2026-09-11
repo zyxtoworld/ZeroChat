@@ -141,6 +141,7 @@ export async function fetchSync<T>(
   let response: Response | undefined
 
   try {
+    throwIfSyncResponseAborted(timeoutSignal.signal)
     response = await fetch(input, {
       ...init,
       redirect: 'error',

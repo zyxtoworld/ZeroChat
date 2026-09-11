@@ -1,7 +1,6 @@
 import type { AppData, ChatMessage, ProviderSecrets } from '../types'
 import { rt } from '../i18n'
 import { encryptObject } from './crypto'
-import { safeImageAttachmentDataUrl } from './imageAttachmentSafety'
 import {
   INCREMENTAL_CHUNK_SIZE,
   type AttachmentContentChunk,
@@ -25,6 +24,9 @@ import {
   skillChunkFingerprint,
   skillChunkObjectType,
 } from './syncIncrementalHelpers'
+import {
+  safeProviderImageAttachmentSource,
+} from './imageAttachmentSafety'
 
 export async function buildIncrementalUpload(
   data: AppData,
@@ -53,15 +55,21 @@ export async function buildIncrementalUpload(
     for (const message of conversation.messages) {
       const attachments: NonNullable<ChatMessage['attachments']> = []
       for (const attachment of message.attachments ?? []) {
-        if (!attachment.dataUrl) {
-          attachments.push(attachment)
-          continue
-        }
-
-        const safeDataUrl = safeImageAttachmentDataUrl(attachment.dataUrl)?.dataUrl
-        if (!safeDataUrl) {
+        const source = safeProviderImageAttachmentSource(attachment)
+        if (!source) {
           throw new Error(rt('error.remoteMessageChunkFormat'))
         }
+
+        if (!source.startsWith('data:')) {
+          attachments.push({
+            ...attachment,
+            dataUrl: undefined,
+            url: source,
+          })
+          continue
+        }
+        const safeDataUrl = source
+
         const parts = attachmentContentParts(safeDataUrl)
         for (const [index, content] of parts.entries()) {
           const fingerprint = await attachmentChunkFingerprint(
@@ -123,7 +131,11 @@ export async function buildIncrementalUpload(
           }
         }
 
-        attachments.push({ ...attachment, dataUrl: undefined, url: undefined })
+        attachments.push({
+          ...attachment,
+          dataUrl: undefined,
+          url: undefined,
+        })
       }
 
       messages.push({

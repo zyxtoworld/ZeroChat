@@ -252,7 +252,11 @@ export async function readBoundedByteStream(
           `${label} exceeded the ${maxBytes}-byte safety limit.`,
         )
 
-        await reader.cancel(error).catch(() => undefined)
+        try {
+          void reader.cancel(error).catch(() => undefined)
+        } catch {
+          // A non-compliant reader must not replace the byte-limit error.
+        }
         throw error
       }
 
@@ -433,7 +437,9 @@ export function isEncryptedObject(value: unknown): value is EncryptedObjectEnvel
 }
 
 export function assertUsablePassphrase(passphrase: string): void {
-  void passphrase
+  if (typeof passphrase !== 'string' || !passphrase.trim()) {
+    throw new Error(rt('error.syncPassphraseRequired'))
+  }
 }
 
 export async function encryptVault(

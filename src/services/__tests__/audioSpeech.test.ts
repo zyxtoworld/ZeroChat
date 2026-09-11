@@ -265,4 +265,29 @@ describe('audio speech provider service', () => {
       name: 'AbortError',
     })
   })
+
+  it('cancels an unread speech response when cancellation wins before body handoff', async () => {
+    const controller = new AbortController()
+    const cancel = vi.fn()
+    const response = new Response(
+      new ReadableStream<Uint8Array>({ cancel }),
+      { headers: { 'content-type': 'audio/mpeg' } },
+    )
+
+    await expect(
+      synthesizeSpeechAudio({
+        apiKey: 'provider-key',
+        fetcher: vi.fn(() => {
+          queueMicrotask(() => controller.abort())
+          return Promise.resolve(response)
+        }) as typeof fetch,
+        provider: provider(),
+        proxyToken: '',
+        signal: controller.signal,
+        text: 'hello',
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+
+    expect(cancel).toHaveBeenCalledTimes(1)
+  })
 })

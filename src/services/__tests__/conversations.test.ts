@@ -4,6 +4,7 @@ import type { Translator } from '../../i18n'
 import type { Conversation } from '../../types'
 import {
   CONVERSATION_TITLE_MAX_LENGTH,
+  CONVERSATION_PLACEHOLDER_TITLE,
   cleanConversationTitle,
   conversationMatchesSearch,
   displayConversationTitle,
@@ -45,23 +46,49 @@ describe('conversation helpers', () => {
     )
   })
 
-  it('maps legacy default titles to the active locale', () => {
-    expect(displayConversationTitle('新建对话', t)).toBe('Localized new chat')
-    expect(displayConversationTitle('Nouveau chat', t)).toBe(
+  it('maps only the canonical placeholder key to the active locale', () => {
+    expect(displayConversationTitle('新建对话', t)).toBe('新建对话')
+    expect(displayConversationTitle('Nouveau chat', t)).toBe('Nouveau chat')
+    expect(displayConversationTitle('conversation.newTitle', t)).toBe(
       'Localized new chat',
     )
     expect(displayConversationTitle('Roadmap', t)).toBe('Roadmap')
   })
 
+  it('does not translate a user title that matches a localized placeholder', () => {
+    expect(displayConversationTitle('New chat', t)).toBe('New chat')
+  })
+
   it('normalizes edited titles to the guarded maximum length', () => {
     const draft = normalizeConversationTitleDraft(
       `  ${'Title '.repeat(30)}  `,
-      t,
     )
 
     expect(draft).toHaveLength(CONVERSATION_TITLE_MAX_LENGTH)
-    expect(normalizeConversationTitleDraft('   ', t)).toBe(
-      'Localized new chat',
+    expect(normalizeConversationTitleDraft('   ')).toBe(
+      CONVERSATION_PLACEHOLDER_TITLE,
+    )
+  })
+
+  it('keeps surrogate pairs, ZWJ, and combining graphemes intact at title limits', () => {
+    const family = '👩‍💻'
+    const generated = `${'a'.repeat(27)}${family}z`
+    const edited = `${'a'.repeat(79)}${family}`
+    const combining = `${'a'.repeat(79)}e\u0301`
+
+    expect(cleanConversationTitle(generated, t)).toBe(
+      `${'a'.repeat(27)}${family}...`,
+    )
+    expect(normalizeConversationTitleDraft(edited)).toBe(edited)
+    expect(normalizeConversationTitleDraft(combining)).toBe(combining)
+  })
+
+  it('turns embedded control characters into title whitespace', () => {
+    const value = 'alpha\u0000beta\u007Fgamma'
+
+    expect(cleanConversationTitle(value, t)).toBe('alpha beta gamma')
+    expect(normalizeConversationTitleDraft(value)).toBe(
+      'alpha beta gamma',
     )
   })
 
@@ -80,7 +107,7 @@ describe('conversation helpers', () => {
     expect(
       conversationMatchesSearch(
         conversation({ title: 'New chat' }),
-        normalizeConversationSearchValue('localized'),
+        normalizeConversationSearchValue('new chat'),
         t,
       ),
     ).toBe(true)

@@ -4,6 +4,8 @@ import app.zerochat.data.AppSnapshot
 import app.zerochat.data.SnapshotCommit
 import app.zerochat.data.SnapshotCompareAndSetResult
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 
 internal class LocalResetConflictException :
     IllegalStateException("Local data changed while reset was being committed.")
@@ -24,7 +26,16 @@ internal suspend fun commitLocalResetTransaction(
     val committed = try {
         compareAndSetSnapshot(source, candidate)
     } catch (error: Throwable) {
-        restoreStagedCredentials(error, restoreCredentials)
+        withContext(NonCancellable) {
+            compensateCommittedReset(
+                source = source,
+                candidate = candidate,
+                primaryError = error,
+                finishCredentials = finishCredentials,
+                restoreCredentials = restoreCredentials,
+                compareAndSetSnapshot = compareAndSetSnapshot,
+            )
+        }
         throw error
     }
 

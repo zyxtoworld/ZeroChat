@@ -2,9 +2,9 @@ import XCTest
 @testable import ZeroChatCore
 
 final class SyncIncrementalAttachmentTests: XCTestCase {
-    func testAttachmentFingerprintMatchesCrossPlatformVector() {
+    func testAttachmentFingerprintMatchesCrossPlatformVector() throws {
         XCTAssertEqual(
-            attachmentChunkFingerprint(
+            try attachmentChunkFingerprint(
                 conversationId: "conversation-1",
                 messageId: "message-1",
                 attachmentId: "attachment-1",
@@ -21,5 +21,43 @@ final class SyncIncrementalAttachmentTests: XCTestCase {
 
         XCTAssertEqual(parts.count, 2)
         XCTAssertEqual(parts.joined(), dataURL)
+    }
+
+    func testManifestLookupRejectsDuplicateKeys() {
+        XCTAssertThrowsError(
+            try uniqueIncrementalManifestDictionary(
+                ["first", "second"],
+                keyedBy: { _ in "duplicate" }
+            )
+        ) { error in
+            guard let syncError = error as? SyncError,
+                  case .badIncrementalManifest = syncError else {
+                XCTFail("Expected badIncrementalManifest, got \(error)")
+                return
+            }
+        }
+    }
+
+    func testIncrementalAttachmentAssemblyRejectsOversizedDataURLBeforeAppending() throws {
+        XCTAssertEqual(
+            try nextIncrementalAttachmentDataURLByteCount(
+                currentBytes: maxImageAttachmentDataURLBytes - 2,
+                nextContent: "AA"
+            ),
+            maxImageAttachmentDataURLBytes
+        )
+
+        XCTAssertThrowsError(
+            try nextIncrementalAttachmentDataURLByteCount(
+                currentBytes: maxImageAttachmentDataURLBytes - 1,
+                nextContent: "AA"
+            )
+        ) { error in
+            guard let syncError = error as? SyncError,
+                  case .badMessageChunk = syncError else {
+                XCTFail("Expected badMessageChunk, got \(error)")
+                return
+            }
+        }
     }
 }

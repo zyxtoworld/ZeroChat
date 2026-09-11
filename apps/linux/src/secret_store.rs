@@ -69,6 +69,10 @@ pub trait SyncSecretStore: Send + Sync {
         Ok(())
     }
 
+    fn ensure_readable(&self) -> Result<()> {
+        Ok(())
+    }
+
     fn cloudflare_access_key(&self) -> Result<String> {
         Ok(derive_cloudflare_access_key(&self.sync_passphrase()?))
     }
@@ -90,23 +94,27 @@ pub struct LinuxSecretStore {
     commands: mpsc::Sender<SecretCommand>,
     worker: Mutex<Option<JoinHandle<()>>>,
     issue: Arc<Mutex<Option<String>>>,
+    lookup_issue: Arc<Mutex<Option<SecretStoreIssue>>>,
 }
 
 impl LinuxSecretStore {
     pub fn load(provider_ids: Vec<String>) -> Self {
         let issue = Arc::new(Mutex::new(None));
+        let lookup_issue = Arc::new(Mutex::new(None));
         let mut service_available = true;
         let sync_passphrase = load_secret_into_cache(
             &mut service_available,
             SECRET_KIND_SYNC,
             SECRET_SYNC_ID,
             &issue,
+            &lookup_issue,
         );
         let github_token = load_secret_into_cache(
             &mut service_available,
             SECRET_KIND_GITHUB,
             SECRET_GITHUB_ID,
             &issue,
+            &lookup_issue,
         );
         let mut provider_keys = BTreeMap::new();
         for provider_id in provider_ids {
@@ -115,6 +123,7 @@ impl LinuxSecretStore {
                 SECRET_KIND_PROVIDER,
                 &provider_id,
                 &issue,
+                &lookup_issue,
             );
             if !value.is_empty() {
                 provider_keys.insert(provider_id, value);
@@ -129,6 +138,7 @@ impl LinuxSecretStore {
             commands,
             worker: Mutex::new(worker),
             issue,
+            lookup_issue,
         }
     }
 
@@ -195,7 +205,15 @@ impl LinuxSecretStore {
         lock_recover(&self.issue).take()
     }
 
+    pub(crate) fn ensure_readable(&self) -> Result<()> {
+        if let Some(issue) = *lock_recover(&self.lookup_issue) {
+            return Err(anyhow!(issue));
+        }
+        Ok(())
+    }
+
     pub(crate) fn flush(&self) -> Result<()> {
+        self.ensure_readable()?;
         let (completion, result) = mpsc::channel();
         self.enqueue(SecretCommand::Flush { completion })?;
         result
@@ -397,6 +415,10 @@ impl SyncSecretStore for LinuxSecretStore {
 
     fn flush(&self) -> Result<()> {
         LinuxSecretStore::flush(self)
+    }
+
+    fn ensure_readable(&self) -> Result<()> {
+        LinuxSecretStore::ensure_readable(self)
     }
 }
 
@@ -876,6 +898,7 @@ fn load_secret_into_cache(
     kind: &str,
     id: &str,
     issue: &Arc<Mutex<Option<String>>>,
+    lookup_issue: &Arc<Mutex<Option<SecretStoreIssue>>>,
 ) -> String {
     if !*service_available {
         return String::new();
@@ -884,6 +907,7 @@ fn load_secret_into_cache(
         Ok(value) => value.unwrap_or_default(),
         Err(error) => {
             *service_available = false;
+            *lock_recover(lookup_issue) = Some(error);
             record_issue(issue, error);
             String::new()
         }
@@ -1374,9 +1398,24 @@ mod tests {
                 commands,
                 worker: Mutex::new(None),
                 issue: Arc::new(Mutex::new(None)),
+                lookup_issue: Arc::new(Mutex::new(None)),
             },
             receiver,
         )
+    }
+
+    #[test]
+    fn initial_lookup_failure_remains_a_sync_blocker_after_notice_consumption() {
+        let (store, _receiver) = memory_only_store();
+        *lock_recover(&store.lookup_issue) = Some(SecretStoreIssue::new(
+            SecretOperation::Lookup,
+            SecretFailure::Unavailable,
+        ));
+
+        let error = store
+            .flush()
+            .expect_err("a failed initial keyring lookup must block flush");
+        assert!(error.to_string().contains("Secret Service lookup"));
     }
 
     fn fake_secret_tool_lookup(secret_bytes: usize, stderr_bytes: usize) -> Command {

@@ -4,9 +4,10 @@ import Foundation
 private let localDataTransitionVersion = 1
 private let maxLocalDataTransitionFileBytes = maxEncryptedBackupFileBytes * 4 / 3 + 1_000_000
 
-public enum LocalDataTransitionKind: String, Codable, Sendable {
+public enum LocalDataTransitionKind: String, Codable, Equatable, Sendable {
     case reset
     case encryptedBackupImport
+    case syncCommit
 }
 
 public struct LocalDataTransition: Codable, Sendable {
@@ -110,10 +111,17 @@ public actor SnapshotStore {
             at: fileURL,
             maxBytes: maxBytes
         )
-        return try decoder.decode(AppSnapshot.self, from: data)
+        let snapshot = try decoder.decode(AppSnapshot.self, from: data)
+        guard hasUniqueSnapshotRecordIds(snapshot) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return snapshot
     }
 
     public func save(_ snapshot: AppSnapshot) throws {
+        guard hasUniqueSnapshotRecordIds(snapshot) else {
+            throw CocoaError(.fileWriteInvalidFile)
+        }
         let data = try encoder.encode(snapshot)
         try assertLocalFileByteCount(data.count, maxBytes: maxBytes)
         try data.write(to: fileURL, options: [.atomic])
@@ -189,7 +197,8 @@ public actor SnapshotStore {
 
         switch transition.kind {
         case .reset:
-            guard transition.targetSnapshot != nil,
+            guard let targetSnapshot = transition.targetSnapshot,
+                  hasUniqueSnapshotRecordIds(targetSnapshot),
                   transition.targetUpdatedAt == nil,
                   transition.encryptedBackup == nil else {
                 throw LocalDataTransitionError.invalidRecord
@@ -201,6 +210,17 @@ public actor SnapshotStore {
                   let encryptedBackup = transition.encryptedBackup,
                   !encryptedBackup.isEmpty,
                   encryptedBackup.count <= maxEncryptedBackupFileBytes else {
+                throw LocalDataTransitionError.invalidRecord
+            }
+        case .syncCommit:
+            guard transition.sourceSnapshotFingerprint != nil,
+                  transition.targetSnapshot == nil,
+                  let targetUpdatedAt = transition.targetUpdatedAt,
+                  targetUpdatedAt > 0,
+                  let encryptedBackup = transition.encryptedBackup,
+                  !encryptedBackup.isEmpty,
+                  encryptedBackup.count <= maxEncryptedBackupFileBytes,
+                  !transition.providerIds.isEmpty else {
                 throw LocalDataTransitionError.invalidRecord
             }
         }

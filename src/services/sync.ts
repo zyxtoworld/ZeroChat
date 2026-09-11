@@ -15,6 +15,16 @@ import {
 
 export { isSyncVaultShape } from './syncShared'
 
+type RemoteSyncMode = 'gist' | 'cloudflare'
+
+function assertSupportedRemoteSyncMode(
+  mode: unknown,
+): asserts mode is RemoteSyncMode {
+  if (mode !== 'gist' && mode !== 'cloudflare') {
+    throw new Error(rt('error.remoteDataBadFormat'))
+  }
+}
+
 export async function performSync(
   data: AppData,
   context: SyncContext,
@@ -31,6 +41,8 @@ export async function performSync(
       message: local.sync.lastSyncStatus ?? rt('sync.status.localMode'),
     }
   }
+
+  assertSupportedRemoteSyncMode(data.sync.mode)
 
   if (!context.encryptionPassphrase) {
     throw new Error(rt('error.syncPassphraseRequired'))
@@ -61,6 +73,8 @@ export async function pullRemoteChanges(
     }
   }
 
+  assertSupportedRemoteSyncMode(data.sync.mode)
+
   if (!context.encryptionPassphrase) {
     throw new Error(rt('error.syncPassphraseRequired'))
   }
@@ -80,6 +94,8 @@ export async function clearRemoteSyncData(
   if (data.sync.mode === 'local') {
     throw new Error(rt('error.clearCloudLocalMode'))
   }
+
+  assertSupportedRemoteSyncMode(data.sync.mode)
 
   if (data.sync.mode === 'gist') {
     const { clearWithGist } = await import('./syncGist')

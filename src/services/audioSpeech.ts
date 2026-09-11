@@ -2,6 +2,7 @@ import { rt } from '../i18n'
 import type { ProviderConfig } from '../types'
 import {
   assertProviderResponseOk,
+  cancelUnreadProviderResponse,
   isAbortError,
   MAX_PROVIDER_AUDIO_RESPONSE_BYTES,
   ProviderRequestError,
@@ -89,9 +90,10 @@ export async function synthesizeSpeechAudio({
   }
 
   const timeoutSignal = providerTimeoutSignal(plan.init.signal, timeoutMs)
+  let response: Response | undefined
 
   try {
-    const response = await fetcher(plan.endpoint, {
+    response = await fetcher(plan.endpoint, {
       ...plan.init,
       signal: timeoutSignal.signal,
     })
@@ -134,6 +136,8 @@ export async function synthesizeSpeechAudio({
       model: plan.model,
     }
   } catch (error: unknown) {
+    cancelUnreadProviderResponse(response)
+
     if (timeoutSignal.timedOut()) {
       throw providerTimeoutError()
     }

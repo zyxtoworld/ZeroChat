@@ -14,6 +14,7 @@ import {
   type IncrementalManifest,
   type IncrementalSkillRef,
   type SkillContentChunk,
+  hasValidIncrementalManifestReferences,
   skillChunkFingerprint,
   skillRefKey,
 } from './syncIncrementalHelpers'
@@ -105,6 +106,10 @@ export async function manifestToVault(
   manifest: IncrementalManifest,
   signal?: AbortSignal,
 ): Promise<SyncVault> {
+  if (!hasValidIncrementalManifestReferences(manifest)) {
+    throw new Error(rt('error.remoteIncrementalManifestFormat'))
+  }
+
   const refsByConversation = new Map<string, IncrementalChunkRef[]>()
   const refsBySkillChunk = new Map<string, IncrementalSkillRef>()
   const refsByAttachment = new Map<string, IncrementalAttachmentRef[]>()
@@ -168,7 +173,7 @@ export async function manifestToVault(
             fingerprint !== ref.fingerprint ||
             !Array.isArray(chunk.messages) ||
             chunk.messages.length !== ref.messageCount ||
-            !chunk.messages.every(isChatMessageShape)
+            !chunk.messages.every((message) => isChatMessageShape(message))
           ) {
             throw new Error(rt('error.remoteMessageChunkFormat'))
           }

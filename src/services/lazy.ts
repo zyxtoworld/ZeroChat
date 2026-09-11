@@ -1,4 +1,5 @@
-type ChatService = typeof import('./chat')
+import type { ChatService } from './chatServiceTypes'
+
 type CryptoService = typeof import('./crypto')
 type MarkdownService = typeof import('./markdownWorkerClient')
 type SkillService = typeof import('./skills')
@@ -103,20 +104,6 @@ export async function transcribeAudioFile(
 ): ReturnType<ChatService['transcribeAudioFile']> {
   const service = await loadChatService()
   return service.transcribeAudioFile(...args)
-}
-
-export async function submitEditedUserMessageGeneration(
-  ...args: Parameters<ChatService['submitEditedUserMessageGeneration']>
-): ReturnType<ChatService['submitEditedUserMessageGeneration']> {
-  const service = await loadChatService()
-  return service.submitEditedUserMessageGeneration(...args)
-}
-
-export async function regenerateAssistantMessageGeneration(
-  ...args: Parameters<ChatService['regenerateAssistantMessageGeneration']>
-): ReturnType<ChatService['regenerateAssistantMessageGeneration']> {
-  const service = await loadChatService()
-  return service.regenerateAssistantMessageGeneration(...args)
 }
 
 export async function generateImage(

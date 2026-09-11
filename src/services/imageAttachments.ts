@@ -1,4 +1,4 @@
-import type { NoticeTarget } from '../components/Notice'
+import type { NoticeTarget } from './noticeTypes'
 import { rt, type Translator } from '../i18n'
 import type { ChatMessage, MessageAttachment } from '../types'
 import type { NoticeTone } from './uiRuntime'
@@ -67,15 +67,20 @@ export function dataUrlToFile(dataUrl: string, fileName: string): File {
   return new File([bytes], fileName, { type: mimeType })
 }
 
-export function fileToDataUrl(file: File): Promise<string> {
+export function fileToDataUrl(file: File, signal?: AbortSignal): Promise<string> {
   return readLocalFileAsDataUrl(
     file,
     MAX_IMAGE_FILE_BYTES,
     localFileTooLargeMessage(rt, MAX_IMAGE_FILE_BYTES),
+    signal,
   )
 }
 
-export function isAcceptedImageSourceFile(file: File): boolean {
+export function isAcceptedImageSourceFile(file: File | null | undefined): boolean {
+  if (!file) {
+    return false
+  }
+
   const type = file.type.trim().toLowerCase()
 
   if (IMAGE_SOURCE_ACCEPTED_TYPES.has(type)) {
@@ -94,8 +99,7 @@ export function dragHasAcceptedImageSource(dataTransfer: DataTransfer): boolean 
 
   if (items.length > 0) {
     return items.some(
-      (item) =>
-        item.kind === 'file' && IMAGE_SOURCE_ACCEPTED_TYPES.has(item.type),
+      (item) => item.kind === 'file' && isAcceptedImageSourceFile(item.getAsFile?.()),
     )
   }
 
@@ -128,7 +132,7 @@ export function acceptedImageSourceFromClipboard(
   }
 
   for (const item of Array.from(dataTransfer.items ?? [])) {
-    if (item.kind !== 'file' || !IMAGE_SOURCE_ACCEPTED_TYPES.has(item.type)) {
+    if (item.kind !== 'file') {
       continue
     }
 
@@ -278,9 +282,11 @@ export function fileFromAttachment(
   attachment: MessageAttachment | undefined,
   fileName: string,
 ): File | null {
-  if (!attachment?.dataUrl) {
+  const source = attachment && safeImageAttachmentDataUrl(attachment.dataUrl)
+
+  if (!source) {
     return null
   }
 
-  return dataUrlToFile(attachment.dataUrl, fileName)
+  return dataUrlToFile(source.dataUrl, fileName)
 }

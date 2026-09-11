@@ -8,17 +8,27 @@ import {
 
 function createWindowHarness() {
   let loadListener: (() => void) | null = null
+  let loadListenerOnce = false
   const win = {
-    addEventListener: vi.fn((type: 'load', listener: () => void) => {
+    addEventListener: vi.fn((
+      type: 'load',
+      listener: () => void,
+      options?: { once?: boolean },
+    ) => {
       if (type === 'load') {
         loadListener = listener
+        loadListenerOnce = options?.once === true
       }
     }),
   }
 
   return {
     triggerLoad() {
-      loadListener?.()
+      const listener = loadListener
+      if (loadListenerOnce) {
+        loadListener = null
+      }
+      listener?.()
     },
     win,
   }
@@ -88,10 +98,155 @@ describe('service worker registration', () => {
       }),
     ).toBe(true)
     expect(register).not.toHaveBeenCalled()
+    expect(harness.win.addEventListener).toHaveBeenCalledWith(
+      'load',
+      expect.any(Function),
+      { once: true },
+    )
 
+    harness.triggerLoad()
     harness.triggerLoad()
 
     expect(register).toHaveBeenCalledWith('/app/sw.js')
+    expect(register).toHaveBeenCalledTimes(1)
+  })
+
+  it('coalesces repeated installs before the window load event', () => {
+    const register = vi.fn(() => Promise.resolve())
+    const listeners: Array<() => void> = []
+    const win = {
+      addEventListener: vi.fn((
+        _type: 'load',
+        listener: () => void,
+      ) => {
+        listeners.push(listener)
+      }),
+    }
+    const options = {
+      isProd: true,
+      nav: { serviceWorker: { register } },
+      win,
+    }
+
+    expect(installServiceWorkerRegistration(options)).toBe(true)
+    expect(installServiceWorkerRegistration(options)).toBe(true)
+    expect(win.addEventListener).toHaveBeenCalledTimes(1)
+
+    for (const listener of listeners) {
+      listener()
+    }
+
+    expect(register).toHaveBeenCalledWith('/sw.js')
+    expect(register).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not lose a load transition between the readyState check and listener registration', () => {
+    const register = vi.fn(() => Promise.resolve())
+    let readyState: 'loading' | 'complete' = 'loading'
+    const win = {
+      addEventListener: vi.fn(() => {
+        readyState = 'complete'
+      }),
+    }
+
+    expect(
+      installServiceWorkerRegistration({
+        baseUrl: '/app/',
+        doc: {
+          get readyState() {
+            return readyState
+          },
+        },
+        isProd: true,
+        nav: { serviceWorker: { register } },
+        win,
+      }),
+    ).toBe(true)
+
+    expect(register).toHaveBeenCalledWith('/app/sw.js')
+    expect(register).toHaveBeenCalledTimes(1)
+  })
+
+  it('joins a base URL without a trailing slash before the worker filename', () => {
+    const register = vi.fn(() => Promise.resolve())
+    const harness = createWindowHarness()
+
+    expect(
+      installServiceWorkerRegistration({
+        baseUrl: '/app',
+        doc: { readyState: 'complete' },
+        isProd: true,
+        nav: { serviceWorker: { register } },
+        win: harness.win,
+      }),
+    ).toBe(true)
+
+    expect(register).toHaveBeenCalledWith('/app/sw.js')
+  })
+
+  it('allows a later install to retry after registration rejection', async () => {
+    const register = vi
+      .fn()
+      .mockImplementationOnce(() => Promise.reject(new Error('first attempt failed')))
+      .mockImplementationOnce(() => Promise.resolve())
+    const logger = { warn: vi.fn() }
+    const harness = createWindowHarness()
+    const options = {
+      doc: { readyState: 'complete' as const },
+      isProd: true,
+      logger,
+      nav: { serviceWorker: { register } },
+      win: harness.win,
+    }
+
+    expect(installServiceWorkerRegistration(options)).toBe(true)
+    await flushPromises()
+    expect(installServiceWorkerRegistration(options)).toBe(true)
+
+    expect(register).toHaveBeenCalledTimes(2)
+    expect(logger.warn).toHaveBeenCalledOnce()
+  })
+
+  it('allows an immediate retry after a synchronous registration failure', () => {
+    const register = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error('synchronous registration failure')
+      })
+      .mockImplementationOnce(() => Promise.resolve())
+    const logger = { warn: vi.fn() }
+    const harness = createWindowHarness()
+    const options = {
+      doc: { readyState: 'complete' as const },
+      isProd: true,
+      logger,
+      nav: { serviceWorker: { register } },
+      win: harness.win,
+    }
+
+    expect(installServiceWorkerRegistration(options)).toBe(true)
+    expect(installServiceWorkerRegistration(options)).toBe(true)
+
+    expect(register).toHaveBeenCalledTimes(2)
+    expect(logger.warn).toHaveBeenCalledOnce()
+  })
+
+  it('registers immediately when the window load event already passed', () => {
+    const register = vi.fn(() => Promise.resolve())
+    const harness = createWindowHarness()
+
+    expect(
+      installServiceWorkerRegistration({
+        baseUrl: '/late/',
+        doc: { readyState: 'complete' },
+        isProd: true,
+        nav: { serviceWorker: { register } },
+        win: harness.win,
+      }),
+    ).toBe(true)
+
+    expect(register).toHaveBeenCalledWith('/late/sw.js')
+    expect(harness.win.addEventListener).not.toHaveBeenCalled()
   })
 
   it('logs rejected service worker registration without exposing raw error text', async () => {

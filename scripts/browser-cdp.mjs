@@ -2,6 +2,17 @@ const DEFAULT_HTTP_TIMEOUT_MS = 10_000
 export const DEFAULT_CONNECT_TIMEOUT_MS = 30_000
 const DEFAULT_COMMAND_TIMEOUT_MS = 20_000
 
+export function markdownWorkerTargetUrls(targets) {
+  return (targets?.targetInfos ?? [])
+    .filter(
+      (target) =>
+        target?.type === 'worker' &&
+        typeof target.url === 'string' &&
+        /(?:^|\/)markdown\.worker(?:[-.]|\/)/u.test(target.url),
+    )
+    .map((target) => target.url)
+}
+
 function positiveTimeout(value, fallback) {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback
 }
@@ -26,6 +37,46 @@ export function findMainFrameLoadCompletionEvent(events, startIndex, mainFrameId
       (event?.method === 'Page.frameStoppedLoading' &&
         event.params?.frameId === mainFrameId),
   )
+}
+
+export async function waitForMainFrameLoadCompletion(
+  events,
+  startIndex,
+  mainFrameId,
+  options = {},
+) {
+  const timeoutMs = positiveTimeout(options.timeoutMs, 30_000)
+  const intervalMs = positiveTimeout(options.intervalMs, 50)
+  const wait = options.sleep ?? sleep
+  const started = Date.now()
+
+  for (;;) {
+    const event = findMainFrameLoadCompletionEvent(
+      events,
+      startIndex,
+      mainFrameId,
+    )
+
+    if (event) {
+      return event
+    }
+
+    if (Date.now() - started >= timeoutMs) {
+      const observedPageEvents = [
+        ...new Set(
+          events
+            .slice(startIndex)
+            .map((candidate) => candidate?.method)
+            .filter((method) => method?.startsWith('Page.')),
+        ),
+      ]
+      throw new Error(
+        `Timed out waiting for main-frame page load completion; observed Page events: ${observedPageEvents.join(', ') || 'none'}`,
+      )
+    }
+
+    await wait(intervalMs)
+  }
 }
 
 function abortError(signal, label) {
@@ -147,6 +198,69 @@ export async function readJson(url, init, options = {}) {
   }
 
   return response.json()
+}
+
+export function findCdpPageTarget(targets, preferredUrl = 'about:blank') {
+  if (!Array.isArray(targets)) {
+    return undefined
+  }
+
+  const pageTargets = targets.filter(
+    (target) =>
+      target?.type === 'page' &&
+      typeof target.webSocketDebuggerUrl === 'string' &&
+      target.webSocketDebuggerUrl.length > 0,
+  )
+
+  return (
+    pageTargets.find((target) => target.url === preferredUrl) ??
+    pageTargets[0]
+  )
+}
+
+export async function waitForCdpPageTarget(port, options = {}) {
+  const timeoutMs = positiveTimeout(options.timeoutMs, DEFAULT_CONNECT_TIMEOUT_MS)
+  const intervalMs = positiveTimeout(options.intervalMs, 100)
+  const requestTimeoutMs = positiveTimeout(options.requestTimeoutMs, 1_000)
+  const preferredUrl = options.preferredUrl ?? 'about:blank'
+  const signal = options.signal
+  const deadline = Date.now() + timeoutMs
+  let lastFailure = null
+
+  while (Date.now() < deadline) {
+    if (signal?.aborted) {
+      throw abortError(signal, 'Chrome page target lookup')
+    }
+
+    const remainingMs = Math.max(1, deadline - Date.now())
+    try {
+      const targets = await readJson(
+        `http://127.0.0.1:${port}/json/list`,
+        undefined,
+        { timeoutMs: Math.min(requestTimeoutMs, remainingMs), signal },
+      )
+      const target = findCdpPageTarget(targets, preferredUrl)
+      if (target) {
+        return target
+      }
+      lastFailure = 'Chrome returned no connectable page target'
+    } catch (error) {
+      if (signal?.aborted) {
+        throw abortError(signal, 'Chrome page target lookup')
+      }
+      lastFailure = error instanceof Error ? error.message : String(error)
+    }
+
+    const delayMs = Math.min(intervalMs, Math.max(0, deadline - Date.now()))
+    if (delayMs > 0) {
+      await sleep(delayMs)
+    }
+  }
+
+  const detail = lastFailure ? ` Last failure: ${lastFailure}.` : ''
+  throw new Error(
+    `Chrome page target did not become ready at http://127.0.0.1:${port}/json/list within ${timeoutMs}ms.${detail}`,
+  )
 }
 
 export async function waitForHttp(url, options = {}) {

@@ -111,6 +111,20 @@ describe('image attachment helpers', () => {
         url: 'intent://open/image',
       }),
     ).toBe('')
+    expect(
+      imageAttachmentSrc({
+        ...imageAttachment,
+        dataUrl: undefined,
+        url: 'https://[::ffff:127.0.0.1]/image.png',
+      }),
+    ).toBe('')
+    expect(
+      imageAttachmentSrc({
+        ...imageAttachment,
+        dataUrl: undefined,
+        url: '\nhttps://cdn.example/image.png',
+      }),
+    ).toBe('')
   })
 
   it('finds image attachments by purpose and restores files from data URLs', async () => {
@@ -145,6 +159,30 @@ describe('image attachment helpers', () => {
     await expect(file?.text()).resolves.toBe('mask')
     expect(fileFromAttachment({ ...mask, dataUrl: undefined }, 'mask.webp')).toBeNull()
     expect(fileFromAttachment(undefined, 'mask.webp')).toBeNull()
+  })
+
+  it('rejects unsafe persisted image data before restoring an edit file', () => {
+    const mask = {
+      id: 'mask-image',
+      kind: 'image' as const,
+      purpose: 'mask' as const,
+      mimeType: 'image/png',
+      dataUrl: 'data:image/png;base64,YQ==',
+      createdAt: 1,
+    }
+
+    expect(
+      fileFromAttachment(
+        { ...mask, dataUrl: 'data:image/svg+xml;base64,PHN2Zz4=' },
+        'mask.png',
+      ),
+    ).toBeNull()
+    expect(
+      fileFromAttachment(
+        { ...mask, dataUrl: 'data:image/png;base64,YQ=' },
+        'mask.png',
+      ),
+    ).toBeNull()
   })
 
   it('downloads image attachments through a temporary anchor', () => {
@@ -390,9 +428,23 @@ describe('image attachment helpers', () => {
     expect(acceptedImageSourceFromDrop(dataTransfer({ files: [unsupported] }))).toBeNull()
   })
 
+  it('keeps drag affordance aligned when browsers omit the item MIME type', () => {
+    const source = imageFile('source.png', 'application/octet-stream')
+
+    expect(
+      dragHasAcceptedImageSource(dataTransfer({ items: [item(source, '')] })),
+    ).toBe(true)
+    expect(
+      dragHasAcceptedImageSource(
+        dataTransfer({ items: [item(source, 'application/octet-stream')] }),
+      ),
+    ).toBe(true)
+  })
+
   it('prefers clipboard files, then item files, and leaves text-only paste alone', () => {
     const direct = imageFile('direct.png')
     const fromItem = imageFile('clipboard.webp', 'image/webp')
+    const mimeLessItem = imageFile('clipboard.png', 'application/octet-stream')
 
     expect(
       acceptedImageSourceFromClipboard(
@@ -402,6 +454,11 @@ describe('image attachment helpers', () => {
     expect(
       acceptedImageSourceFromClipboard(dataTransfer({ items: [item(fromItem)] })),
     ).toBe(fromItem)
+    expect(
+      acceptedImageSourceFromClipboard(
+        dataTransfer({ items: [item(mimeLessItem, '')] }),
+      ),
+    ).toBe(mimeLessItem)
     expect(
       acceptedImageSourceFromClipboard(dataTransfer({ items: [textItem()] })),
     ).toBeNull()

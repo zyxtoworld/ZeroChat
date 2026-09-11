@@ -29,7 +29,9 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --prod=false
+      - run: pnpm run check:project-local-boundary
+      - run: pnpm run check:hosted-ci-workflow-contract
       - run: pnpm run verify:web-local
       - uses: actions/upload-artifact@v4
         if: always()
@@ -51,7 +53,9 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --prod=false
       - uses: microsoft/setup-msbuild@v2
+      - run: pnpm run check:project-local-boundary
       - name: Check Windows prerequisites
         shell: pwsh
         run: node scripts\native-build-prereq-check.mjs --platform=windows --report=.manual-qa\native-prereq-windows.json
@@ -59,7 +63,6 @@ jobs:
         if: always()
         shell: pwsh
         run: node scripts\runtime-smoke-artifact-check.mjs --only-native-prereq-report --require-native-prereq=.manual-qa/native-prereq-windows.json
-      - run: pnpm install --frozen-lockfile
       - run: pnpm run build
       - name: Build Windows Release shell
         shell: pwsh
@@ -75,7 +78,7 @@ jobs:
         run: .\scripts\build-windows.ps1 -Configuration Release -SkipWebBuild -MsixReady
       - name: Package unsigned MSIX
         shell: pwsh
-        run: .\scripts\package-windows-msix.ps1 -BuildRoot C:\ZeroChatWindowsBuild -Configuration Release -Platform x64
+        run: .\scripts\package-windows-msix.ps1 -BuildRoot .local\codex\artifacts\windows-build -Configuration Release -Platform x64
       - name: Inspect MSIX install readiness
         shell: pwsh
         run: .\scripts\windows-msix-install-qa.ps1
@@ -84,7 +87,7 @@ jobs:
         with:
           name: windows-release-shell
           path: |
-            C:\ZeroChatWindowsBuild\output\x64\Release
+            .local\codex\artifacts\windows-build\output\x64\Release
             .manual-qa\ZeroChat_*.msix
             .manual-qa\windows-webview-runtime-smoke.png
             .manual-qa\windows-webview-runtime-smoke.json
@@ -96,9 +99,14 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.1
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -107,8 +115,10 @@ jobs:
       - name: Install Android SDK platform
         shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null
+          yes | sdkmanager --licenses >/dev/null || test "${PIPESTATUS[1]}" -eq 0
           sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - run: pnpm install --frozen-lockfile --prod=false
+      - run: pnpm run check:project-local-boundary
       - name: Check Android prerequisites
         run: node scripts/native-build-prereq-check.mjs --platform=android --report=.manual-qa/native-prereq-android.json
       - name: Validate Android prerequisite report
@@ -165,8 +175,9 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --prod=false
       - uses: dtolnay/rust-toolchain@stable
+      - run: pnpm run check:project-local-boundary
       - name: Install GTK dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libgtk-4-dev libadwaita-1-dev libsecret-tools xvfb xdotool imagemagick dbus-x11
       - name: Check Linux prerequisites
@@ -206,7 +217,8 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --prod=false
+      - run: pnpm run check:project-local-boundary
       - name: Check Apple prerequisites
         run: node scripts/native-build-prereq-check.mjs --platform=apple --report=.manual-qa/native-prereq-apple.json
       - name: Validate Apple prerequisite report
@@ -244,6 +256,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - run: node scripts/project-local-boundary-check.mjs
       - uses: actions/setup-node@v4
         with:
           node-version: 22

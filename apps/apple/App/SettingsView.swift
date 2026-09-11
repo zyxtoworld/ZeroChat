@@ -83,20 +83,20 @@ struct SettingsView: View {
                             .padding(.vertical, 6)
                             .background(
                                 tab == item
-                                    ? Color.accentColor.opacity(0.16)
+                                    ? ZeroChatTheme.accent.opacity(0.16)
                                     : Color.secondary.opacity(0.10),
-                                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                in: RoundedRectangle(cornerRadius: ZeroChatTheme.radiusMedium, style: .continuous)
                             )
                             .overlay {
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                RoundedRectangle(cornerRadius: ZeroChatTheme.radiusMedium, style: .continuous)
                                     .stroke(
                                         tab == item
-                                            ? Color.accentColor.opacity(0.28)
+                                            ? ZeroChatTheme.accent.opacity(0.28)
                                             : Color.secondary.opacity(0.08),
                                         lineWidth: 1
                                     )
                             }
-                            .foregroundStyle(tab == item ? Color.accentColor : Color.primary)
+                            .foregroundStyle(tab == item ? ZeroChatTheme.accent : Color.primary)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(item.title(i18n))

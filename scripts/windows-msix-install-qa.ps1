@@ -1,10 +1,8 @@
 param(
   [string] $PackagePath = "",
   [string] $TrustedCertificatePath = "",
-  [switch] $TrustCertificate,
   [switch] $TrustMachineCertificate,
   [switch] $TrustSigningRoot,
-  [switch] $RemoveTrustedCertificate,
   [switch] $RemoveTrustedMachineCertificate,
   [switch] $RemoveTrustedSigningRoot,
   [switch] $Install,
@@ -75,7 +73,6 @@ if (-not $ApplicationId) {
 $InstalledBefore = Get-AppxPackage -Name $IdentityName -ErrorAction SilentlyContinue | Select-Object -First 1
 $PreviousInstalledVersion = if ($InstalledBefore) { [string] $InstalledBefore.Version } else { $null }
 $TrustedCertificateThumbprint = $null
-$TrustedCertificateStores = @()
 $TrustedMachineCertificateStores = @()
 $TrustedRootCertificateStores = @()
 
@@ -117,41 +114,22 @@ function Get-TrustedCertificate {
   )
 }
 
-function Add-TrustedCertificate {
-  $Certificate = Get-TrustedCertificate
-  $script:TrustedCertificateThumbprint = $Certificate.Thumbprint
-
-  foreach ($StoreLocation in @("Cert:\CurrentUser\TrustedPeople")) {
-    $Existing = Get-ChildItem $StoreLocation -ErrorAction SilentlyContinue |
-      Where-Object { $_.Thumbprint -eq $Certificate.Thumbprint } |
-      Select-Object -First 1
-
-    if (-not $Existing) {
-      Import-Certificate -FilePath $TrustedCertificatePath -CertStoreLocation $StoreLocation | Out-Null
-    }
-
-    if ($script:TrustedCertificateStores -notcontains $StoreLocation) {
-      $script:TrustedCertificateStores += $StoreLocation
-    }
-  }
-
-  Update-SignatureState
-}
-
-function Remove-TrustedCertificate {
-  $Certificate = Get-TrustedCertificate
-  $script:TrustedCertificateThumbprint = $Certificate.Thumbprint
-
-  Get-ChildItem "Cert:\CurrentUser\TrustedPeople" -ErrorAction SilentlyContinue |
-    Where-Object { $_.Thumbprint -eq $Certificate.Thumbprint } |
-    Remove-Item -Force -ErrorAction SilentlyContinue
-}
-
 function Add-TrustedSigningRoot {
   Assert-MachineCertificateAccess "Trusting the MSIX signing root"
 
   $Certificate = Get-TrustedCertificate
   $script:TrustedCertificateThumbprint = $Certificate.Thumbprint
+  $BasicConstraints = @(
+    $Certificate.Extensions |
+      Where-Object {
+        $_ -is [System.Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]
+      } |
+      Select-Object -First 1
+  )
+
+  if ($BasicConstraints.Count -eq 0 -or -not $BasicConstraints[0].CertificateAuthority) {
+    throw "Refusing to trust a non-CA package signing certificate as a machine root. Import the leaf signing certificate into LocalMachine TrustedPeople instead."
+  }
 
   foreach ($StoreLocation in @("Cert:\LocalMachine\Root")) {
     $Existing = Get-ChildItem $StoreLocation -ErrorAction SilentlyContinue |
@@ -243,10 +221,8 @@ if (-not $IsSigned -and -not $Install -and -not $Update -and -not $Uninstall) {
     Installed = [bool] $InstalledBefore
     InstalledVersion = $PreviousInstalledVersion
     DryRun = $true
-    TrustedCertificateStores = @()
     TrustedMachineCertificateStores = @()
     TrustedRootCertificateStores = @()
-    TrustedCertificateRemoved = $false
     TrustedMachineCertificateRemoved = $false
     TrustedRootCertificateRemoved = $false
     NextStep = "Sign this package with scripts\package-windows-msix.ps1 -CertificatePath before install/update QA. Dry run did not change this Windows profile."
@@ -263,12 +239,8 @@ function Assert-TrustedSignature {
     return
   }
 
-  if (-not $TrustCertificate -and -not $TrustMachineCertificate -and -not $TrustSigningRoot) {
-    throw "Package signature is not trusted. Re-run with -TrustCertificate and, only on a disposable QA machine, -TrustMachineCertificate and -TrustSigningRoot plus -TrustedCertificatePath <public .cer>."
-  }
-
-  if ($TrustCertificate) {
-    Add-TrustedCertificate
+  if (-not $TrustMachineCertificate -and -not $TrustSigningRoot) {
+    throw "Package signature is not trusted. On a disposable QA machine, re-run with -TrustMachineCertificate plus -TrustedCertificatePath <public .cer>. Use -TrustSigningRoot only when that file is an actual CA root certificate."
   }
 
   if ($TrustMachineCertificate) {
@@ -280,14 +252,11 @@ function Assert-TrustedSignature {
   }
 
   if ($Signature.Status -ne "Valid") {
-    throw "Package signature is still not trusted after the requested certificate imports. Windows requires the signing certificate and signing root to be trusted before MSIX install/update QA. Use a disposable QA machine, pass -TrustMachineCertificate and -TrustSigningRoot, or use a certificate chain that already ends at a trusted root."
+    throw "Package signature is still not trusted after the requested certificate imports. Import the leaf signing certificate into LocalMachine TrustedPeople, and ensure any separate issuer chain ends at an already trusted or explicitly imported CA root."
   }
 }
 
 if (-not $Install -and -not $Update -and -not $Uninstall) {
-  if ($RemoveTrustedCertificate) {
-    Remove-TrustedCertificate
-  }
   if ($RemoveTrustedMachineCertificate) {
     Remove-TrustedMachineCertificate
   }
@@ -309,13 +278,11 @@ if (-not $Install -and -not $Update -and -not $Uninstall) {
     Installed = [bool] $InstalledBefore
     InstalledVersion = $PreviousInstalledVersion
     DryRun = $true
-    TrustedCertificateStores = $TrustedCertificateStores
     TrustedMachineCertificateStores = $TrustedMachineCertificateStores
     TrustedRootCertificateStores = $TrustedRootCertificateStores
-    TrustedCertificateRemoved = [bool] $RemoveTrustedCertificate
     TrustedMachineCertificateRemoved = [bool] $RemoveTrustedMachineCertificate
     TrustedRootCertificateRemoved = [bool] $RemoveTrustedSigningRoot
-    NextStep = "Pass -Install for first install QA, -Update for upgrade QA, or -Uninstall for cleanup. Use -TrustCertificate and, only on a disposable QA machine, -TrustMachineCertificate and -TrustSigningRoot with a public certificate; cleanup can pass -RemoveTrustedCertificate, -RemoveTrustedMachineCertificate, and -RemoveTrustedSigningRoot."
+    NextStep = "Pass -Install for first install QA, -Update for upgrade QA, or -Uninstall for cleanup. On a disposable QA machine, trust a leaf signing certificate with -TrustMachineCertificate; use -TrustSigningRoot only for an actual CA root. Pair changed stores with the corresponding cleanup switches."
   }
   exit 0
 }
@@ -355,9 +322,6 @@ try {
     $Installed = Get-AppxPackage -Name $IdentityName -ErrorAction SilentlyContinue | Select-Object -First 1
   }
 } finally {
-  if ($RemoveTrustedCertificate) {
-    Remove-TrustedCertificate
-  }
   if ($RemoveTrustedMachineCertificate) {
     Remove-TrustedMachineCertificate
   }
@@ -379,10 +343,8 @@ try {
   PreviousInstalledVersion = $PreviousInstalledVersion
   SignatureStatusMessage = $SignatureStatusMessage
   TrustedCertificateThumbprint = $TrustedCertificateThumbprint
-  TrustedCertificateStores = $TrustedCertificateStores
   TrustedMachineCertificateStores = $TrustedMachineCertificateStores
   TrustedRootCertificateStores = $TrustedRootCertificateStores
-  TrustedCertificateRemoved = [bool] $RemoveTrustedCertificate
   TrustedMachineCertificateRemoved = [bool] $RemoveTrustedMachineCertificate
   TrustedRootCertificateRemoved = [bool] $RemoveTrustedSigningRoot
   InstalledVersion = if ($Installed) { [string] $Installed.Version } else { $null }

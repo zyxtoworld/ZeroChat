@@ -17,3 +17,43 @@
 ### Outcome 3: Evidence-chain and cleanup verification
 - Work: Refresh release diagnostics and current-evidence handoff, confirm the browser-origin blocker stays closed only for current-source passing evidence, and verify no temporary listeners, browser profiles, Worker credentials, or sensitive provider material remain.
 - Verify: `pnpm run check:release-blockers && pnpm run check:current-evidence && pnpm run check:local-cleanup`
+
+## 2026-08-03 navigation-race amendment
+
+- Current-source rerun stopped after temporary Worker readiness because Chrome
+  committed the remote navigation while the harness immediately evaluated the
+  old execution context. No Provider request or browser network trace was sent,
+  the failed report remained diagnostic-only, and cleanup passed.
+- Before another external rerun, add a bounded shared CDP wait for the new main
+  frame's load completion, cover the wait-before-evaluate boundary with a focused
+  regression test, and keep the existing app-shell readiness check after it.
+- Rerun only after the focused CDP, live-provider UI network, temporary Worker,
+  security, and local-cleanup gates pass. Promote only a fresh current-source
+  browser-origin report whose screenshot and sanitized network trace validate.
+
+### Amendment result
+
+- The regression passed with the adjacent CDP and Worker suites (3 files / 50
+  tests), the complete live-provider safety matrix, focused ESLint, Worker security,
+  and local cleanup.
+- The anonymous temporary Worker rerun passed at `2026-08-03T04:59:20.723Z`.
+  Current and attempt reports are identical at 9,542 bytes / SHA-256
+  `1233D87C6AE9F444841A856D2E3710E2AB5A57911BFCFD5C478CA26A71F3A64E`,
+  and all report, screenshot, source-fingerprint, network-redaction, cleanup, and
+  sensitive-material gates passed.
+- Release diagnostics now list six blockers without the browser-origin UI item.
+  Provider full capability and the external native/sync/CI blockers remain open.
+
+## 2026-08-03 anonymous redeploy origin amendment
+
+- A current-source rerun reached the deployed app and the no-Origin Worker probe,
+  but browser-shaped GET and host-management OPTIONS requests both returned the
+  Worker's fixed `Origin not allowed` 403 for all bounded readiness attempts.
+- The Worker currently applies its cross-origin allowlist to a request whose
+  `Origin` exactly equals the request URL origin. That forces the anonymous drill
+  to discover its generated `workers.dev` URL and redeploy only to configure its
+  own origin, creating an unnecessary deployment-version propagation boundary.
+- Treat exact same-origin requests as allowed independently of the cross-origin
+  allowlist, retain strict rejection for every other unlisted origin, and deploy
+  the temporary Worker once with automatic origin enrollment disabled. Verify
+  this boundary in the Worker security check before refreshing external evidence.

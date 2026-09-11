@@ -89,12 +89,16 @@ function deferred<T>(): {
   return { promise, reject, resolve }
 }
 
-function createExclusiveLockHarness(): {
+function createExclusiveLockHarness(options: {
+  firstLockGate?: Promise<void>
+  onFirstLockAcquired?: () => void
+} = {}): {
   locks: LockManager
   requests: string[]
 } {
   const requests: string[] = []
   let tail: Promise<void> = Promise.resolve()
+  let firstLockAcquired = false
   const request = vi.fn(
     <T>(
       name: string,
@@ -102,10 +106,17 @@ function createExclusiveLockHarness(): {
       callback: (lock: Lock) => T | PromiseLike<T>,
     ): Promise<T> => {
       requests.push(name)
-      const result = tail.then(() => callback({
-        mode: 'exclusive',
-        name,
-      } as Lock))
+      const result = tail.then(async () => {
+        if (!firstLockAcquired) {
+          firstLockAcquired = true
+          options.onFirstLockAcquired?.()
+          await options.firstLockGate
+        }
+        return callback({
+          mode: 'exclusive',
+          name,
+        } as Lock)
+      })
       tail = result.then(
         () => undefined,
         () => undefined,
@@ -142,6 +153,7 @@ function createStorageMock(): Storage {
 interface WindowsSecretBridgeHarness {
   entries: Map<string, string>
   migrationState: 'pending' | 'locker-written' | 'complete'
+  releaseNextMutation: () => void
   releaseNextRead: () => void
   requests: Array<Record<string, unknown>>
   revision: string | null
@@ -150,6 +162,7 @@ interface WindowsSecretBridgeHarness {
 
 function createWindowsSecretBridgeHarness(options: {
   entries?: Map<string, string>
+  deferMutations?: boolean
   deferReads?: boolean
   failMigrationVerification?: boolean
   failMutationNumbers?: number[]
@@ -157,6 +170,7 @@ function createWindowsSecretBridgeHarness(options: {
   revision?: string | null
 } = {}): WindowsSecretBridgeHarness {
   const listeners = new Set<(event: { data: unknown }) => void>()
+  const pendingMutationResponses: Array<() => void> = []
   const pendingReadResponses: Array<() => void> = []
   const requests: Array<Record<string, unknown>> = []
   const state = {
@@ -274,41 +288,49 @@ function createWindowsSecretBridgeHarness(options: {
         return
       }
 
-      const clearScope = request.clearScope
-      if (clearScope === 'all') {
-        state.entries.clear()
-      } else if (clearScope === 'provider') {
-        for (const name of [...state.entries.keys()]) {
-          if (name.startsWith('provider:') || name.startsWith('proxy:')) {
-            state.entries.delete(name)
+      const applyMutation = () => {
+        const clearScope = request.clearScope
+        if (clearScope === 'all') {
+          state.entries.clear()
+        } else if (clearScope === 'provider') {
+          for (const name of [...state.entries.keys()]) {
+            if (name.startsWith('provider:') || name.startsWith('proxy:')) {
+              state.entries.delete(name)
+            }
           }
         }
-      }
 
-      for (const change of request.changes as Array<{
-        name: string
-        value: string | null
-      }>) {
-        if (
-          options.failMigrationVerification &&
-          request.migrationState === 'locker-written'
-        ) {
-          continue
+        for (const change of request.changes as Array<{
+          name: string
+          value: string | null
+        }>) {
+          if (
+            options.failMigrationVerification &&
+            request.migrationState === 'locker-written'
+          ) {
+            continue
+          }
+
+          if (change.value === null) {
+            state.entries.delete(change.name)
+          } else {
+            state.entries.set(change.name, change.value)
+          }
         }
 
-        if (change.value === null) {
-          state.entries.delete(change.name)
-        } else {
-          state.entries.set(change.name, change.value)
+        if (request.migrationState !== null) {
+          state.migrationState = request.migrationState as typeof state.migrationState
         }
+        state.revisionCounter += 1
+        state.revision = `revision-${state.revisionCounter}`
+        emit(metadata())
       }
 
-      if (request.migrationState !== null) {
-        state.migrationState = request.migrationState as typeof state.migrationState
+      if (options.deferMutations) {
+        pendingMutationResponses.push(applyMutation)
+      } else {
+        applyMutation()
       }
-      state.revisionCounter += 1
-      state.revision = `revision-${state.revisionCounter}`
-      emit(metadata())
     }),
   }
   const runtimeWindow = {
@@ -325,6 +347,7 @@ function createWindowsSecretBridgeHarness(options: {
     get migrationState() {
       return state.migrationState
     },
+    releaseNextMutation: () => pendingMutationResponses.shift()?.(),
     releaseNextRead: () => pendingReadResponses.shift()?.(),
     requests,
     get revision() {
@@ -341,13 +364,23 @@ interface IndexedDbMockOptions {
     key: string,
     records: Map<string, unknown>,
   ) => void
+  onSecretClearStart?: () => void
+  onSecretClearRequestSuccess?: () => void
+  onSecretClearGuardSuccess?: () => void
+  onSecretClearCommitted?: (records: Map<string, unknown>) => void
+  secretClearGate?: Promise<void>
+  secretClearGuardGate?: Promise<void>
+  secretClearCommitGate?: Promise<void>
   secretRecords?: Map<string, unknown>
+  secretRestoreError?: Error
   transactionError?: Error
   transactionErrorDatabaseName?: string
 }
 
 interface MockTransaction {
   abort: () => void
+  deferCompletion?: boolean
+  deferredComplete?: boolean
   error: Error | null
   onabort: ((event: Event) => void) | null
   oncomplete: ((event: Event) => void) | null
@@ -369,6 +402,11 @@ function createRequest<T>(
     queueMicrotask(() => {
       if (tx.error) {
         tx.onerror?.(new Event('error'))
+        return
+      }
+
+      if (tx.deferCompletion) {
+        tx.deferredComplete = true
         return
       }
 
@@ -400,19 +438,144 @@ function createOpenRequest(databaseName: string, options: IndexedDbMockOptions) 
           onabort: null,
           oncomplete: null,
           onerror: null,
+          deferCompletion: false,
+          deferredComplete: false,
           objectStore: () => store,
         }
         const canMutateSecretRecords =
           databaseName === 'zerochat-secrets' && !shouldFailTransaction
+        let clearCommitPending = false
+        let clearGuardRequested = false
+        let finishClear: (() => void) | undefined
+        let secretDeleteStarted = false
+        const pendingSecretDeletes: Array<{
+          key: string
+          request: IDBRequest<undefined>
+        }> = []
+        let finishSecretDelete: (() => void) | undefined
+        const commitSecretDeletes = () => {
+          if (tx.error) {
+            return
+          }
+
+          if (canMutateSecretRecords) {
+            for (const { key } of pendingSecretDeletes) {
+              options.secretRecords?.delete(key)
+            }
+          }
+          options.onSecretClearCommitted?.(options.secretRecords ?? new Map())
+          tx.deferCompletion = false
+          queueMicrotask(() => tx.oncomplete?.(new Event('complete')))
+        }
+        const beginGatedSecretDelete = (key: string) => {
+          const request = {
+            error: null,
+            result: undefined,
+          } as unknown as IDBRequest<undefined>
+          pendingSecretDeletes.push({ key, request })
+          if (secretDeleteStarted) {
+            return request
+          }
+
+          secretDeleteStarted = true
+          tx.deferCompletion = true
+          options.onSecretClearStart?.()
+          finishSecretDelete = () => {
+            if (options.secretClearGuardGate) {
+              void options.secretClearGuardGate.then(() => {
+                options.onSecretClearGuardSuccess?.()
+                if (options.secretClearCommitGate) {
+                  void options.secretClearCommitGate.then(() => {
+                    commitSecretDeletes()
+                  })
+                  return
+                }
+                commitSecretDeletes()
+              })
+              return
+            }
+            if (options.secretClearCommitGate) {
+              void options.secretClearCommitGate.then(() => {
+                commitSecretDeletes()
+              })
+              return
+            }
+            commitSecretDeletes()
+          }
+          void options.secretClearGate?.then(() => {
+            if (tx.error) {
+              return
+            }
+            if (canMutateSecretRecords) {
+              for (const { key } of pendingSecretDeletes) {
+                options.secretRecords?.delete(key)
+              }
+            }
+            for (const { request: pendingRequest } of pendingSecretDeletes) {
+              pendingRequest.onsuccess?.(new Event('success'))
+            }
+            options.onSecretClearRequestSuccess?.()
+            finishSecretDelete?.()
+          })
+          return request
+        }
         const store = {
           add: vi.fn(() => createRequest('saved-key', tx)),
           clear: vi.fn(() => {
+            options.onSecretClearStart?.()
+            const commit = () => {
+              if (tx.error) {
+                return
+              }
+
+              if (canMutateSecretRecords) {
+                options.secretRecords?.clear()
+              }
+              options.onSecretClearCommitted?.(options.secretRecords ?? new Map())
+              queueMicrotask(() => tx.oncomplete?.(new Event('complete')))
+            }
+            finishClear = commit
+            if (options.secretClearGate) {
+              const request = {
+                error: null,
+                result: undefined,
+              } as unknown as IDBRequest<undefined>
+              void options.secretClearGate.then(() => {
+                if (
+                  options.secretClearGuardGate ||
+                  options.secretClearCommitGate
+                ) {
+                  clearCommitPending = true
+                }
+                request.onsuccess?.(new Event('success'))
+                options.onSecretClearRequestSuccess?.()
+                if (tx.error) {
+                  return
+                }
+                if (options.secretClearCommitGate) {
+                  void options.secretClearCommitGate.then(() => {
+                    if (!clearGuardRequested) {
+                      finishClear?.()
+                    }
+                  })
+                  return
+                }
+                commit()
+              })
+              return request
+            }
             if (canMutateSecretRecords) {
               options.secretRecords?.clear()
             }
             return createRequest(undefined, tx)
           }),
           delete: vi.fn((key: IDBValidKey) => {
+            if (
+              databaseName === 'zerochat-secrets' &&
+              options.secretClearGate
+            ) {
+              return beginGatedSecretDelete(String(key))
+            }
             if (canMutateSecretRecords) {
               options.secretRecords?.delete(String(key))
             }
@@ -435,17 +598,50 @@ function createOpenRequest(databaseName: string, options: IndexedDbMockOptions) 
             )
           }),
           getAllKeys: vi.fn(() =>
-            createRequest(
-              [
+            (() => {
+              const result = [
                 ...new Set([
                   ...(options.allKeys ?? []),
                   ...(options.secretRecords?.keys() ?? []),
                 ]),
-              ],
-              tx,
-            ),
+              ]
+              if (!clearCommitPending || !options.secretClearCommitGate) {
+                return createRequest(result, tx)
+              }
+
+              clearGuardRequested = true
+              const guardGate =
+                options.secretClearGuardGate ?? options.secretClearCommitGate
+              const request = {
+                error: null,
+                result,
+              } as unknown as IDBRequest<IDBValidKey[]>
+              void guardGate?.then(() => {
+                request.onsuccess?.(new Event('success'))
+                options.onSecretClearGuardSuccess?.()
+                if (
+                  options.secretClearGuardGate &&
+                  options.secretClearCommitGate
+                ) {
+                  void options.secretClearCommitGate.then(() => {
+                    finishClear?.()
+                  })
+                  return
+                }
+                finishClear?.()
+              })
+              return request
+            })(),
           ),
           put: vi.fn((value: unknown, key: IDBValidKey) => {
+            if (options.secretRestoreError) {
+              const request = {
+                error: options.secretRestoreError,
+                result: undefined,
+              } as unknown as IDBRequest<undefined>
+              queueMicrotask(() => request.onerror?.(new Event('error')))
+              return request
+            }
             if (canMutateSecretRecords) {
               options.secretRecords?.set(String(key), value)
             }
@@ -602,6 +798,7 @@ function createControlledIndexedDbMock(): {
 } {
   const transactions: MockTransaction[] = []
   const pendingRevisions = new Map<MockTransaction, string>()
+  const fallback = createIndexedDbMock()
   let committedRevision: string | undefined
   const database = {
     close: vi.fn(),
@@ -651,7 +848,11 @@ function createControlledIndexedDbMock(): {
     }),
   }
   const indexedDB = {
-    open: vi.fn(() => {
+    open: vi.fn((databaseName: string, version?: number) => {
+      if (databaseName !== 'zerochat-secrets') {
+        return fallback.open(databaseName, version)
+      }
+
       const request = {
         error: null,
         result: database,
@@ -700,6 +901,38 @@ describe('local secret storage', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('rejects a blocked secret database open and closes a late success', async () => {
+    const close = vi.fn()
+    const database = {
+      close,
+    } as unknown as IDBDatabase
+    const request = {
+      error: null,
+      result: database,
+      onblocked: null,
+      onerror: null,
+      onsuccess: null,
+      onupgradeneeded: null,
+    } as unknown as IDBOpenDBRequest
+    const openStarted = deferred<void>()
+    const open = vi.fn(() => {
+      openStarted.resolve(undefined)
+      return request
+    })
+    vi.stubGlobal('indexedDB', { open } as unknown as IDBFactory)
+
+    const operation = clearProviderSecretsById(['provider-a'])
+
+    await openStarted.promise
+    expect(open).toHaveBeenCalledOnce()
+    expect(request.onblocked).toEqual(expect.any(Function))
+    request.onblocked?.(new Event('blocked') as IDBVersionChangeEvent)
+    await expect(operation).rejects.toThrow('IndexedDB open blocked')
+
+    request.onsuccess?.(new Event('success'))
+    expect(close).toHaveBeenCalledOnce()
   })
 
   it('keeps recovery behind the active provider transition owner', async () => {
@@ -2163,6 +2396,66 @@ describe('local secret storage', () => {
     expect(bridge.entries.size).toBe(0)
   })
 
+  it('keeps pending AppData journals and revision metadata through Windows migration', async () => {
+    const oldData = transitionAppData(1)
+    const targetData = transitionAppData(2)
+    const records = new Map<string, unknown>([
+      ['meta:revision', 'revision-0'],
+      [
+        'meta:pending-provider-app-data-transition',
+        {
+          kind: 'zerochat.providerAppDataTransition',
+          payload: await encryptLocalString(
+            'provider-app-data-transition',
+            JSON.stringify({
+              nextProviderKeys: { 'provider-a': 'new-key' },
+              previousProviderKeys: { 'provider-a': 'old-key' },
+              targetAppData: JSON.stringify(targetData),
+            }),
+          ),
+          revision: 'revision-0',
+          version: 1,
+        },
+      ],
+    ])
+    const firstLockEntered = deferred<void>()
+    const releaseFirstLock = deferred<void>()
+    const lockHarness = createExclusiveLockHarness({
+      firstLockGate: releaseFirstLock.promise,
+      onFirstLockAcquired: () => firstLockEntered.resolve(undefined),
+    })
+    vi.stubGlobal(
+      'indexedDB',
+      createIndexedDbMock({
+        appRecord: oldData,
+        secretRecords: records,
+      }),
+    )
+    const bridge = createWindowsSecretBridgeHarness({
+      entries: new Map([
+        ['provider:provider-a', 'new-key'],
+      ]),
+      migrationState: 'complete',
+      revision: 'revision-0',
+    })
+    vi.stubGlobal('window', bridge.window)
+    vi.stubGlobal('navigator', { locks: lockHarness.locks })
+
+    const loading = loadZeroChatSecrets(['provider-a'])
+    await firstLockEntered.promise
+    const recovering = recoverPendingProviderSecretAppDataTransition()
+    releaseFirstLock.resolve(undefined)
+
+    await expect(loading).resolves.toEqual({
+      providerKeys: { 'provider-a': 'old-key' },
+      githubToken: '',
+    })
+    await expect(recovering).resolves.toBeUndefined()
+    expect(bridge.entries.get('provider:provider-a')).toBe('old-key')
+    expect(records.has('meta:pending-provider-app-data-transition')).toBe(false)
+    expect(records.has('meta:revision')).toBe(true)
+  })
+
   it('restores Windows Locker provider keys after an interrupted AppData transition', async () => {
     const records = new Map<string, unknown>()
     const oldData = transitionAppData(1)
@@ -2460,7 +2753,10 @@ describe('local secret storage', () => {
         migrationState: 'complete',
       },
     ])
-    expect(browserRecords.size).toBe(0)
+    expect(
+      [...browserRecords.keys()].filter((key) => key.startsWith('secret:')),
+    ).toHaveLength(0)
+    expect(browserRecords.has('meta:revision')).toBe(true)
     expect(localStorage.getItem(
       'zerochat:secret:provider:existing',
     )).toBeNull()
@@ -2476,7 +2772,499 @@ describe('local secret storage', () => {
     expect(bridge.migrationState).toBe('complete')
   })
 
-  it('retries Windows migration cleanup from locker-written state', async () => {
+  it('queues credential writes behind a pending Windows migration', async () => {
+    const bridge = createWindowsSecretBridgeHarness({
+      deferMutations: true,
+      migrationState: 'pending',
+      revision: 'revision-0',
+    })
+    vi.stubGlobal('window', bridge.window)
+
+    const loading = loadZeroChatSecrets([])
+    await vi.waitFor(() => {
+      expect(
+        bridge.requests.some(
+          ({ op, migrationState }) =>
+            op === 'mutate' && migrationState === 'locker-written',
+        ),
+      ).toBe(true)
+    })
+
+    const providerWrite = setProviderKey('provider-a', 'new-provider-key')
+    const passphraseWrite = setSyncPassphrase('new-passphrase')
+
+    expect(
+      bridge.requests.filter(({ op }) => op === 'mutate'),
+    ).toHaveLength(1)
+
+    bridge.releaseNextMutation()
+    await vi.waitFor(() => {
+      expect(
+        bridge.requests.some(
+          ({ op, migrationState }) =>
+            op === 'mutate' && migrationState === 'complete',
+        ),
+      ).toBe(true)
+    })
+    expect(
+      bridge.requests.filter(({ op, migrationState }) =>
+        op === 'mutate' && migrationState === null,
+      ),
+    ).toHaveLength(0)
+
+    bridge.releaseNextMutation()
+    await loading
+    await vi.waitFor(() => {
+      expect(
+        bridge.requests.filter(({ op, migrationState }) =>
+          op === 'mutate' && migrationState === null,
+        ),
+      ).toHaveLength(1)
+    })
+    bridge.releaseNextMutation()
+    await vi.waitFor(() => {
+      expect(
+        bridge.requests.filter(({ op, migrationState }) =>
+          op === 'mutate' && migrationState === null,
+        ),
+      ).toHaveLength(2)
+    })
+    bridge.releaseNextMutation()
+
+    await expect(providerWrite).resolves.toBeUndefined()
+    await expect(passphraseWrite).resolves.toBeUndefined()
+    expect(bridge.entries).toEqual(new Map([
+      ['provider:provider-a', 'new-provider-key'],
+      ['sync-passphrase', 'new-passphrase'],
+    ]))
+  })
+
+  it('queues import and reset secret commits behind a pending migration', async () => {
+    const bridge = createWindowsSecretBridgeHarness({
+      deferMutations: true,
+      migrationState: 'pending',
+      revision: 'revision-0',
+    })
+    vi.stubGlobal('window', bridge.window)
+
+    const loading = loadZeroChatSecrets([])
+    await vi.waitFor(() => {
+      expect(
+        bridge.requests.some(
+          ({ op, migrationState }) =>
+            op === 'mutate' && migrationState === 'locker-written',
+        ),
+      ).toBe(true)
+    })
+
+    const imported = commitProviderSecretSnapshotWithAppData(
+      { 'provider-a': 'old-provider-key' },
+      { 'provider-a': 'imported-provider-key' },
+      transitionAppData(2),
+      async (snapshot) => snapshot,
+    )
+    const reset = commitZeroChatSecretSnapshotWithAppData(
+      {
+        providerKeys: { 'provider-a': 'old-provider-key' },
+        githubToken: '',
+        syncPassphrase: 'old-passphrase',
+      },
+      { providerKeys: {}, githubToken: '', syncPassphrase: '' },
+      transitionAppData(3),
+      async (snapshot) => snapshot,
+    )
+
+    expect(
+      bridge.requests.filter(({ op }) => op === 'mutate'),
+    ).toHaveLength(1)
+
+    bridge.releaseNextMutation()
+    await vi.waitFor(() => {
+      expect(
+        bridge.requests.some(
+          ({ op, migrationState }) =>
+            op === 'mutate' && migrationState === 'complete',
+        ),
+      ).toBe(true)
+    })
+    expect(
+      bridge.requests.filter(({ op, migrationState }) =>
+        op === 'mutate' && migrationState === null,
+      ),
+    ).toHaveLength(0)
+
+    bridge.releaseNextMutation()
+    await loading
+    await vi.waitFor(() => {
+      expect(
+        bridge.requests.filter(({ op, migrationState }) =>
+          op === 'mutate' && migrationState === null,
+        ),
+      ).toHaveLength(1)
+    })
+    bridge.releaseNextMutation()
+    await vi.waitFor(() => {
+      expect(
+        bridge.requests.filter(({ op, migrationState }) =>
+          op === 'mutate' && migrationState === null,
+        ),
+      ).toHaveLength(2)
+    })
+    bridge.releaseNextMutation()
+
+    await expect(imported).resolves.toEqual(transitionAppData(2))
+    await expect(reset).resolves.toEqual(transitionAppData(3))
+  })
+
+  it('keeps browser secrets when the bridge changes during browser cleanup', async () => {
+    const browserRecord = await encryptLocalString(
+      'provider:provider-a',
+      'browser-provider-value',
+    )
+    const browserRecords = new Map<string, unknown>([
+      ['secret:provider:provider-a', browserRecord],
+    ])
+    const clearStarted = deferred<void>()
+    const releaseClear = deferred<void>()
+    vi.stubGlobal(
+      'indexedDB',
+      createIndexedDbMock({
+        onSecretClearStart: () => clearStarted.resolve(undefined),
+        secretClearGate: releaseClear.promise,
+        secretRecords: browserRecords,
+      }),
+    )
+    localStorage.setItem(
+      'zerochat:secret:provider:provider-a',
+      'browser-provider-value',
+    )
+    sessionStorage.setItem(
+      'zerochat:secret:sync-passphrase',
+      'browser-sync-value',
+    )
+    const bridgeA = createWindowsSecretBridgeHarness({
+      revision: null,
+    })
+    vi.stubGlobal('window', bridgeA.window)
+
+    const loading = loadZeroChatSecrets(['provider-a'])
+    await vi.waitFor(() => {
+      expect(
+        bridgeA.requests.filter(
+          ({ op, migrationState }) =>
+            op === 'mutate' && migrationState === 'locker-written',
+        ),
+      ).toHaveLength(1)
+    })
+    bridgeA.releaseNextMutation()
+    await clearStarted.promise
+
+    const bridgeB = createWindowsSecretBridgeHarness({
+      revision: null,
+    })
+    vi.stubGlobal('window', bridgeB.window)
+    releaseClear.resolve(undefined)
+
+    await expect(loading).rejects.toMatchObject({
+      code: 'bridge-unavailable',
+    })
+    expect(browserRecords.has('secret:provider:provider-a')).toBe(true)
+    expect(sessionStorage.getItem(
+      'zerochat:secret:sync-passphrase',
+    )).toBe('browser-sync-value')
+  })
+
+  it('aborts browser cleanup when the bridge changes after clear succeeds', async () => {
+    const browserRecord = await encryptLocalString(
+      'provider:provider-a',
+      'browser-provider-value',
+    )
+    const browserRecords = new Map<string, unknown>([
+      ['secret:provider:provider-a', browserRecord],
+    ])
+    const clearStarted = deferred<void>()
+    const clearRequestGate = deferred<void>()
+    const clearRequestSucceeded = deferred<void>()
+    const clearCommitGate = deferred<void>()
+    vi.stubGlobal(
+      'indexedDB',
+      createIndexedDbMock({
+        onSecretClearStart: () => clearStarted.resolve(undefined),
+        onSecretClearRequestSuccess: () =>
+          clearRequestSucceeded.resolve(undefined),
+        secretClearCommitGate: clearCommitGate.promise,
+        secretClearGate: clearRequestGate.promise,
+        secretRecords: browserRecords,
+      }),
+    )
+    localStorage.setItem(
+      'zerochat:secret:provider:provider-a',
+      'browser-provider-value',
+    )
+    const bridgeA = createWindowsSecretBridgeHarness({
+      migrationState: 'complete',
+      revision: 'revision-0',
+    })
+    vi.stubGlobal('window', bridgeA.window)
+
+    const loading = loadZeroChatSecrets(['provider-a'])
+    await clearStarted.promise
+    clearRequestGate.resolve(undefined)
+    await clearRequestSucceeded.promise
+
+    const bridgeB = createWindowsSecretBridgeHarness({
+      revision: null,
+    })
+    vi.stubGlobal('window', bridgeB.window)
+    clearCommitGate.resolve(undefined)
+
+    await expect(loading).rejects.toMatchObject({
+      code: 'bridge-unavailable',
+    })
+    expect(browserRecords.has('secret:provider:provider-a')).toBe(true)
+    expect(localStorage.getItem(
+      'zerochat:secret:provider:provider-a',
+    )).toBe('browser-provider-value')
+  })
+
+  it('restores browser secrets when the bridge changes after the owner guard', async () => {
+    const browserRecord = await encryptLocalString(
+      'provider:provider-a',
+      'browser-provider-value',
+    )
+    const browserRecords = new Map<string, unknown>([
+      ['secret:provider:provider-a', browserRecord],
+    ])
+    const clearStarted = deferred<void>()
+    const clearRequestGate = deferred<void>()
+    const clearRequestSucceeded = deferred<void>()
+    const clearGuardGate = deferred<void>()
+    const clearGuardSucceeded = deferred<void>()
+    const clearCommitGate = deferred<void>()
+    vi.stubGlobal(
+      'indexedDB',
+      createIndexedDbMock({
+        onSecretClearStart: () => clearStarted.resolve(undefined),
+        onSecretClearRequestSuccess: () =>
+          clearRequestSucceeded.resolve(undefined),
+        onSecretClearGuardSuccess: () =>
+          clearGuardSucceeded.resolve(undefined),
+        secretClearCommitGate: clearCommitGate.promise,
+        secretClearGate: clearRequestGate.promise,
+        secretClearGuardGate: clearGuardGate.promise,
+        secretRecords: browserRecords,
+      }),
+    )
+    const bridgeA = createWindowsSecretBridgeHarness({
+      migrationState: 'complete',
+      revision: 'revision-0',
+    })
+    vi.stubGlobal('window', bridgeA.window)
+
+    const loading = loadZeroChatSecrets(['provider-a'])
+    await clearStarted.promise
+    clearRequestGate.resolve(undefined)
+    await clearRequestSucceeded.promise
+    clearGuardGate.resolve(undefined)
+    await clearGuardSucceeded.promise
+
+    const bridgeB = createWindowsSecretBridgeHarness({
+      revision: null,
+    })
+    vi.stubGlobal('window', bridgeB.window)
+    clearCommitGate.resolve(undefined)
+
+    await expect(loading).rejects.toMatchObject({
+      code: 'bridge-unavailable',
+    })
+    expect(browserRecords.has('secret:provider:provider-a')).toBe(true)
+  })
+
+  it('restores only missing browser secrets after a replacement bridge writes during compensation', async () => {
+    const browserRecords = new Map<string, unknown>([
+      ['secret:provider:provider-a', 'old-a'],
+      ['secret:provider:provider-c', 'old-c'],
+    ])
+    const clearStarted = deferred<void>()
+    const clearRequestGate = deferred<void>()
+    const clearRequestSucceeded = deferred<void>()
+    const clearGuardGate = deferred<void>()
+    const clearGuardSucceeded = deferred<void>()
+    const clearCommitGate = deferred<void>()
+    vi.stubGlobal(
+      'indexedDB',
+      createIndexedDbMock({
+        onSecretClearStart: () => clearStarted.resolve(undefined),
+        onSecretClearRequestSuccess: () =>
+          clearRequestSucceeded.resolve(undefined),
+        onSecretClearGuardSuccess: () =>
+          clearGuardSucceeded.resolve(undefined),
+        onSecretClearCommitted: (records) => {
+          records.set('secret:provider:provider-a', 'new-a')
+          records.set('secret:provider:provider-b', 'new-b')
+        },
+        secretClearCommitGate: clearCommitGate.promise,
+        secretClearGate: clearRequestGate.promise,
+        secretClearGuardGate: clearGuardGate.promise,
+        secretRecords: browserRecords,
+      }),
+    )
+    const bridgeA = createWindowsSecretBridgeHarness({
+      migrationState: 'complete',
+      revision: 'revision-0',
+    })
+    vi.stubGlobal('window', bridgeA.window)
+
+    const loading = loadZeroChatSecrets(['provider-a'])
+    await clearStarted.promise
+    clearRequestGate.resolve(undefined)
+    await clearRequestSucceeded.promise
+    clearGuardGate.resolve(undefined)
+    await clearGuardSucceeded.promise
+
+    const bridgeB = createWindowsSecretBridgeHarness({
+      revision: null,
+    })
+    vi.stubGlobal('window', bridgeB.window)
+    clearCommitGate.resolve(undefined)
+
+    await expect(loading).rejects.toMatchObject({
+      code: 'bridge-unavailable',
+    })
+    expect(browserRecords.get('secret:provider:provider-a')).toBe('new-a')
+    expect(browserRecords.get('secret:provider:provider-b')).toBe('new-b')
+    expect(browserRecords.get('secret:provider:provider-c')).toBe('old-c')
+  })
+
+  it('preserves bridge and browser-restore failures without clearing legacy storage', async () => {
+    const browserRecords = new Map<string, unknown>([
+      ['secret:provider:provider-a', 'old-a'],
+    ])
+    const clearStarted = deferred<void>()
+    const clearRequestGate = deferred<void>()
+    const clearRequestSucceeded = deferred<void>()
+    const clearGuardGate = deferred<void>()
+    const clearGuardSucceeded = deferred<void>()
+    const clearCommitGate = deferred<void>()
+    vi.stubGlobal(
+      'indexedDB',
+      createIndexedDbMock({
+        onSecretClearStart: () => clearStarted.resolve(undefined),
+        onSecretClearRequestSuccess: () =>
+          clearRequestSucceeded.resolve(undefined),
+        onSecretClearGuardSuccess: () =>
+          clearGuardSucceeded.resolve(undefined),
+        secretClearCommitGate: clearCommitGate.promise,
+        secretClearGate: clearRequestGate.promise,
+        secretClearGuardGate: clearGuardGate.promise,
+        secretRecords: browserRecords,
+        secretRestoreError: new Error('restore failed'),
+      }),
+    )
+    localStorage.setItem(
+      'zerochat:secret:provider:provider-a',
+      'legacy-provider-value',
+    )
+    sessionStorage.setItem(
+      'zerochat:secret:sync-passphrase',
+      'legacy-sync-value',
+    )
+    const bridgeA = createWindowsSecretBridgeHarness({
+      migrationState: 'complete',
+      revision: 'revision-0',
+    })
+    vi.stubGlobal('window', bridgeA.window)
+
+    const loading = loadZeroChatSecrets(['provider-a'])
+    await clearStarted.promise
+    clearRequestGate.resolve(undefined)
+    await clearRequestSucceeded.promise
+    clearGuardGate.resolve(undefined)
+    await clearGuardSucceeded.promise
+
+    const bridgeB = createWindowsSecretBridgeHarness({
+      revision: null,
+    })
+    vi.stubGlobal('window', bridgeB.window)
+    clearCommitGate.resolve(undefined)
+
+    await expect(loading).rejects.toMatchObject({
+      name: 'AggregateError',
+      message: 'Windows browser secret cleanup could not be compensated.',
+      errors: [
+        expect.objectContaining({ code: 'bridge-unavailable' }),
+        expect.objectContaining({ message: 'restore failed' }),
+      ],
+    })
+    expect(localStorage.getItem(
+      'zerochat:secret:provider:provider-a',
+    )).toBe('legacy-provider-value')
+    expect(sessionStorage.getItem(
+      'zerochat:secret:sync-passphrase',
+    )).toBe('legacy-sync-value')
+  })
+
+  it('does not clear browser secrets before a bridge replacement during completion', async () => {
+    const browserRecord = await encryptLocalString(
+      'provider:provider-a',
+      'browser-provider-value',
+    )
+    const browserRecords = new Map<string, unknown>([
+      ['secret:provider:provider-a', browserRecord],
+    ])
+    vi.stubGlobal(
+      'indexedDB',
+      createIndexedDbMock({ secretRecords: browserRecords }),
+    )
+    localStorage.setItem(
+      'zerochat:secret:provider:provider-a',
+      'browser-provider-value',
+    )
+    sessionStorage.setItem(
+      'zerochat:secret:sync-passphrase',
+      'browser-sync-value',
+    )
+    const bridgeA = createWindowsSecretBridgeHarness({
+      deferMutations: true,
+      revision: null,
+    })
+    vi.stubGlobal('window', bridgeA.window)
+
+    const loading = loadZeroChatSecrets(['provider-a'])
+    await vi.waitFor(() => {
+      expect(
+        bridgeA.requests.filter(
+          ({ op, migrationState }) =>
+            op === 'mutate' && migrationState === 'locker-written',
+        ),
+      ).toHaveLength(1)
+    })
+    bridgeA.releaseNextMutation()
+    await vi.waitFor(() => {
+      expect(
+        bridgeA.requests.filter(
+          ({ op, migrationState }) =>
+            op === 'mutate' && migrationState === 'complete',
+        ),
+      ).toHaveLength(1)
+    })
+
+    const bridgeB = createWindowsSecretBridgeHarness({
+      revision: null,
+    })
+    vi.stubGlobal('window', bridgeB.window)
+    bridgeA.releaseNextMutation()
+
+    await expect(loading).rejects.toMatchObject({
+      code: 'bridge-unavailable',
+    })
+    expect(browserRecords.has('secret:provider:provider-a')).toBe(true)
+    expect(sessionStorage.getItem(
+      'zerochat:secret:sync-passphrase',
+    )).toBe('browser-sync-value')
+  })
+
+  it('retries Windows migration cleanup after durable completion', async () => {
     sessionStorage.setItem(
       'zerochat:secret:sync-passphrase',
       'retryable-sync-value',
@@ -2494,7 +3282,7 @@ describe('local secret storage', () => {
     expect(bridge.entries.get('sync-passphrase')).toBe(
       'retryable-sync-value',
     )
-    expect(bridge.migrationState).toBe('locker-written')
+    expect(bridge.migrationState).toBe('complete')
 
     sessionStorage.removeItem = vi.fn(removeItem)
 
@@ -2503,6 +3291,74 @@ describe('local secret storage', () => {
     expect(sessionStorage.getItem(
       'zerochat:secret:sync-passphrase',
     )).toBeNull()
+  })
+
+  it('does not let a late bridge mutation overwrite the current revision', async () => {
+    const oldBridge = createWindowsSecretBridgeHarness({
+      deferMutations: true,
+      migrationState: 'complete',
+      revision: 'bridge-a-0',
+    })
+    vi.stubGlobal('window', oldBridge.window)
+
+    const oldMutation = setProviderKey('provider-a', 'old-bridge-value')
+    await vi.waitFor(() => {
+      expect(
+        oldBridge.requests.some(
+          (request) =>
+            request.op === 'mutate' &&
+            request.migrationState === null,
+        ),
+      ).toBe(true)
+    })
+
+    const currentBridge = createWindowsSecretBridgeHarness({
+      migrationState: 'complete',
+      revision: 'bridge-b-0',
+    })
+    vi.stubGlobal('window', currentBridge.window)
+    await expect(getSyncPassphrase()).resolves.toBe('')
+
+    oldBridge.releaseNextMutation()
+    await expect(oldMutation).resolves.toBeUndefined()
+
+    await expect(
+      setProviderKey('provider-b', 'current-bridge-value'),
+    ).resolves.toBeUndefined()
+    expect(
+      currentBridge.requests.find((request) => request.op === 'mutate')
+        ?.expectedRevision,
+    ).toBe('bridge-b-0')
+  })
+
+  it('does not let an old Windows migration write into a replacement bridge', async () => {
+    localStorage.setItem(
+      'zerochat:secret:provider:provider-a',
+      'old-browser-secret',
+    )
+    const oldBridge = createWindowsSecretBridgeHarness({
+      deferReads: true,
+      revision: null,
+    })
+    vi.stubGlobal('window', oldBridge.window)
+
+    const oldLoad = loadZeroChatSecrets(['provider-a'])
+    await vi.waitFor(() => {
+      expect(oldBridge.requests.filter(({ op }) => op === 'read')).toHaveLength(1)
+    })
+
+    const replacementBridge = createWindowsSecretBridgeHarness({
+      revision: null,
+    })
+    vi.stubGlobal('window', replacementBridge.window)
+    localStorage.removeItem('zerochat:secret:provider:provider-a')
+
+    oldBridge.releaseNextRead()
+    await expect(oldLoad).rejects.toMatchObject({
+      code: 'bridge-unavailable',
+    })
+
+    expect(replacementBridge.entries.has('provider:provider-a')).toBe(false)
   })
 
   it('keeps browser secrets when Windows migration verification and rollback fail', async () => {

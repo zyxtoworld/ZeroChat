@@ -17,6 +17,7 @@ import {
   messageContextMenuInvocationPosition,
   messageContextMenuNavigationIndex,
   messageLongPressMovedTooFar,
+  MessageContextMenuFocusOwnership,
   shouldStartMessageLongPress,
   type MessageContextMenuState,
   type MessageLongPressState,
@@ -29,8 +30,11 @@ import {
 interface MessageContextMenuController {
   messageContextMenu: MessageContextMenuState | null
   messageContextMenuRef: RefObject<HTMLDivElement | null>
+  messageLongPressMessageId: string | null
   cancelMessageLongPress: () => void
   closeMessageContextMenu: () => void
+  closeMessageContextMenuAndRestoreFocus: () => void
+  closeMessageContextMenuForAsyncAction: () => () => void
   finishMessageLongPress: (event: ReactPointerEvent<HTMLElement>) => void
   handleMessageContextMenuKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void
   moveMessageLongPress: (event: ReactPointerEvent<HTMLElement>) => void
@@ -44,23 +48,113 @@ interface MessageContextMenuController {
   ) => void
 }
 
+interface MessageContextMenuListenerTarget {
+  addEventListener: (
+    type: string,
+    listener: EventListener,
+    options?: boolean,
+  ) => void
+  removeEventListener: (
+    type: string,
+    listener: EventListener,
+    options?: boolean,
+  ) => void
+}
+
+interface MessageContextMenuListenerOptions {
+  documentTarget: MessageContextMenuListenerTarget
+  windowTarget: MessageContextMenuListenerTarget
+  onPointerDown: EventListener
+  onKeyDown: EventListener
+  onResize: EventListener
+  onScroll: EventListener
+}
+
+export function installMessageContextMenuListeners({
+  documentTarget,
+  windowTarget,
+  onPointerDown,
+  onKeyDown,
+  onResize,
+  onScroll,
+}: MessageContextMenuListenerOptions): () => void {
+  const removers: Array<() => void> = []
+
+  const cleanup = (): void => {
+    for (const remove of removers.splice(0).reverse()) {
+      try {
+        remove()
+      } catch {
+        // Browser teardown may make listener removal unavailable.
+      }
+    }
+  }
+
+  const register = (
+    target: MessageContextMenuListenerTarget,
+    type: string,
+    listener: EventListener,
+    options?: boolean,
+  ): void => {
+    target.addEventListener(type, listener, options)
+    removers.push(() => target.removeEventListener(type, listener, options))
+  }
+
+  try {
+    register(documentTarget, 'mousedown', onPointerDown)
+    register(documentTarget, 'keydown', onKeyDown)
+    register(windowTarget, 'resize', onResize)
+    register(windowTarget, 'scroll', onScroll, true)
+  } catch {
+    cleanup()
+  }
+
+  return cleanup
+}
+
 export function useMessageContextMenuController(): MessageContextMenuController {
   const [messageContextMenu, setMessageContextMenu] =
     useState<MessageContextMenuState | null>(null)
   const messageContextMenuRef = useRef<HTMLDivElement | null>(null)
-  const messageContextMenuReturnTargetRef = useRef<HTMLElement | null>(null)
+  const messageContextMenuFocusOwnershipRef = useRef(
+    new MessageContextMenuFocusOwnership(),
+  )
   const messageLongPressRef = useRef<MessageLongPressState | null>(null)
+  const [messageLongPressMessageId, setMessageLongPressMessageId] =
+    useState<string | null>(null)
+
+  const clearMessageLongPressTimer = useCallback((): void => {
+    const longPress = messageLongPressRef.current
+
+    if (!longPress) {
+      return
+    }
+
+    window.clearTimeout(longPress.timer)
+    messageLongPressRef.current = null
+  }, [])
 
   const closeMessageContextMenu = useCallback((): void => {
-    messageContextMenuReturnTargetRef.current = null
+    messageContextMenuFocusOwnershipRef.current.close()
     setMessageContextMenu(null)
   }, [])
 
   const closeMessageContextMenuAndRestoreFocus = useCallback((): void => {
-    const returnTarget = messageContextMenuReturnTargetRef.current
-    messageContextMenuReturnTargetRef.current = null
+    const returnTarget =
+      messageContextMenuFocusOwnershipRef.current.takeTargetForImmediateRestore()
     setMessageContextMenu(null)
     scheduleInteractionFocus(() => returnTarget)
+  }, [])
+
+  const closeMessageContextMenuForAsyncAction = useCallback((): (() => void) => {
+    const takeTargetAfterAction =
+      messageContextMenuFocusOwnershipRef.current.beginAsyncAction()
+    setMessageContextMenu(null)
+
+    return () => {
+      const returnTarget = takeTargetAfterAction()
+      if (returnTarget) scheduleInteractionFocus(() => returnTarget)
+    }
   }, [])
 
   const openMessageContextMenuAt = useCallback(
@@ -82,8 +176,9 @@ export function useMessageContextMenuController(): MessageContextMenuController 
         window.innerHeight,
       )
 
-      messageContextMenuReturnTargetRef.current = returnTarget
+      messageContextMenuFocusOwnershipRef.current.open(returnTarget)
       setMessageContextMenu({
+        message,
         messageId: message.id,
         ...position,
       })
@@ -92,15 +187,9 @@ export function useMessageContextMenuController(): MessageContextMenuController 
   )
 
   const cancelMessageLongPress = useCallback((): void => {
-    const longPress = messageLongPressRef.current
-
-    if (!longPress) {
-      return
-    }
-
-    window.clearTimeout(longPress.timer)
-    messageLongPressRef.current = null
-  }, [])
+    clearMessageLongPressTimer()
+    setMessageLongPressMessageId(null)
+  }, [clearMessageLongPressTimer])
 
   const isMessageInteractiveTarget = useCallback(
     (target: EventTarget | null): boolean =>
@@ -157,12 +246,14 @@ export function useMessageContextMenuController(): MessageContextMenuController 
       }, MESSAGE_LONG_PRESS_DELAY_MS)
 
       messageLongPressRef.current = {
+        messageId: message.id,
         pointerId,
         startX: clientX,
         startY: clientY,
         timer,
         opened: false,
       }
+      setMessageLongPressMessageId(message.id)
 
       try {
         element.setPointerCapture(pointerId)
@@ -274,8 +365,8 @@ export function useMessageContextMenuController(): MessageContextMenuController 
 
     focusInteractionElement(messageContextMenuItems()[0])
 
-    const handlePointerDown = (event: globalThis.MouseEvent): void => {
-      const target = event.target
+    const handlePointerDown: EventListener = (event): void => {
+      const target = (event as globalThis.MouseEvent).target
 
       if (
         target instanceof Node &&
@@ -287,24 +378,22 @@ export function useMessageContextMenuController(): MessageContextMenuController 
       closeMessageContextMenu()
     }
 
-    const handleKeyDown = (event: globalThis.KeyboardEvent): void => {
-      if (event.key === 'Escape' && !event.defaultPrevented) {
-        event.preventDefault()
+    const handleKeyDown: EventListener = (event): void => {
+      const keyboardEvent = event as globalThis.KeyboardEvent
+      if (keyboardEvent.key === 'Escape' && !keyboardEvent.defaultPrevented) {
+        keyboardEvent.preventDefault()
         closeMessageContextMenuAndRestoreFocus()
       }
     }
 
-    document.addEventListener('mousedown', handlePointerDown)
-    document.addEventListener('keydown', handleKeyDown)
-    window.addEventListener('resize', closeMessageContextMenu)
-    window.addEventListener('scroll', closeMessageContextMenu, true)
-
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown)
-      document.removeEventListener('keydown', handleKeyDown)
-      window.removeEventListener('resize', closeMessageContextMenu)
-      window.removeEventListener('scroll', closeMessageContextMenu, true)
-    }
+    return installMessageContextMenuListeners({
+      documentTarget: document,
+      windowTarget: window,
+      onPointerDown: handlePointerDown,
+      onKeyDown: handleKeyDown,
+      onResize: closeMessageContextMenu,
+      onScroll: closeMessageContextMenu,
+    })
   }, [
     closeMessageContextMenu,
     closeMessageContextMenuAndRestoreFocus,
@@ -312,13 +401,22 @@ export function useMessageContextMenuController(): MessageContextMenuController 
     messageContextMenuItems,
   ])
 
-  useEffect(() => cancelMessageLongPress, [cancelMessageLongPress])
+  useEffect(
+    () => () => {
+      clearMessageLongPressTimer()
+      messageContextMenuFocusOwnershipRef.current.close()
+    },
+    [clearMessageLongPressTimer],
+  )
 
   return {
     messageContextMenu,
     messageContextMenuRef,
+    messageLongPressMessageId,
     cancelMessageLongPress,
     closeMessageContextMenu,
+    closeMessageContextMenuAndRestoreFocus,
+    closeMessageContextMenuForAsyncAction,
     finishMessageLongPress,
     handleMessageContextMenuKeyDown,
     moveMessageLongPress,

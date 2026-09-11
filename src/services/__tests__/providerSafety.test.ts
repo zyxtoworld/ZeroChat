@@ -1,18 +1,25 @@
-import { beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { loadLocale, setRuntimeLocale } from '../../i18n'
 import type { AppData, ProviderConfig } from '../../types'
 import {
-  assertSafeRemoteBaseUrl,
-  isDisallowedRemoteHost,
-  normalizeProviderProxyRootUrl,
   pruneProviderSecrets,
   sanitizeRemoteOnlyAppData,
 } from '../providerSafety'
+import {
+  assertSafeRemoteBaseUrl,
+  isDisallowedRemoteHost,
+  normalizeProviderProxyRootUrl,
+} from '../providerUrlSafety'
 
 beforeAll(async () => {
   await loadLocale('en-US')
   setRuntimeLocale('en-US')
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 function provider(patch: Partial<ProviderConfig> = {}): ProviderConfig {
@@ -80,6 +87,12 @@ describe('provider safety', () => {
       'https://user:secret@api.example.com/v1',
       'https://api.example.com/v1?token=secret',
       'https://localhost/v1',
+      'https://localhost./v1',
+      'https://localhost../v1',
+      'https://router.lan./v1',
+      'https://router.lan../v1',
+      'https://router.home.arpa./v1',
+      'https://router.home.arpa../v1',
       'https://192.168.1.20/v1',
       'https://[fd00::1]/v1',
     ]) {
@@ -213,12 +226,12 @@ describe('provider safety', () => {
     ).toBe('https://[2001:4860:4860::8888]/v1')
   })
 
-  it('leaves already-safe remote-only data unchanged', () => {
+  it('leaves already-safe remote-only data unchanged', async () => {
     const data = appData([provider()])
     data.preferences.language = 'system'
     data.conversations[0].providerId = 'provider-safe'
     data.conversations[0].model = 'model-a'
-    const sanitized = sanitizeRemoteOnlyAppData(data)
+    const sanitized = await sanitizeRemoteOnlyAppData(data)
 
     expect(sanitized).toMatchObject({
       changed: false,
@@ -228,7 +241,7 @@ describe('provider safety', () => {
     expect(sanitized.data.preferences.language).toBe('system')
   })
 
-  it('does not treat malformed provider URLs as explicitly unsafe import endpoints', () => {
+  it('does not treat malformed provider URLs as explicitly unsafe import endpoints', async () => {
     const malformed = provider({
       baseUrl: 'not a url',
     })
@@ -236,7 +249,7 @@ describe('provider safety', () => {
     data.preferences.language = 'system'
     data.conversations[0].providerId = malformed.id
     data.conversations[0].model = malformed.model
-    const sanitized = sanitizeRemoteOnlyAppData(data)
+    const sanitized = await sanitizeRemoteOnlyAppData(data)
 
     expect(sanitized).toMatchObject({
       changed: false,
@@ -248,8 +261,8 @@ describe('provider safety', () => {
     })
   })
 
-  it('normalizes language without removing safe providers', () => {
-    const sanitized = sanitizeRemoteOnlyAppData(appData([provider()]))
+  it('normalizes language without removing safe providers', async () => {
+    const sanitized = await sanitizeRemoteOnlyAppData(appData([provider()]))
 
     expect(sanitized).toMatchObject({
       changed: true,
@@ -259,7 +272,7 @@ describe('provider safety', () => {
     expect(sanitized.data.preferences.language).toBe('system')
   })
 
-  it('removes unsafe remote-only provider data and rewires conversations', () => {
+  it('removes unsafe remote-only provider data and rewires conversations', async () => {
     const safe = provider()
     const unsafe = provider({
       id: 'provider-unsafe',
@@ -277,7 +290,7 @@ describe('provider safety', () => {
       createdAt: 1200,
       updatedAt: 1200,
     })
-    const sanitized = sanitizeRemoteOnlyAppData(data)
+    const sanitized = await sanitizeRemoteOnlyAppData(data)
 
     expect(sanitized.changed).toBe(true)
     expect(sanitized.removedProviderIds).toEqual(['provider-unsafe'])
@@ -296,7 +309,7 @@ describe('provider safety', () => {
     })
   })
 
-  it('removes unsupported providers and providers with unsafe proxy endpoints', () => {
+  it('removes unsupported providers and providers with unsafe proxy endpoints', async () => {
     const safe = provider()
     const unsupported = provider({
       id: 'provider-unsupported',
@@ -307,7 +320,7 @@ describe('provider safety', () => {
       proxyUrl: 'https://[::1]/worker',
       model: 'unsafe-proxy-model',
     })
-    const sanitized = sanitizeRemoteOnlyAppData(appData([unsupported, unsafeProxy, safe]))
+    const sanitized = await sanitizeRemoteOnlyAppData(appData([unsupported, unsafeProxy, safe]))
 
     expect(sanitized.changed).toBe(true)
     expect(sanitized.removedProviderIds).toEqual([
@@ -321,24 +334,62 @@ describe('provider safety', () => {
     })
   })
 
-  it('falls back to a built-in provider if every provider is unsafe', () => {
+  it('falls back to a built-in provider if every provider is unsafe', async () => {
     const unsafe = provider({
       id: 'provider-unsafe',
       baseUrl: 'https://192.168.1.10/v1',
     })
-    const sanitized = sanitizeRemoteOnlyAppData(appData([unsafe]))
+    const sanitized = await sanitizeRemoteOnlyAppData(appData([unsafe]))
     expect(sanitized.removedProviderIds).toEqual(['provider-unsafe'])
     expect(sanitized.data.providers[0]).toMatchObject({
       name: 'OpenAI',
       kind: 'openai-responses',
       baseUrl: 'https://api.openai.com/v1',
     })
+    expect(sanitized.data.providers[0].capabilities).toBeUndefined()
     expect(sanitized.data.conversations[0].providerId).toBe(
       sanitized.data.providers[0].id,
     )
     expect(sanitized.data.conversations[0].model).toBe(
       sanitized.data.providers[0].model,
     )
+  })
+
+  it('does not reuse an existing entity id for the sanitized fallback provider', () => {
+    const randomUUID = vi.fn(() => 'conversation-1')
+    vi.stubGlobal('crypto', { randomUUID })
+
+    const sanitized = sanitizeRemoteOnlyAppData(
+      appData([
+        provider({
+          id: 'provider-unsafe',
+          baseUrl: 'https://192.168.1.10/v1',
+        }),
+      ]),
+    )
+
+    expect(sanitized.data.providers[0]?.id).not.toBe('conversation-1')
+    expect(sanitized.data.providers[0]?.id).toMatch(/^[A-Za-z0-9_-]+$/)
+    expect(randomUUID).toHaveBeenCalledOnce()
+  })
+
+  it('keeps sanitization fail-closed when fallback id generation is unavailable', () => {
+    vi.stubGlobal('crypto', {
+      randomUUID: vi.fn(() => {
+        throw new Error('randomUUID unavailable')
+      }),
+    })
+
+    expect(() =>
+      sanitizeRemoteOnlyAppData(
+        appData([
+          provider({
+            id: 'provider-unsafe',
+            baseUrl: 'https://192.168.1.10/v1',
+          }),
+        ]),
+      ),
+    ).not.toThrow()
   })
 
   it('prunes provider secrets to the surviving provider ids', () => {

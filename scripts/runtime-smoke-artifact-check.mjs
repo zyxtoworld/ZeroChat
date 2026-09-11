@@ -3,6 +3,7 @@ import { readFile, readdir, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { inflateSync } from 'node:zlib'
 import { looksLikeAndroidLaunchSplashStats } from './android-screenshot-classifier.mjs'
+import { androidVerticalRevealAction } from './android-ui-scroll-gesture.mjs'
 import {
   isStrictReleaseBlocked,
   isStrictReleasePass,
@@ -14,6 +15,7 @@ import {
   sameAndroidSourceFingerprint,
 } from './android-source-fingerprint.mjs'
 import { liveProviderApiSourceFingerprint } from './live-provider-source-fingerprint.mjs'
+import { liveProviderChatModelAttemptValidationFailures } from './live-provider-empty-chat-retry.mjs'
 import {
   liveSyncSourceFingerprint,
   liveSyncSourceFingerprintRoots,
@@ -23,6 +25,16 @@ import {
   appleRuntimeProcessAttribution,
   appleRuntimeWindowDiscovery,
 } from './apple-runtime-evidence-contract.mjs'
+import { trustedMsixArtifactBlockerSource } from './release-diagnostics-runtime-artifact-policy.mjs'
+import {
+  assertWebCurrentShellEvidenceValidatorContract,
+  findWebCurrentShellEvidenceFailures,
+} from './web-current-shell-evidence.mjs'
+import { verifyReleaseCheckpointBindingFailures } from './verify-release-checkpoint-binding.mjs'
+import { isProjectLocalBoundaryPath } from './project-local-boundary.mjs'
+import { readProjectLocalArtifactManifest } from './project-local-artifact-boundary.mjs'
+
+assertWebCurrentShellEvidenceValidatorContract()
 
 const artifacts = [
   {
@@ -181,6 +193,8 @@ const androidArtifacts = [
       'android-ui-smoke-03b-dark-theme.png',
       'android-ui-smoke-04a-provider-expanded.png',
       'android-ui-smoke-04b-provider-key-saved.png',
+      'android-ui-smoke-04c-activity-recreation.png',
+      'android-ui-smoke-04d-activity-recreation-restored.png',
       'android-ui-smoke-06a-skill-added.png',
       'android-ui-smoke-06b-skill-edited.png',
       'android-ui-smoke-06c-skill-deleted.png',
@@ -247,6 +261,8 @@ const androidArtifacts = [
       'android-ui-smoke-03b-dark-theme.png',
       'android-ui-smoke-04a-provider-expanded.png',
       'android-ui-smoke-04b-provider-key-saved.png',
+      'android-ui-smoke-04c-activity-recreation.png',
+      'android-ui-smoke-04d-activity-recreation-restored.png',
       'android-ui-smoke-06a-skill-added.png',
       'android-ui-smoke-06b-skill-edited.png',
       'android-ui-smoke-06c-skill-deleted.png',
@@ -423,15 +439,42 @@ function extractVisualAuditBaseScreenshotCount(source) {
 }
 
 const supportedLocales = extractSupportedLocales(await readFile('src/i18n.ts', 'utf8'))
-const visualAuditBaseScreenshotCount = extractVisualAuditBaseScreenshotCount(
-  await readFile('scripts/visual-audit.mjs', 'utf8'),
-)
+const visualAuditSource = await readFile('scripts/visual-audit.mjs', 'utf8')
+const visualAuditBaseScreenshotCount = extractVisualAuditBaseScreenshotCount(visualAuditSource)
 const visualAuditExpectedScreenshotCount =
   visualAuditBaseScreenshotCount + supportedLocales.length
 const compactLanguageScreenshots = supportedLocales.map(
   (locale, index) =>
     `${visualAuditBaseScreenshotCount + index}-settings-language-${locale}-compact-mobile-320x640.png`,
 )
+const visualAuditRequiredScreenshots = [
+  '03-first-run-guide-fr-FR-mobile-390x780.png',
+  '04-first-run-guide-ar-SA-mobile-390x780.png',
+  '09-guide-before-chat-desktop-1440x900.png',
+  '10-chat-desktop-1440x900.png',
+  '14-settings-providers-desktop-1440x900.png',
+  '15-settings-models-desktop-1440x900.png',
+  '16-settings-skills-desktop-1440x900.png',
+  '18-settings-sync-desktop-1440x900.png',
+  '19-settings-data-desktop-1440x900.png',
+  '33-settings-providers-mobile-390x780.png',
+  '34-settings-providers-compact-mobile-320x640.png',
+  '38-settings-sync-mobile-390x780.png',
+  '43-chat-mobile-390x780.png',
+  '44-chat-compact-mobile-320x640.png',
+  '51-delete-conversation-mobile-390x780.png',
+  '60-provider-empty-state-compact-mobile-320x640.png',
+  '61-settings-skills-large-library-compact-mobile-320x640.png',
+  '62-settings-sync-cloudflare-compact-mobile-320x640.png',
+  '63-settings-data-compact-mobile-320x640.png',
+  '64-settings-sync-cloudflare-access-compact-mobile-320x640.png',
+  '65-danger-actions-micro-desktop-260x560.png',
+  '66-image-inpaint-mobile-390x780.png',
+  '67-settings-skills-edit-desktop-1440x900.png',
+  '68-settings-skills-edit-mobile-320x640.png',
+  ...compactLanguageScreenshots,
+  `${visualAuditExpectedScreenshotCount}-chat-offline-queue-mobile-390x780.png`,
+]
 const visualAuditArtifact = {
   platform: 'visual-audit',
   metadata: '.visual-audit/visual-audit-manifest.json',
@@ -445,23 +488,7 @@ const visualAuditArtifact = {
   minContactSheetWidth: 1800,
   minContactSheetHeight: 4000,
   requiredScreenshots: [
-    '03-first-run-guide-fr-FR-mobile-390x780.png',
-    '04-first-run-guide-ar-SA-mobile-390x780.png',
-    '53-settings-sync-cloudflare-compact-mobile-320x640.png',
-    '54-settings-sync-cloudflare-access-compact-mobile-320x640.png',
-    '62-settings-data-compact-mobile-320x640.png',
-    '74-chat-micro-desktop-260x560.png',
-    '81-image-composer-micro-desktop-260x560.png',
-    '84-image-inpaint-mobile-390x780.png',
-    '88-image-inpaint-tiny-desktop-280x560.png',
-    '94-settings-data-micro-desktop-260x560.png',
-    '98-startup-loading-ultra-narrow-260-260x560.png',
-    '99-startup-loading-ultra-narrow-240-240x560.png',
-    '100-modal-actions-micro-desktop-260x560.png',
-    '101-danger-actions-micro-desktop-260x560.png',
-    '102-provider-model-menu-compact-mobile-320x640.png',
-    ...compactLanguageScreenshots,
-    `${visualAuditExpectedScreenshotCount}-settings-skills-large-library-compact-mobile-320x640.png`,
+    ...visualAuditRequiredScreenshots,
   ],
 }
 const webCurrentPageVisualAuditArtifact = {
@@ -476,7 +503,7 @@ const webCurrentPageVisualAuditArtifact = {
   minContactSheetBytes: 100000,
   minContactSheetWidth: 1800,
   minContactSheetHeight: 4000,
-  requiredScreenshots: visualAuditArtifact.requiredScreenshots,
+  requiredScreenshots: visualAuditRequiredScreenshots,
 }
 const webCurrentPageQaReport = {
   platform: 'web-current-page',
@@ -1271,6 +1298,9 @@ async function readDirectoryManifest(root) {
 
     for (const entry of entries) {
       const fullPath = path.join(directory, entry.name)
+      if (isProjectLocalBoundaryPath(path.relative(process.cwd(), fullPath))) {
+        continue
+      }
       if (entry.isDirectory()) {
         await walk(fullPath)
         continue
@@ -1551,13 +1581,14 @@ function manifestsMatch(expectedRaw, actualRaw) {
 }
 
 async function compareDirectoryWithCurrentDist(directory, label) {
-  if (!(await exists(directory))) {
-    failures.push(`${label} directory is missing: ${directory}.`)
+  const artifactResult = await readProjectLocalArtifactManifest(directory)
+  if (!artifactResult.ok) {
+    failures.push(`${label} rejected before recursive scan: ${artifactResult.reason}.`)
     return null
   }
 
   const currentDist = await readDirectoryManifest('dist')
-  const directoryManifest = await readDirectoryManifest(directory)
+  const directoryManifest = artifactResult.manifest
   compareManifests(currentDist, directoryManifest, label)
   return currentDist
 }
@@ -2617,18 +2648,20 @@ async function reportTrustedMsixFailureContext(spec, baselineGeneratedAt) {
 
   const hostPreflightContext = await readWindowsTrustedMsixHostPreflightContext()
   const hostPreflightStatus = String(hostPreflightContext?.report?.status ?? '')
-  if (hostPreflightStatus === 'clear') {
-    // A clear read-only host preflight supersedes older AppX failure diagnostics as
-    // the current blocker; the current gate must validate package/dist freshness.
+  const blockerSource = trustedMsixArtifactBlockerSource({
+    hostPreflightStatus,
+    failureGeneratedAt: failureReport.generatedAt ?? failureReport.finishedAt,
+    baselineGeneratedAt,
+  })
+  if (blockerSource === 'host-preflight') {
+    const summary = summarizeTrustedMsixHostPreflightContext(hostPreflightContext)
+    if (summary) {
+      failures.push(summary)
+      return true
+    }
     return false
   }
-
-  const failureGeneratedAt = Date.parse(failureReport.generatedAt ?? failureReport.finishedAt ?? '')
-  const baselineTime = Date.parse(baselineGeneratedAt ?? '')
-  if (
-    Number.isFinite(failureGeneratedAt) &&
-    (!Number.isFinite(baselineTime) || failureGeneratedAt >= baselineTime)
-  ) {
+  if (blockerSource === 'failure-report') {
     await summarizeTrustedMsixFailureReport(failureReport, spec.failureMetadata)
     return true
   }
@@ -3433,6 +3466,65 @@ async function checkAndroidArtifact(spec) {
       )
     }
 
+    const activityRecreation = report.activityRecreation
+    const activityExpectedPid = Number(activityRecreation?.expectedPid)
+    const originalRotation = Number(activityRecreation?.originalRotation)
+    const targetRotation = Number(activityRecreation?.targetRotation)
+    const rotatedLifecycle = activityRecreation?.rotatedLifecycle
+    const restoredLifecycle = activityRecreation?.restoredLifecycle
+    const rotatedProvider = activityRecreation?.rotatedProvider
+    const restoredProvider = activityRecreation?.restoredProvider
+    const lifecycleProofIsValid = (lifecycle) =>
+      isObject(lifecycle) &&
+      lifecycle.sameProcess === true &&
+      lifecycle.configurationChangeDestroyed === true &&
+      lifecycle.eventCount === 2 &&
+      lifecycle.expectedPid === activityExpectedPid &&
+      Number.isInteger(lifecycle.previousInstanceId) &&
+      lifecycle.previousInstanceId > 0 &&
+      Number.isInteger(lifecycle.recreatedInstanceId) &&
+      lifecycle.recreatedInstanceId > 0 &&
+      lifecycle.previousInstanceId !== lifecycle.recreatedInstanceId
+    const providerProofIsValid = (provider) =>
+      isObject(provider) &&
+      provider.providerId === 'openai' &&
+      Number.isInteger(provider.maskedLength) &&
+      provider.maskedLength > 0 &&
+      provider.saveActionDisabled === true &&
+      String(provider.saveActionBounds ?? '').startsWith('[')
+
+    if (
+      !isObject(activityRecreation) ||
+      activityRecreation.sameApplicationProcess !== true ||
+      activityRecreation.rotationSettingsRestored !== true ||
+      activityRecreation.credentialPlaintextReported !== false ||
+      !Number.isInteger(activityExpectedPid) ||
+      activityExpectedPid <= 0 ||
+      !Number.isInteger(originalRotation) ||
+      originalRotation < 0 ||
+      originalRotation > 3 ||
+      !Number.isInteger(targetRotation) ||
+      targetRotation < 0 ||
+      targetRotation > 3 ||
+      targetRotation === originalRotation ||
+      !Number.isInteger(activityRecreation.originalAccelerometerRotation) ||
+      !Number.isInteger(activityRecreation.originalUserRotation) ||
+      !lifecycleProofIsValid(rotatedLifecycle) ||
+      !lifecycleProofIsValid(restoredLifecycle) ||
+      rotatedLifecycle?.recreatedInstanceId !== restoredLifecycle?.previousInstanceId ||
+      !providerProofIsValid(rotatedProvider) ||
+      !providerProofIsValid(restoredProvider) ||
+      rotatedProvider?.maskedLength !== restoredProvider?.maskedLength ||
+      normalizedArtifactBasename(activityRecreation.rotatedScreenshot) !==
+        'android-ui-smoke-04c-activity-recreation.png' ||
+      normalizedArtifactBasename(activityRecreation.restoredScreenshot) !==
+        'android-ui-smoke-04d-activity-recreation-restored.png'
+    ) {
+      failures.push(
+        `${spec.metadata} must prove two configuration-change Activity recreations in one process, preserve only masked OpenAI credential state with Save disabled, and restore the exact device rotation settings.`,
+      )
+    }
+
     if (report.themeSmoke?.mode !== 'dark' || report.themeSmoke?.restoredMode !== 'system') {
       failures.push(`${spec.metadata} must prove the Android dark theme smoke and System restore.`)
     }
@@ -3783,6 +3875,7 @@ async function checkAndroidArtifact(spec) {
       const requestCountBeforePull = Number(manualRefresh.requestCountBeforePull)
       const activeRefreshingUiObservations = Number(manualRefresh.activeRefreshingUiObservations)
       const activeSyncProgressUiObservations = Number(manualRefresh.activeSyncProgressUiObservations)
+      const activeCoherentUiObservations = Number(manualRefresh.activeCoherentUiObservations)
       const activeUiPollingAttempts = Number(manualRefresh.activeUiPollingAttempts)
       const completionUiStableAbsentSamples = Number(manualRefresh.completionUiStableAbsentSamples)
       const completionUiPollingAttempts = Number(manualRefresh.completionUiPollingAttempts)
@@ -3806,6 +3899,8 @@ async function checkAndroidArtifact(spec) {
         activeRefreshingUiObservations < 1 ||
         !Number.isInteger(activeSyncProgressUiObservations) ||
         activeSyncProgressUiObservations < 1 ||
+        !Number.isInteger(activeCoherentUiObservations) ||
+        activeCoherentUiObservations < 1 ||
         !Number.isInteger(activeUiPollingAttempts) ||
         activeUiPollingAttempts < 1 ||
         manualRefresh.completionUiSettled !== true ||
@@ -3908,6 +4003,17 @@ async function checkAndroidArtifact(spec) {
       const uploadCountAfterRemotePull = Number(recovery.uploadCountAfterRemotePull)
       const requestCountBeforeRemotePull = Number(recovery.requestCountBeforeRemotePull)
       const requestCountAfterRemotePull = Number(recovery.requestCountAfterRemotePull)
+      const captureViewport = recovery.captureViewport
+      const credentialFramingIsValid = (proof) => {
+        try {
+          return (
+            proof?.safelyFramed === true &&
+            androidVerticalRevealAction(proof.bounds, captureViewport) === 'resolved'
+          )
+        } catch {
+          return false
+        }
+      }
 
       if (
         recovery.providerId !== 'openai' ||
@@ -3943,11 +4049,27 @@ async function checkAndroidArtifact(spec) {
         recovery.transportBridge?.persistedCloudflareConfig?.autoSync !== true ||
         recovery.transportBridge?.persistedCloudflareConfig?.workerEndpointMatched !== true ||
         recovery.transportBridge?.syncNowButtonEnabled !== true ||
+        !credentialFramingIsValid({
+          bounds: source?.committedBounds,
+          safelyFramed: source?.safelyFramedAfterCommit,
+        }) ||
+        !credentialFramingIsValid({
+          bounds: localReplacement?.committedBounds,
+          safelyFramed: localReplacement?.safelyFramedAfterCommit,
+        }) ||
+        !credentialFramingIsValid({
+          bounds: recovery.restoredBounds,
+          safelyFramed: recovery.restoredSafelyFramed,
+        }) ||
+        !credentialFramingIsValid({
+          bounds: recovery.relaunchedBounds,
+          safelyFramed: recovery.relaunchedSafelyFramed,
+        }) ||
         recovery.credentialPlaintextReported !== false ||
         JSON.stringify(recovery).includes('AndroidCloudProvider')
       ) {
         failures.push(
-          `${spec.metadata} providerKeyRemoteRecovery must bind source upload, distinct local overwrite, remote restore, and relaunch by masked length without plaintext.`,
+          `${spec.metadata} providerKeyRemoteRecovery must bind source upload, distinct local overwrite, remote restore, and relaunch by masked length with each credential frame above system navigation and without plaintext.`,
         )
       }
 
@@ -4001,12 +4123,23 @@ async function checkAndroidArtifact(spec) {
     }
 
     const qaStartedAdbServer = report.adbServerStarted === true
+    const qaUsedAdbServer = report.adbServerUsed === true
     const expectedAdbCleanup = qaStartedAdbServer && report.adbServerKept !== true
 
-    if (report.adbServerWasRunning !== true && !qaStartedAdbServer) {
+    if (qaUsedAdbServer === report.reusedCurrentSmokes) {
+      failures.push(
+        `${spec.metadata} adbServerUsed must distinguish device execution from current-report reuse.`,
+      )
+    }
+
+    if (qaUsedAdbServer && report.adbServerWasRunning !== true && !qaStartedAdbServer) {
       failures.push(
         `${spec.metadata} must record whether the adb server was pre-existing or started by Android QA.`,
       )
+    }
+
+    if (!qaUsedAdbServer && qaStartedAdbServer) {
+      failures.push(`${spec.metadata} must not start adb while reusing current Android smoke reports.`)
     }
 
     if (report.adbServerWasRunning === true && qaStartedAdbServer) {
@@ -4107,7 +4240,8 @@ async function checkAndroidArtifact(spec) {
   }
 
   const screenshotNames = new Set(screenshots.map(normalizedArtifactBasename))
-  for (const name of spec.requiredScreenshots) {
+  const requiredScreenshots = spec.requiredScreenshots ?? []
+  for (const name of requiredScreenshots) {
     if (!screenshotNames.has(name)) {
       failures.push(`${spec.metadata} must include required screenshot ${name}.`)
     }
@@ -4293,6 +4427,14 @@ async function checkVisualAuditArtifact(spec) {
     return
   }
 
+  const manifestPreview = await readJson(spec.metadata).catch(() => null)
+  const effectiveExpectedCount = spec.expectedScreenshotCount
+  const effectiveRequiredScreenshots = spec.requiredScreenshots
+
+  if (manifestPreview?.entry !== 'src/app/bootstrap.tsx') {
+    failures.push(`${spec.metadata} must identify src/app/bootstrap.tsx as the production entry.`)
+  }
+
   if ((await fileSize(spec.gallery)) < spec.minGalleryBytes) {
     failures.push(`${spec.gallery} is too small to be a useful visual audit gallery.`)
   }
@@ -4352,20 +4494,20 @@ async function checkVisualAuditArtifact(spec) {
     )
   }
 
-  if (Number(report.expectedScreenshotCount) !== spec.expectedScreenshotCount) {
+  if (Number(report.expectedScreenshotCount) !== effectiveExpectedCount) {
     failures.push(
       `${spec.metadata} expectedScreenshotCount must be ${spec.expectedScreenshotCount}, got ${report.expectedScreenshotCount}.`,
     )
   }
 
-  if (Number(report.screenshotCount) !== spec.expectedScreenshotCount) {
+  if (Number(report.screenshotCount) !== effectiveExpectedCount) {
     failures.push(
       `${spec.metadata} screenshotCount must be ${spec.expectedScreenshotCount}, got ${report.screenshotCount}.`,
     )
   }
 
   const screenshots = Array.isArray(report.screenshots) ? report.screenshots : []
-  if (screenshots.length !== spec.expectedScreenshotCount) {
+  if (screenshots.length !== effectiveExpectedCount) {
     failures.push(
       `${spec.metadata} must list ${spec.expectedScreenshotCount} screenshots, got ${screenshots.length}.`,
     )
@@ -4439,7 +4581,7 @@ async function checkVisualAuditArtifact(spec) {
     }
   }
 
-  for (const name of spec.requiredScreenshots) {
+  for (const name of effectiveRequiredScreenshots) {
     if (!screenshotNames.has(name)) {
       failures.push(`${spec.metadata} must include required visual screenshot ${name}.`)
     }
@@ -4498,14 +4640,17 @@ async function checkWebCurrentPageQaReport(spec) {
     failures.push(`${spec.metadata} appUrl must match its preserved visual-audit manifest.`)
   }
 
+  if (visual.entry !== 'src/app/bootstrap.tsx') {
+    failures.push(`${spec.visualMetadata} must identify src/app/bootstrap.tsx as the production entry.`)
+  }
+
+  const expectedVisualCount = webCurrentPageVisualAuditArtifact.expectedScreenshotCount
   if (
-    Number(report.visualAudit?.expectedScreenshotCount) !==
-      webCurrentPageVisualAuditArtifact.expectedScreenshotCount ||
-    Number(report.visualAudit?.screenshotCount) !==
-      webCurrentPageVisualAuditArtifact.expectedScreenshotCount
+    Number(report.visualAudit?.expectedScreenshotCount) !== expectedVisualCount ||
+    Number(report.visualAudit?.screenshotCount) !== expectedVisualCount
   ) {
     failures.push(
-      `${spec.metadata} must record a complete current-page ${webCurrentPageVisualAuditArtifact.expectedScreenshotCount}-screenshot audit.`,
+      `${spec.metadata} must record a complete current-page ${expectedVisualCount}-screenshot audit.`,
     )
   }
 
@@ -4567,134 +4712,24 @@ async function checkWebCurrentPageQaReport(spec) {
     failures.push(`${spec.iconSyncMetadata} must prove a visible app logo loads from favicon.svg.`)
   }
 
-  const exactSyncControls = Array.isArray(iconSyncDom.exactSyncControls)
-    ? iconSyncDom.exactSyncControls
-    : []
-  const exactSyncAriaControls = Array.isArray(iconSyncDom.exactSyncAriaControls)
-    ? iconSyncDom.exactSyncAriaControls
-    : []
-  const visibleExactSyncControls = exactSyncControls.filter(
-    (control) => control?.visible === true && control?.text === '本地 · 开启云同步',
-  )
-  const visibleExactSyncAriaControls = exactSyncAriaControls.filter(
-    (control) =>
-      control?.visible === true &&
-      control?.ariaLabel === '云同步: 本地 · 开启云同步 · 云同步关闭',
-  )
-  const clickableExactSyncControls = visibleExactSyncControls.filter(
-    (control) => control?.actionable === true,
-  )
-  const clickableExactSyncAriaControls = visibleExactSyncAriaControls.filter(
-    (control) => control?.actionable === true,
-  )
-  if (
-    Number(iconSyncDom.visibleExactSyncControlCount) < 2 ||
-    Number(report.iconSyncDom?.visibleExactSyncControlCount) < 2 ||
-    visibleExactSyncControls.length < 2
-  ) {
-    failures.push(
-      `${spec.iconSyncMetadata} must prove both visible local cloud-sync actions are 本地 · 开启云同步.`,
-    )
-  }
-
-  if (
-    Number(iconSyncDom.clickableExactSyncControlCount) < 2 ||
-    Number(report.iconSyncDom?.clickableExactSyncControlCount) < 2 ||
-    clickableExactSyncControls.length < 2
-  ) {
-    failures.push(
-      `${spec.iconSyncMetadata} must prove both local cloud-sync actions are visible, enabled, keyboard-focusable, and pointer-clickable.`,
-    )
-  }
-
-  if (
-    Number(iconSyncDom.visibleExactSyncAriaCount) < 2 ||
-    Number(report.iconSyncDom?.visibleExactSyncAriaCount) < 2 ||
-    visibleExactSyncAriaControls.length < 2
-  ) {
-    failures.push(
-      `${spec.iconSyncMetadata} must prove both cloud-sync accessible labels are 云同步: 本地 · 开启云同步 · 云同步关闭.`,
-    )
-  }
-
-  if (
-    Number(iconSyncDom.clickableExactSyncAriaCount) < 2 ||
-    Number(report.iconSyncDom?.clickableExactSyncAriaCount) < 2 ||
-    clickableExactSyncAriaControls.length < 2
-  ) {
-    failures.push(
-      `${spec.iconSyncMetadata} must prove both cloud-sync accessible-label targets remain actionable.`,
-    )
-  }
-
-  for (const className of ['sync-pill', 'chat-sync-strip']) {
-    if (!visibleExactSyncControls.some((control) => String(control?.className ?? '').includes(className))) {
-      failures.push(`${spec.iconSyncMetadata} must keep a visible ${className} cloud-sync action.`)
-    }
-
-    if (!visibleExactSyncAriaControls.some((control) => String(control?.className ?? '').includes(className))) {
-      failures.push(`${spec.iconSyncMetadata} must keep a visible ${className} cloud-sync accessible label.`)
-    }
-
-    if (!clickableExactSyncControls.some((control) => String(control?.className ?? '').includes(className))) {
-      failures.push(`${spec.iconSyncMetadata} must keep an actionable ${className} cloud-sync action.`)
-    }
-
-    if (!clickableExactSyncAriaControls.some((control) => String(control?.className ?? '').includes(className))) {
-      failures.push(`${spec.iconSyncMetadata} must keep an actionable ${className} cloud-sync accessible label.`)
-    }
-  }
-
-  const syncSettingsOpenProofs = Array.isArray(iconSyncDom.syncSettingsOpenProofs)
-    ? iconSyncDom.syncSettingsOpenProofs
-    : []
-  const syncSettingsOpenProofCount = syncSettingsOpenProofs.filter(
-    (proof) => proof?.openedSyncSettings === true,
-  ).length
-  if (
-    Number(iconSyncDom.syncSettingsOpenProofCount) < 2 ||
-    Number(report.iconSyncDom?.syncSettingsOpenProofCount) < 2 ||
-    syncSettingsOpenProofCount < 2
-  ) {
-    failures.push(
-      `${spec.iconSyncMetadata} must prove both cloud-sync actions open Settings > Sync when clicked.`,
-    )
-  }
-
-  for (const className of ['sync-pill', 'chat-sync-strip']) {
-    const proof = syncSettingsOpenProofs.find((candidate) => candidate?.className === className)
-    if (!proof) {
-      failures.push(`${spec.iconSyncMetadata} must include a Settings > Sync click proof for ${className}.`)
-      continue
-    }
-
-    if (proof.controlFound !== true || proof.clicked !== true || proof.before?.actionable !== true) {
-      failures.push(`${spec.iconSyncMetadata} ${className} click proof must start from an actionable control.`)
-    }
-
-    if (
-      proof.openedSyncSettings !== true ||
-      proof.openedState?.modalVisible !== true ||
-      proof.openedState?.selectedSyncTab !== true ||
-      proof.openedState?.syncPanelVisible !== true ||
-      proof.openedState?.syncHeading !== '云同步'
-    ) {
-      failures.push(`${spec.iconSyncMetadata} ${className} click proof must land on the localized Settings > Sync panel.`)
-    }
-
-    if (proof.afterCloseModalVisible !== false) {
-      failures.push(`${spec.iconSyncMetadata} ${className} click proof must close Settings after verification.`)
-    }
+  for (const failure of findWebCurrentShellEvidenceFailures(
+    iconSyncDom,
+    report.iconSyncDom,
+  )) {
+    failures.push(`${spec.iconSyncMetadata} ${failure}.`)
   }
 
   const sourceRoots = Array.isArray(report.webSource?.roots) ? report.webSource.roots : []
   if (sourceRoots.length === 0) {
     failures.push(`${spec.metadata} must bind current-page QA to Web source roots.`)
   } else {
-    const currentSource = await webCurrentPageSourceManifest({
-      repoRoot: process.cwd(),
-      roots: sourceRoots,
-    })
+    const currentSource = await webCurrentPageSourceManifest({ repoRoot: process.cwd() })
+    if (report.webSource?.mode !== currentSource.mode) {
+      failures.push(`${spec.metadata} Web source manifest must use the production dependency graph.`)
+    }
+    if (String(report.webSource?.entry ?? '') !== String(currentSource.entry ?? '')) {
+      failures.push(`${spec.metadata} Web source manifest entry must match the production entry.`)
+    }
     const recordedDigest = String(report.webSource?.digest ?? '').toUpperCase()
     const recordedFileCount = Number(report.webSource?.fileCount)
 
@@ -4845,6 +4880,15 @@ function checkLiveProviderChatCandidateFailures(value, label) {
     if ('failureKind' in failure) {
       checkLiveProviderFailureKind(failure.failureKind, `${label}[${index}].failureKind`)
     }
+  }
+}
+
+function checkLiveProviderChatModelAttempts(value, attemptedChatModels, label, options = {}) {
+  for (const failure of liveProviderChatModelAttemptValidationFailures(value, {
+    attemptedChatModels,
+    requirePassedFinal: options.requirePassedFinal === true,
+  })) {
+    failures.push(`${label} ${failure}`)
   }
 }
 
@@ -6563,6 +6607,12 @@ async function checkLiveProviderApiReportArtifact(spec) {
     if (!Array.isArray(report.attemptedChatModels) || report.attemptedChatModels.length < 1) {
       failures.push(`${spec.metadata} passing provider report must record attemptedChatModels.`)
     }
+    checkLiveProviderChatModelAttempts(
+      report.chatModelAttempts,
+      report.attemptedChatModels,
+      `${spec.metadata} passing provider report chatModelAttempts`,
+      { requirePassedFinal: true },
+    )
 
     if (requestedCapabilities.image === true || requiresFullCapability) {
       const imageSmoke = report.imageSmoke
@@ -6996,6 +7046,14 @@ async function checkLiveProviderApiReportArtifact(spec) {
         checkLiveProviderChatCandidateFailures(
           report.chatCandidateFailures,
           `${spec.metadata} failed provider report chatCandidateFailures`,
+        )
+      }
+
+      if ('attemptedChatModels' in report || 'chatModelAttempts' in report) {
+        checkLiveProviderChatModelAttempts(
+          report.chatModelAttempts,
+          report.attemptedChatModels,
+          `${spec.metadata} failed provider report chatModelAttempts`,
         )
       }
 
@@ -8364,6 +8422,13 @@ async function checkVerifyReleaseCheckpointReportArtifact(spec) {
   if (report.kind !== 'zerochat.verifyReleaseCheckpoint.v1' || report.version !== 1) {
     failures.push(`${spec.metadata} must identify a ZeroChat verify-release checkpoint v1 report.`)
   }
+
+  failures.push(
+    ...(await verifyReleaseCheckpointBindingFailures({
+      binding: report.inputBinding,
+      repoRoot: process.cwd(),
+    })).map((failure) => `${spec.metadata}: ${failure}`),
+  )
 
   if (!['passed', 'failed'].includes(report.status)) {
     failures.push(`${spec.metadata} status must be passed or failed.`)

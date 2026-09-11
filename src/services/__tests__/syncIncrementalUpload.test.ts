@@ -74,6 +74,19 @@ beforeEach(() => {
 })
 
 describe('incremental attachment upload', () => {
+  it('rejects unsafe image Data URLs before encrypting or stripping message attachments', async () => {
+    await expect(
+      buildIncrementalUpload(
+        appData('data:image/svg+xml;base64,PHN2Zz4='),
+        { providerKeys: {} },
+        'attachment upload passphrase',
+        null,
+      ),
+    ).rejects.toThrow()
+
+    expect(encryptObject).not.toHaveBeenCalled()
+  })
+
   it('keeps the cross-platform attachment fingerprint vector stable', async () => {
     await expect(
       attachmentChunkFingerprint(

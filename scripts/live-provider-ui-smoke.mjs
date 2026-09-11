@@ -9,13 +9,19 @@ import {
   connectCdp,
   readJson as readCdpJson,
   waitForChrome as waitForCdpChrome,
+  waitForMainFrameLoadCompletion,
 } from './browser-cdp.mjs'
 import {
   browserProviderFailureKind,
   browserProviderSetupFailureKind,
+  browserProxyHostsIngressFailureKind,
   createBrowserProviderNetworkTrace,
   fetchWithBoundedProxyIngressRetry,
+  normalizeAutomatedChromeUserAgent,
+  waitForBrowserProxyHostsReadiness,
 } from './live-provider-ui-browser-network.mjs'
+import { readOpenAIChatCompletionText } from './live-provider-chat-response.mjs'
+import { runWithLiveProviderEmptyChatRetry } from './live-provider-empty-chat-retry.mjs'
 import {
   removeBrowserProfileWithRetry,
   stopChildProcessTree,
@@ -125,8 +131,14 @@ function liveProviderUiRequiredRemediation({
     normalizedFailureKind === 'provider-upstream-transport-failed-ai-proxy'
   const providerUpstream5xx =
     normalizedFailureKind === 'provider-upstream-5xx-failed-ai-proxy'
+  const browserProxyEdgeChallenge =
+    normalizedFailureKind === 'browser-ai-proxy-edge-challenge'
+  const browserProxyEdgeForbidden =
+    normalizedFailureKind === 'browser-ai-proxy-edge-forbidden'
+  const browserProxyEdgeFailure = browserProxyEdgeChallenge || browserProxyEdgeForbidden
   const unverifiedProxyIngress =
-    normalizedFailureKind === 'ai-proxy-ingress-or-deployment-unverified'
+    normalizedFailureKind === 'ai-proxy-ingress-or-deployment-unverified' ||
+    normalizedFailureKind === 'browser-ai-proxy-host-management-ingress-unverified'
   const browserProxyTransportFailure =
     normalizedFailureKind === 'browser-ai-proxy-transport-retries-exhausted'
   const browserProviderUpstreamFailure =
@@ -199,6 +211,14 @@ function liveProviderUiRequiredRemediation({
     )
   }
 
+  if (browserProxyEdgeFailure) {
+    actions.push(
+      browserProxyEdgeChallenge
+        ? 'The browser preflight reached Cloudflare but received an edge challenge before the Worker. Use a browser-allowed permanent Worker or a temporary deployment that does not challenge the release browser, then rerun the UI drill.'
+        : 'The browser preflight reached Cloudflare but received an edge HTML 403 before the Worker. Verify temporary-account abuse controls or use a browser-allowed permanent Worker, then rerun the UI drill.',
+    )
+  }
+
   if (browserProxyTransportFailure || browserMixedTransientFailure) {
     actions.push(
       'Browser chat retries reached the Worker but exhausted on sanitized transport-error responses; verify Worker-to-provider DNS, TLS, and fetch reachability before rerunning the UI drill.',
@@ -218,7 +238,9 @@ function liveProviderUiRequiredRemediation({
   }
 
   return {
-    kind: browserTransientRemediationKind || (providerEdgeInterstitial
+    kind: browserTransientRemediationKind || (browserProxyEdgeFailure
+      ? 'browser-ai-proxy-edge-remediation'
+      : providerEdgeInterstitial
       ? 'provider-edge-interstitial-remediation'
       : providerUpstreamHtml
         ? 'provider-upstream-html-remediation'
@@ -576,6 +598,18 @@ function compactUiFailureSummary(failureKind, error) {
 
   if (failureKind === 'ai-proxy-ingress-or-deployment-unverified') {
     return 'The AI proxy response did not prove the deployed ZeroChat /proxy contract before browser launch. Verify the exact Worker root, bounded /proxy readiness signature, propagation, and redirect-free routing, then rerun pnpm run drill:live-provider-ui.'
+  }
+
+  if (failureKind === 'browser-ai-proxy-host-management-ingress-unverified') {
+    return 'The actual browser origin did not observe two consecutive valid Worker host-management responses before first-run setup. Wait for the deployed Worker to propagate to the browser edge or redeploy, then rerun pnpm run drill:live-provider-ui.'
+  }
+
+  if (failureKind === 'browser-ai-proxy-edge-challenge') {
+    return 'The actual browser preflight reached Cloudflare but received an edge challenge before the ZeroChat Worker. Use a browser-allowed permanent Worker or a temporary deployment that does not challenge the release browser, then rerun pnpm run drill:live-provider-ui.'
+  }
+
+  if (failureKind === 'browser-ai-proxy-edge-forbidden') {
+    return 'The actual browser preflight reached Cloudflare but received an HTML 403 before the ZeroChat Worker. Verify temporary-account abuse controls or use a browser-allowed permanent Worker, then rerun pnpm run drill:live-provider-ui.'
   }
 
   if (failureKind === 'browser-ai-proxy-transport-retries-exhausted') {
@@ -1258,7 +1292,10 @@ function providerApiRoot(value) {
   return value
 }
 
-function safeAppUrl(value) {
+function safeAppUrl(
+  value,
+  { proxyUrlInput: configuredProxyUrl = '', workerHostedProviderKeyRequested = false } = {},
+) {
   let url
 
   try {
@@ -1270,12 +1307,35 @@ function safeAppUrl(value) {
   const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '')
   const localHosts = new Set(['127.0.0.1', 'localhost', '::1'])
 
-  if (!['http:', 'https:'].includes(url.protocol) || !localHosts.has(hostname)) {
-    fail('ZEROCHAT_LIVE_PROVIDER_UI_URL must point to the local ZeroChat app.')
-  }
-
   if (url.username || url.password || url.search || url.hash) {
     fail('ZEROCHAT_LIVE_PROVIDER_UI_URL must not include credentials, query strings, or fragments.')
+  }
+
+  const localApp = ['http:', 'https:'].includes(url.protocol) && localHosts.has(hostname)
+  let sameOriginWorkerApp = false
+
+  if (!localApp && workerHostedProviderKeyRequested && configuredProxyUrl) {
+    try {
+      const proxyUrl = new URL(configuredProxyUrl)
+      sameOriginWorkerApp =
+        url.protocol === 'https:' &&
+        url.pathname === '/' &&
+        proxyUrl.protocol === 'https:' &&
+        proxyUrl.pathname === '/' &&
+        !proxyUrl.username &&
+        !proxyUrl.password &&
+        !proxyUrl.search &&
+        !proxyUrl.hash &&
+        url.origin === proxyUrl.origin
+    } catch {
+      sameOriginWorkerApp = false
+    }
+  }
+
+  if (!localApp && !sameOriginWorkerApp) {
+    fail(
+      'ZEROCHAT_LIVE_PROVIDER_UI_URL must point to the local ZeroChat app or the exact same-origin remote Worker root.',
+    )
   }
 
   return url.toString()
@@ -1353,7 +1413,13 @@ function isLikelyChatModel(model) {
 }
 
 function modelVersionScore(model, family) {
-  const match = model.match(new RegExp(`${family}[-_ ]?(\\d+(?:[._-]\\d+)*)`, 'iu'))
+  const versionSource = model.replace(
+    /[-_]\d{4}[-_]\d\d[-_]\d\d/,
+    '',
+  )
+  const match = versionSource.match(
+    new RegExp(`${family}[-_ ]?(\\d+(?:[._-]\\d+)*)`, 'iu'),
+  )
 
   if (!match?.[1]) {
     return 0
@@ -1490,6 +1556,7 @@ function providerModelResolutionError(
   {
     attemptedChatModels = [],
     chatCandidateFailures = [],
+    chatModelAttempts = [],
     chatObservation = null,
     chatStatus = null,
     modelsObservation = null,
@@ -1499,6 +1566,7 @@ function providerModelResolutionError(
   error.modelResolution = {
     attemptedChatModels: [...attemptedChatModels],
     chatCandidateFailures: [...chatCandidateFailures],
+    chatModelAttempts: [...chatModelAttempts],
     chatObservation,
     chatStatus: Number.isInteger(chatStatus) ? chatStatus : null,
     model: null,
@@ -1706,59 +1774,7 @@ function runDiagnosticCompactionSelfTest() {
   console.log('Live provider diagnostics compaction self-test passed')
 }
 
-async function readStreamingText(response) {
-  if (!response.body) {
-    return ''
-  }
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let text = ''
-
-  while (true) {
-    const { done, value } = await reader.read()
-
-    if (done) {
-      break
-    }
-
-    buffer += decoder.decode(value, { stream: true })
-    const parts = buffer.split('\n\n')
-    buffer = parts.pop() ?? ''
-
-    for (const part of parts) {
-      for (const line of part.split('\n')) {
-        const trimmed = line.trim()
-
-        if (!trimmed.startsWith('data:')) {
-          continue
-        }
-
-        const payload = trimmed.slice(5).trim()
-
-        if (payload === '[DONE]') {
-          return text
-        }
-
-        try {
-          const json = JSON.parse(payload)
-          const token = json?.choices?.[0]?.delta?.content
-
-          if (typeof token === 'string') {
-            text += token
-          }
-        } catch {
-          // Compatible relays sometimes send keep-alive frames.
-        }
-      }
-    }
-  }
-
-  return text
-}
-
-async function runStreamingChatWithModel({
+async function runStreamingChatAttempt({
   baseUrl,
   browserApiKey,
   model,
@@ -1809,10 +1825,11 @@ async function runStreamingChatWithModel({
       }
     }
 
-    const reply = (await readStreamingText(response)).trim()
+    const reply = (await readOpenAIChatCompletionText(response)).trim()
 
     if (reply !== 'ZeroChat OK') {
       return {
+        ...(reply === '' ? { emptySuccessfulResponse: true } : {}),
         model,
         observation,
         ok: false,
@@ -1836,6 +1853,25 @@ async function runStreamingChatWithModel({
       reason: compactFailureReason(error?.message ?? error),
     }
   }
+}
+
+async function runStreamingChatWithModel({
+  baseUrl,
+  browserApiKey,
+  model,
+  proxyToken,
+  proxyUrl,
+}) {
+  return runWithLiveProviderEmptyChatRetry({
+    runAttempt: () =>
+      runStreamingChatAttempt({
+        baseUrl,
+        browserApiKey,
+        model,
+        proxyToken,
+        proxyUrl,
+      }),
+  })
 }
 
 async function readResponseText(response) {
@@ -2139,6 +2175,7 @@ async function resolveModel({ baseUrl, browserApiKey, proxyToken, proxyUrl }) {
   }
 
   const failures = []
+  const chatModelAttempts = []
   let lastChatObservation = null
   let lastChatStatus = null
 
@@ -2150,6 +2187,7 @@ async function resolveModel({ baseUrl, browserApiKey, proxyToken, proxyUrl }) {
       proxyToken,
       proxyUrl,
     })
+    chatModelAttempts.push({ model, attempts: result.attempts })
     lastChatObservation = result.observation
     lastChatStatus = result.status
 
@@ -2162,6 +2200,7 @@ async function resolveModel({ baseUrl, browserApiKey, proxyToken, proxyUrl }) {
         reply: result.reply,
         attemptedChatModels: candidates.slice(0, failures.length + 1),
         chatCandidateFailures: failures,
+        chatModelAttempts,
       }
     }
 
@@ -2179,6 +2218,7 @@ async function resolveModel({ baseUrl, browserApiKey, proxyToken, proxyUrl }) {
     {
       attemptedChatModels: failures.map((failure) => failure.model),
       chatCandidateFailures: failures,
+      chatModelAttempts,
       chatObservation: lastChatObservation,
       chatStatus: lastChatStatus,
       modelsObservation,
@@ -2258,7 +2298,12 @@ async function main() {
     fail(`refusing to send a live provider UI request without ZEROCHAT_LIVE_PROVIDER_CONFIRM=${CONFIRM_VALUE}.`)
   }
 
-  const appUrl = providedAppUrl ? safeAppUrl(providedAppUrl) : ''
+  const appUrl = providedAppUrl
+    ? safeAppUrl(providedAppUrl, {
+        proxyUrlInput,
+        workerHostedProviderKeyRequested,
+      })
+    : ''
   const screenshotPath = safeScreenshotPath(screenshotPathInput)
   const endpointValidationOptions = { allowReservedDiagnosticHost: inputValidationOnly }
   const validatedBaseUrl = safeBaseUrl(baseUrlInput, endpointValidationOptions)
@@ -2351,6 +2396,8 @@ async function main() {
   let failureKind = 'browser-ui-smoke-failed'
   let setupFailureDiagnostic = ''
   let proxyPreflight = null
+  let browserProxyReadiness = null
+  let browserUserAgentFacts = null
   let capturedScreenshotEvidence = null
   let browserProviderKeyInjected = false
   let browserMessageSent = false
@@ -2416,10 +2463,12 @@ async function main() {
         'about:blank',
       ],
       {
+        detached: process.platform !== 'win32',
         stdio: 'ignore',
         windowsHide: true,
       },
     )
+    chrome.zerochatProcessGroupLeader = process.platform !== 'win32'
 
     await waitForChrome(cdpPort, chrome)
 
@@ -2428,6 +2477,17 @@ async function main() {
       { method: 'PUT' },
     )
     cdp = await connect(target.webSocketDebuggerUrl)
+    const browserVersion = await cdp.send('Browser.getVersion')
+    const normalizedUserAgent = normalizeAutomatedChromeUserAgent(
+      browserVersion.userAgent,
+    )
+    browserUserAgentFacts = {
+      defaultUserAgentHeadless: normalizedUserAgent.defaultUserAgentHeadless,
+      effectiveUserAgentHeadless: normalizedUserAgent.effectiveUserAgentHeadless,
+    }
+    await cdp.send('Network.setUserAgentOverride', {
+      userAgent: normalizedUserAgent.userAgent,
+    })
     cdp.on(
       'Network.requestWillBeSent',
       browserProviderNetworkTrace.onRequestWillBeSent,
@@ -2440,7 +2500,17 @@ async function main() {
     await cdp.send('Network.enable')
     await cdp.send('Page.enable')
     await cdp.send('Runtime.enable')
-    await cdp.send('Page.navigate', { url: runtimeAppUrl })
+    const pageLoadEventStartIndex = cdp.events.length
+    const navigation = await cdp.send('Page.navigate', { url: runtimeAppUrl })
+    if (navigation.errorText || !navigation.frameId) {
+      fail('Chrome could not navigate to the ZeroChat app target.')
+    }
+    await waitForMainFrameLoadCompletion(
+      cdp.events,
+      pageLoadEventStartIndex,
+      navigation.frameId,
+      { timeoutMs: LIVE_PROVIDER_UI_APP_READY_COMMAND_TIMEOUT_MS },
+    )
 
     const evaluate = async (expression, awaitPromise = false, timeoutMs) => {
       const result = await cdp.send(
@@ -2548,6 +2618,77 @@ async function main() {
       true,
       LIVE_PROVIDER_UI_APP_READY_COMMAND_TIMEOUT_MS,
     )
+
+    if (workerHostedProviderKeyRequested && proxyUrl) {
+      const proxyHostsEndpoint = `${proxyUrl.replace(/\/+$/u, '')}/proxy/hosts`
+      const providerHost = new URL(baseUrl).hostname.toLowerCase()
+      const expectedAppOrigin = new URL(runtimeAppUrl).origin
+      const readinessExpression = String.raw`(async () => {
+        const originMatchesExpected = window.location.origin === __EXPECTED_APP_ORIGIN__
+        try {
+          const response = await fetch(__PROXY_HOSTS_ENDPOINT__, {
+            method: 'PUT',
+            headers: {
+              'content-type': 'application/json',
+              'x-zerochat-access-key': __PROXY_ACCESS_KEY__,
+            },
+            body: JSON.stringify({ hosts: [__PROVIDER_HOST__] }),
+            redirect: 'error',
+            signal: AbortSignal.timeout(5000),
+          })
+          const body = await response.text()
+          const fixedAllowlistReady =
+            response.status === 403 && body === 'Automatic host learning is disabled'
+          let learnedHostReady = false
+
+          if (response.status === 200) {
+            try {
+              const parsed = JSON.parse(body)
+              learnedHostReady =
+                parsed?.ok === true &&
+                Array.isArray(parsed?.hosts) &&
+                parsed.hosts.includes(__PROVIDER_HOST__)
+            } catch {
+              learnedHostReady = false
+            }
+          }
+
+          return {
+            ready: originMatchesExpected && (fixedAllowlistReady || learnedHostReady),
+            status: response.status,
+            originMatchesExpected,
+          }
+        } catch {
+          return { ready: false, status: null, originMatchesExpected }
+        }
+      })()`
+        .replace('__EXPECTED_APP_ORIGIN__', JSON.stringify(expectedAppOrigin))
+        .replace('__PROXY_HOSTS_ENDPOINT__', JSON.stringify(proxyHostsEndpoint))
+        .replace('__PROXY_ACCESS_KEY__', JSON.stringify(proxyToken))
+        .replaceAll('__PROVIDER_HOST__', JSON.stringify(providerHost))
+
+      try {
+        const readiness = await waitForBrowserProxyHostsReadiness({
+          probe: async () => ({
+            ...(await evaluate(readinessExpression, true, 8_000)),
+            ...browserUserAgentFacts,
+          }),
+        })
+        browserProxyReadiness = { status: 'passed', ...readiness }
+        console.log(
+          `Browser-origin Worker host-management readiness confirmed after ${readiness.attemptCount} probe(s).`,
+        )
+      } catch (error) {
+        browserProxyReadiness = error?.readiness ?? {
+          status: 'failed',
+          ...browserUserAgentFacts,
+        }
+        failureKind = browserProxyHostsIngressFailureKind(
+          browserProviderNetworkTrace.snapshot(),
+        )
+        throw error
+      }
+    }
 
     try {
       modelResolution = await resolveModel({
@@ -2944,12 +3085,17 @@ async function main() {
       chatStatus: modelResolution.chatStatus,
       attemptedChatModels: modelResolution.attemptedChatModels,
       chatCandidateFailureCount: modelResolution.chatCandidateFailures.length,
+      chatModelAttempts: modelResolution.chatModelAttempts,
+      ...(modelResolution.chatCandidateFailures.length
+        ? { chatCandidateFailures: modelResolution.chatCandidateFailures }
+        : {}),
       browserOriginProven: true,
       markerCaptured: true,
       assistantMarkerExact: true,
       browserMessageSent: true,
       proxyConfigured,
       proxyPreflight,
+      browserProxyReadiness,
       syncPassphraseProvided: Boolean(proxyUrl && uiSyncPassphrase),
       workerHostedProviderKeyRequested,
       browserProviderKeyInjected,
@@ -2964,6 +3110,7 @@ async function main() {
       model,
       chatStatus: modelResolution.chatStatus,
       attemptedChatModels: modelResolution.attemptedChatModels,
+      chatModelAttempts: modelResolution.chatModelAttempts,
       ...(modelResolution.chatCandidateFailures.length
         ? { chatCandidateFailures: modelResolution.chatCandidateFailures }
         : {}),
@@ -2971,6 +3118,7 @@ async function main() {
       assistant: redact(result.assistant),
       screenshot: screenshotPath,
       proxyConfigured: Boolean(proxyUrl),
+      browserProxyReadiness,
       syncPassphraseProvided: Boolean(proxyUrl && uiSyncPassphrase),
       workerHostedProviderKeyRequested,
       browserProviderKeyInjected,
@@ -2992,7 +3140,10 @@ async function main() {
     await writeAttemptUiReport('failed', {
       blockerKind:
         failureKind === 'browser-origin-connection-check-failed-with-proxy-guidance' ||
-        failureKind === 'browser-origin-connection-check-failed'
+        failureKind === 'browser-origin-connection-check-failed' ||
+        failureKind === 'browser-ai-proxy-host-management-ingress-unverified' ||
+        failureKind === 'browser-ai-proxy-edge-challenge' ||
+        failureKind === 'browser-ai-proxy-edge-forbidden'
           ? 'live-provider-ui-browser-origin-not-passed'
           : 'live-provider-ui-smoke-failed',
       failureKind,
@@ -3004,12 +3155,17 @@ async function main() {
       chatStatus: modelResolution?.chatStatus ?? null,
       attemptedChatModels: modelResolution?.attemptedChatModels ?? [],
       chatCandidateFailureCount: modelResolution?.chatCandidateFailures?.length ?? 0,
+      chatModelAttempts: modelResolution?.chatModelAttempts ?? [],
+      ...(modelResolution?.chatCandidateFailures?.length
+        ? { chatCandidateFailures: modelResolution.chatCandidateFailures }
+        : {}),
       browserOriginProven: false,
       markerCaptured: assistantMarkerCaptured,
       assistantMarkerExact,
       browserMessageSent,
       proxyConfigured,
       proxyPreflight,
+      browserProxyReadiness,
       syncPassphraseProvided: Boolean(proxyUrl && uiSyncPassphrase),
       workerHostedProviderKeyRequested,
       browserProviderKeyInjected,
@@ -3048,6 +3204,10 @@ async function main() {
           chatStatus: modelResolution?.chatStatus ?? null,
           attemptedChatModels: modelResolution?.attemptedChatModels ?? [],
           chatCandidateFailureCount: modelResolution?.chatCandidateFailures?.length ?? 0,
+          chatModelAttempts: modelResolution?.chatModelAttempts ?? [],
+          ...(modelResolution?.chatCandidateFailures?.length
+            ? { chatCandidateFailures: modelResolution.chatCandidateFailures }
+            : {}),
           browserOriginProven: false,
           markerCaptured: completedPassDetails?.markerCaptured === true,
           assistantMarkerExact:

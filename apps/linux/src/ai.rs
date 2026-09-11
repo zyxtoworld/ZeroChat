@@ -87,6 +87,31 @@ impl fmt::Display for AiTimeoutFailure {
 
 impl Error for AiTimeoutFailure {}
 
+#[derive(Debug)]
+pub(crate) struct AiEmptyResponseFailure;
+
+impl AiEmptyResponseFailure {
+    pub(crate) fn new() -> Self {
+        Self
+    }
+}
+
+impl fmt::Display for AiEmptyResponseFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("The provider returned an empty response.")
+    }
+}
+
+impl Error for AiEmptyResponseFailure {}
+
+fn ensure_non_empty_chat_response(received: String) -> Result<String> {
+    if received.trim().is_empty() {
+        return Err(AiEmptyResponseFailure::new().into());
+    }
+
+    Ok(received)
+}
+
 fn generated_image_mime_type(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) {
         return Some("image/png");
@@ -105,14 +130,14 @@ pub struct AiClient {
 }
 
 impl AiClient {
-    pub fn new() -> Self {
-        Self {
-            http: reqwest::Client::builder()
-                .connect_timeout(Duration::from_millis(AI_CONNECT_TIMEOUT_MS))
-                .redirect(Policy::none())
-                .build()
-                .expect("AI HTTP client with timeout budget should build"),
-        }
+    pub fn new() -> Result<Self> {
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_millis(AI_CONNECT_TIMEOUT_MS))
+            .redirect(Policy::none())
+            .build()
+            .map_err(|_| anyhow!("AI service is unavailable."))?;
+
+        Ok(Self { http })
     }
 
     pub async fn send(
@@ -385,7 +410,7 @@ impl AiClient {
                 let line = String::from_utf8_lossy(&line_buffer[consumed..line_end]);
 
                 if !process_sse_line(&line, &mut event_data, &mut received, &mut on_partial) {
-                    return Ok(received);
+                    return ensure_non_empty_chat_response(received);
                 }
                 consumed = newline_index + 1;
             }
@@ -403,7 +428,7 @@ impl AiClient {
             };
             let line = String::from_utf8_lossy(&line_buffer[..line_end]);
             if !process_sse_line(&line, &mut event_data, &mut received, &mut on_partial) {
-                return Ok(received);
+                return ensure_non_empty_chat_response(received);
             }
         }
 
@@ -411,7 +436,7 @@ impl AiClient {
             process_sse_event(&mut event_data, &mut received, &mut on_partial);
         }
 
-        Ok(received)
+        ensure_non_empty_chat_response(received)
     }
 
     pub async fn list_models(
@@ -1289,7 +1314,7 @@ fn responses_image_models(
     } else {
         vec![primary, image_model, provider.model.as_str()]
     };
-    let mut models = Vec::new();
+    let mut models: Vec<String> = Vec::new();
 
     for model in ordered {
         let candidate = model.trim();
@@ -1404,11 +1429,12 @@ async fn wait_for_cancellation(cancellation: &mut watch::Receiver<bool>) {
 mod tests {
     use super::{
         AI_CHAT_REQUEST_TIMEOUT_MS, AI_CONNECT_TIMEOUT_MS, AI_IMAGE_REQUEST_TIMEOUT_MS,
-        AI_MODEL_LIST_TIMEOUT_MS, AI_STREAM_IDLE_TIMEOUT_MS, AiClient,
+        AI_MODEL_LIST_TIMEOUT_MS, AI_STREAM_IDLE_TIMEOUT_MS, AiClient, AiEmptyResponseFailure,
         MAX_AI_PROVIDER_AUDIO_RESPONSE_BYTES, MAX_AI_PROVIDER_ERROR_RESPONSE_BYTES,
         MAX_AI_PROVIDER_IMAGE_RESPONSE_BYTES, MAX_AI_PROVIDER_STREAM_RESPONSE_BYTES,
         MAX_AI_PROVIDER_TEXT_RESPONSE_BYTES, accumulate_provider_response_bytes,
-        generated_image_mime_type, provider_audio_response_looks_valid, wait_for_cancellation,
+        ensure_non_empty_chat_response, generated_image_mime_type,
+        provider_audio_response_looks_valid, wait_for_cancellation,
     };
     use tokio::sync::watch;
 
@@ -1428,7 +1454,7 @@ mod tests {
         assert_eq!(MAX_AI_PROVIDER_AUDIO_RESPONSE_BYTES, 32_000_000);
         assert_eq!(MAX_AI_PROVIDER_STREAM_RESPONSE_BYTES, 8_000_000);
 
-        let _client = AiClient::new();
+        let _client = AiClient::new().expect("AI HTTP client should initialize in tests");
     }
 
     #[test]
@@ -1444,6 +1470,19 @@ mod tests {
                 .to_string(),
             "AI test response exceeded the 4-byte safety limit."
         );
+    }
+
+    #[test]
+    fn successful_empty_chat_stream_becomes_typed_failure() {
+        assert_eq!(
+            ensure_non_empty_chat_response("answer".to_owned())
+                .expect("visible content should pass"),
+            "answer"
+        );
+
+        let failure = ensure_non_empty_chat_response(" \n\t".to_owned())
+            .expect_err("blank provider output must fail");
+        assert!(failure.downcast_ref::<AiEmptyResponseFailure>().is_some());
     }
 
     #[test]

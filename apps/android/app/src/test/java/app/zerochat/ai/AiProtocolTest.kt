@@ -5,6 +5,7 @@ import app.zerochat.data.MessageAttachment
 import app.zerochat.data.MessageRole
 import app.zerochat.data.ProviderConfig
 import app.zerochat.data.ProviderKind
+import app.zerochat.ui.MAX_IMAGE_FILE_BYTES
 import io.ktor.http.HttpHeaders
 import io.ktor.http.content.PartData
 import kotlinx.coroutines.runBlocking
@@ -203,6 +204,19 @@ class AiProtocolTest {
     }
 
     @Test
+    fun chatTextFromResponseReadsOrderedOpenAiTextBlocks() {
+        val response = """
+            {"choices":[{"message":{"content":[
+                {"type":"text","text":"Hello "},
+                {"type":"image_url","image_url":{"url":"ignored"}},
+                {"type":"text","text":"world"}
+            ]}}]}
+        """.trimIndent()
+
+        assertEquals("Hello world", chatTextFromResponse(json, response))
+    }
+
+    @Test
     fun endpointSafetyRejectsCredentialsFragmentsAndPrivateHosts() {
         assertThrows(IllegalArgumentException::class.java) {
             endpointFor(provider(baseUrl = "https://user:pass@example.com/v1"))
@@ -398,6 +412,14 @@ class AiProtocolTest {
                 )
             }
         }
+    }
+
+    @Test
+    fun generatedImageSafetyRejectsDataUrlsOverTheDecodedImageBudget() {
+        val encodedLength = 4 * (MAX_IMAGE_FILE_BYTES / 3 + 1)
+        val oversized = "data:image/png;base64,${"A".repeat(encodedLength)}"
+
+        assertEquals(null, safeGeneratedImageDataUrl(oversized))
     }
 
     @Test

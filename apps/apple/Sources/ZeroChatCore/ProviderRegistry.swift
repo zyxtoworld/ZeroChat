@@ -38,6 +38,36 @@ public enum ProviderModelCapability {
     case moderation
 }
 
+private let generationOnlyImageModelMarker = "dall-e-3"
+private let standardEmbeddingModelFallbacks = [
+    "text-embedding-3-large",
+    "text-embedding-3-small"
+]
+private let standardAudioSpeechModelFallbacks = [
+    "gpt-4o-mini-tts",
+    "tts-1-hd",
+    "tts-1"
+]
+private let standardAudioTranscriptionModelFallbacks = [
+    "gpt-4o-transcribe",
+    "gpt-4o-mini-transcribe",
+    "whisper-1"
+]
+private let standardRealtimeModelFallbacks = [
+    "gpt-realtime-2",
+    "gpt-audio-1.5",
+    "gpt-realtime",
+    "gpt-audio-mini",
+    "gpt-realtime-mini",
+    "gpt-4o-realtime-preview",
+    "gpt-4o-realtime"
+]
+private let standardModerationModelFallbacks = [
+    "omni-moderation-latest",
+    "omni-moderation",
+    "moderation-latest"
+]
+
 public func isDefaultCustomOpenAiRelay(_ provider: ProviderConfig) -> Bool {
     provider.custom == true &&
         provider.kind == .openAICompatible &&
@@ -359,33 +389,40 @@ public func chatModelsForProvider(_ provider: ProviderConfig?) -> [String] {
 }
 
 private func modelVersionScore(_ model: String, family: String) -> Int {
-    guard let familyRange = model.range(of: family, options: [.caseInsensitive]) else {
+    // Dated model ids such as gpt-5-2025-08-07 are snapshots, not revisions.
+    let versionSource = model.replacingOccurrences(
+        of: "[-_]\\d{4}[-_]\\d{2}[-_]\\d{2}",
+        with: "",
+        options: .regularExpression
+    )
+
+    guard let familyRange = versionSource.range(of: family, options: [.caseInsensitive]) else {
         return 0
     }
 
     var index = familyRange.upperBound
-    while index < model.endIndex,
-          model[index] == "-" || model[index] == "_" || model[index] == " " {
-        index = model.index(after: index)
+    while index < versionSource.endIndex,
+          versionSource[index] == "-" || versionSource[index] == "_" || versionSource[index] == " " {
+        index = versionSource.index(after: index)
     }
 
     var parts: [Int] = []
     var current = ""
 
-    while index < model.endIndex {
-        let character = model[index]
+    while index < versionSource.endIndex {
+        let character = versionSource[index]
 
         if character.wholeNumberValue != nil {
             current.append(character)
-            index = model.index(after: index)
+            index = versionSource.index(after: index)
             continue
         }
 
         if character == "." || character == "-" || character == "_" {
-            let next = model.index(after: index)
+            let next = versionSource.index(after: index)
             if !current.isEmpty,
-               next < model.endIndex,
-               model[next].wholeNumberValue != nil {
+               next < versionSource.endIndex,
+               versionSource[next].wholeNumberValue != nil {
                 parts.append(Int(current) ?? 0)
                 current = ""
                 index = next
@@ -512,14 +549,123 @@ public func chatModelForConversation(_ conversation: Conversation?, provider: Pr
     return defaultChatModelForProvider(provider)
 }
 
+private func declaredProviderCapabilities(_ provider: ProviderConfig) -> [String] {
+    if let capabilities = provider.capabilities, !capabilities.isEmpty {
+        return capabilities
+    }
+
+    switch provider.kind {
+    case .anthropic:
+        return ["chat", "vision", "tools", "model-list"]
+    case .openAIResponses:
+        return ["chat", "vision", "tools", "image-generation", "image-editing", "model-list"]
+    case .openAICompatible:
+        return ["chat", "vision", "tools", "embeddings", "model-list"]
+    }
+}
+
+private func providerDeclaresCapability(
+    _ provider: ProviderConfig?,
+    _ capability: ProviderModelCapability
+) -> Bool {
+    guard let provider, provider.kind != .anthropic else { return false }
+
+    let capabilities = declaredProviderCapabilities(provider)
+    switch capability {
+    case .audio:
+        return capabilities.contains("audio")
+    case .chat:
+        return capabilities.contains("chat")
+    case .imageGeneration:
+        return capabilities.contains("image-generation")
+    case .imageEditing:
+        return capabilities.contains("image-editing")
+    case .embeddings:
+        return capabilities.contains("embeddings")
+    case .realtime:
+        return capabilities.contains("realtime")
+    case .moderation:
+        return capabilities.contains("moderation")
+    }
+}
+
+private func hasAuthoritativeModelCatalog(_ provider: ProviderConfig?) -> Bool {
+    guard let provider else { return false }
+    return !uniqueModels(provider.models ?? []).isEmpty
+}
+
+private func standardFallbackModelsForCapability(
+    _ provider: ProviderConfig?,
+    capability: ProviderModelCapability,
+    models: [String]
+) -> [String] {
+    if !models.isEmpty {
+        return models
+    }
+
+    guard providerDeclaresCapability(provider, capability) else { return [] }
+
+    if hasAuthoritativeModelCatalog(provider) {
+        return selectableModelsForProvider(provider).filter {
+            !$0.lowercased().contains(generationOnlyImageModelMarker)
+        }
+    }
+
+    switch capability {
+    case .embeddings:
+        return standardEmbeddingModelFallbacks
+    case .audio:
+        return standardAudioTranscriptionModelFallbacks + standardAudioSpeechModelFallbacks
+    case .realtime:
+        return standardRealtimeModelFallbacks
+    case .moderation:
+        return standardModerationModelFallbacks
+    default:
+        return []
+    }
+}
+
+private func audioModelsForProvider(
+    _ provider: ProviderConfig?,
+    transcription: Bool
+) -> [String] {
+    let models = selectableModelsForProvider(provider).filter {
+        transcription
+            ? isLikelyAudioTranscriptionModelName($0)
+            : isLikelyAudioSpeechModelName($0)
+    }
+    if !models.isEmpty {
+        return models
+    }
+
+    guard providerDeclaresCapability(provider, .audio) else { return [] }
+    if hasAuthoritativeModelCatalog(provider) {
+        return selectableModelsForProvider(provider).filter {
+            !$0.lowercased().contains(generationOnlyImageModelMarker)
+        }
+    }
+
+    return transcription
+        ? standardAudioTranscriptionModelFallbacks
+        : standardAudioSpeechModelFallbacks
+}
+
 public func imageModelsForProvider(_ provider: ProviderConfig?) -> [String] {
     guard let provider, provider.kind != .anthropic else { return [] }
-    return selectableModelsForProvider(provider).filter(isLikelyImageModelName)
+    return standardFallbackModelsForCapability(
+        provider,
+        capability: .imageGeneration,
+        models: selectableModelsForProvider(provider).filter(isLikelyImageModelName)
+    )
 }
 
 public func imageEditingModelsForProvider(_ provider: ProviderConfig?) -> [String] {
     guard let provider, provider.kind != .anthropic else { return [] }
-    return selectableModelsForProvider(provider).filter(isLikelyImageEditingModelName)
+    return standardFallbackModelsForCapability(
+        provider,
+        capability: .imageEditing,
+        models: selectableModelsForProvider(provider).filter(isLikelyImageEditingModelName)
+    )
 }
 
 public func preferredImageModel(_ models: [String]) -> String {
@@ -529,7 +675,7 @@ public func preferredImageModel(_ models: [String]) -> String {
         }
     }
 
-    return models.first ?? ""
+    return models.first(where: isLikelyImageModelName) ?? ""
 }
 
 public func isLikelyEmbeddingModelName(_ model: String) -> Bool {
@@ -662,14 +808,14 @@ public func preferredAudioModel(_ models: [String]) -> String {
 }
 
 public func modelForProviderAudioSpeech(_ provider: ProviderConfig?) -> String {
-    let models = selectableModelsForProvider(provider).filter(isLikelyAudioSpeechModelName)
+    let models = audioModelsForProvider(provider, transcription: false)
     let configured = provider?.audioSpeechModel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     if !configured.isEmpty, models.contains(configured) { return configured }
     return preferredAudioSpeechModel(models)
 }
 
 public func modelForProviderAudioTranscription(_ provider: ProviderConfig?) -> String {
-    let models = selectableModelsForProvider(provider).filter(isLikelyAudioTranscriptionModelName)
+    let models = audioModelsForProvider(provider, transcription: true)
     let configured = provider?.audioTranscriptionModel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     if !configured.isEmpty, models.contains(configured) { return configured }
     return preferredAudioTranscriptionModel(models)
@@ -710,13 +856,29 @@ public func modelsForProviderCapability(_ provider: ProviderConfig?, capability:
     case .imageEditing:
         return imageEditingModelsForProvider(provider)
     case .embeddings:
-        return selectableModelsForProvider(provider).filter(isLikelyEmbeddingModelName)
+        return standardFallbackModelsForCapability(
+            provider,
+            capability: capability,
+            models: selectableModelsForProvider(provider).filter(isLikelyEmbeddingModelName)
+        )
     case .audio:
-        return selectableModelsForProvider(provider).filter(isLikelyAudioModelName)
+        return standardFallbackModelsForCapability(
+            provider,
+            capability: capability,
+            models: selectableModelsForProvider(provider).filter(isLikelyAudioModelName)
+        )
     case .realtime:
-        return selectableModelsForProvider(provider).filter(isLikelyRealtimeModelName)
+        return standardFallbackModelsForCapability(
+            provider,
+            capability: capability,
+            models: selectableModelsForProvider(provider).filter(isLikelyRealtimeModelName)
+        )
     case .moderation:
-        return selectableModelsForProvider(provider).filter(isLikelyModerationModelName)
+        return standardFallbackModelsForCapability(
+            provider,
+            capability: capability,
+            models: selectableModelsForProvider(provider).filter(isLikelyModerationModelName)
+        )
     }
 }
 

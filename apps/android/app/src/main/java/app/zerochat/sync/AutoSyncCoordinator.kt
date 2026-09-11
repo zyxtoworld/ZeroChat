@@ -26,18 +26,25 @@ class AutoSyncCoordinator(
     private val crypto: CryptoEngine = CryptoEngine(),
     private val statusNotifier: SyncStatusNotifier? = null,
     private val statusLabel: (AppSnapshot, String?) -> String = { _, status -> status.orEmpty() },
-) {
+    private val onSynced: (source: AppSnapshot, commit: SnapshotCommit) -> Unit = { _, _ -> },
+) : AutoCloseable {
     private val operationMutex = Mutex()
     private val pendingMutex = Mutex()
+    private val snapshotReplacementAdmissionMutex = Mutex()
     private var pending: PendingSync? = null
+    private var queuedSnapshotReplacements = 0
+    private var activeSnapshotReplacements = 0
+
+    override fun close() {
+        syncClient.close()
+    }
 
     suspend fun enqueue(
         snapshot: AppSnapshot,
         firstSyncStrategy: FirstSyncStrategy = FirstSyncStrategy.Ask,
-        onSynced: (source: AppSnapshot, commit: SnapshotCommit) -> Unit,
     ) {
         pendingMutex.withLock {
-            pending = PendingSync(snapshot, firstSyncStrategy, onSynced)
+            pending = PendingSync(snapshot, firstSyncStrategy)
         }
 
         operationMutex.withLock {
@@ -48,17 +55,20 @@ class AutoSyncCoordinator(
     suspend fun syncNow(
         snapshot: AppSnapshot,
         firstSyncStrategy: FirstSyncStrategy = FirstSyncStrategy.Ask,
-        onSynced: (source: AppSnapshot, commit: SnapshotCommit) -> Unit,
-    ): AppSnapshot? = operationMutex.withLock {
-        try {
-            processSync(
-                snapshot = snapshot,
-                firstSyncStrategy = firstSyncStrategy,
-                requiresAutoSync = false,
-                onSynced = onSynced,
-            )
-        } finally {
-            drainPending()
+    ): AppSnapshot? = snapshotReplacementAdmissionMutex.withLock {
+        if (queuedSnapshotReplacements > 0 || activeSnapshotReplacements > 0) {
+            return@withLock null
+        }
+        operationMutex.withLock {
+            try {
+                processSync(
+                    snapshot = snapshot,
+                    firstSyncStrategy = firstSyncStrategy,
+                    requiresAutoSync = false,
+                )
+            } finally {
+                drainPending()
+            }
         }
     }
 
@@ -66,12 +76,33 @@ class AutoSyncCoordinator(
         runExclusiveSnapshotReplacement(operation)
 
     suspend fun <T> runExclusiveSnapshotReplacement(operation: suspend () -> T): T =
-        operationMutex.withLock {
-            pendingMutex.withLock { pending = null }
+        run {
+            snapshotReplacementAdmissionMutex.withLock {
+                queuedSnapshotReplacements += 1
+            }
+            var active = false
             try {
-                operation()
+                operationMutex.withLock {
+                    snapshotReplacementAdmissionMutex.withLock {
+                        queuedSnapshotReplacements -= 1
+                        activeSnapshotReplacements += 1
+                        active = true
+                    }
+                    try {
+                        pendingMutex.withLock { pending = null }
+                        operation()
+                    } finally {
+                        snapshotReplacementAdmissionMutex.withLock {
+                            activeSnapshotReplacements -= 1
+                        }
+                    }
+                }
             } finally {
-                pendingMutex.withLock { pending = null }
+                if (!active) {
+                    snapshotReplacementAdmissionMutex.withLock {
+                        queuedSnapshotReplacements -= 1
+                    }
+                }
             }
         }
 
@@ -89,7 +120,6 @@ class AutoSyncCoordinator(
                 snapshot = next.snapshot,
                 firstSyncStrategy = next.firstSyncStrategy,
                 requiresAutoSync = true,
-                onSynced = next.onSynced,
             )
         }
     }
@@ -98,7 +128,6 @@ class AutoSyncCoordinator(
         snapshot: AppSnapshot,
         firstSyncStrategy: FirstSyncStrategy,
         requiresAutoSync: Boolean,
-        onSynced: (source: AppSnapshot, commit: SnapshotCommit) -> Unit,
     ): AppSnapshot? {
         val candidate = runCatchingPreservingCancellation {
             syncIfConfigured(
@@ -112,63 +141,69 @@ class AutoSyncCoordinator(
             SyncCandidate(snapshot.withSyncStatus(status, completed = false))
         } ?: return null
 
-        val merged = mergeSyncResult(
-            current = snapshot,
-            source = snapshot,
-            synced = candidate.snapshot,
-        )
-        val accepted = if (candidate.syncedVault != null) {
-            ensureDistinctSyncedProviderKeyCandidate(snapshot, merged)
-        } else {
-            merged
-        }
-        val commit = candidate.syncedVault?.let { syncedVault ->
-            val intent = withContext(Dispatchers.Default) {
-                providerKeyIntentForSyncedSnapshot(snapshot, accepted)
-            }
-            commitSyncedSnapshotAndProviderKeys(
+        return runCatchingPreservingCancellation {
+            val merged = mergeSyncResult(
+                current = snapshot,
                 source = snapshot,
-                candidate = accepted,
-                replacements = providerKeyReplacementsForSyncedVault(
-                    snapshot,
-                    syncedVault.data,
-                    syncedVault.secrets.providerKeys,
-                ),
-                stageProviderKeys = { replacements ->
-                    withContext(NonCancellable + Dispatchers.IO) {
-                        secretStore.stageProviderKeyImport(intent, replacements)
-                    }
-                },
-                finishProviderKeys = {
-                    withContext(NonCancellable + Dispatchers.IO) {
-                        secretStore.finishProviderKeyImport(intent)
-                    }
-                },
-                restoreProviderKeys = {
-                    withContext(NonCancellable + Dispatchers.IO) {
-                        secretStore.restoreProviderKeyImport(intent)
-                    }
-                },
-                compareAndSetSnapshot = repository::compareAndSet,
+                synced = candidate.snapshot,
             )
-        } ?: repository.compareAndSet(snapshot, accepted)
-        if (!commit.committed) {
-            if (requiresAutoSync && commit.snapshot.sync.autoSync) {
-                pendingMutex.withLock {
-                    if (pending == null) {
-                        pending = PendingSync(commit.snapshot, FirstSyncStrategy.Ask, onSynced)
+            val accepted = if (candidate.syncedVault != null) {
+                ensureDistinctSyncedProviderKeyCandidate(snapshot, merged)
+            } else {
+                merged
+            }
+            val commit = candidate.syncedVault?.let { syncedVault ->
+                val intent = withContext(Dispatchers.Default) {
+                    providerKeyIntentForSyncedSnapshot(snapshot, accepted)
+                }
+                commitSyncedSnapshotAndProviderKeys(
+                    source = snapshot,
+                    candidate = accepted,
+                    replacements = providerKeyReplacementsForSyncedVault(
+                        snapshot,
+                        syncedVault.data,
+                        syncedVault.secrets.providerKeys,
+                    ),
+                    stageProviderKeys = { replacements ->
+                        withContext(NonCancellable + Dispatchers.IO) {
+                            secretStore.stageProviderKeyImport(intent, replacements)
+                        }
+                    },
+                    finishProviderKeys = {
+                        withContext(NonCancellable + Dispatchers.IO) {
+                            secretStore.finishProviderKeyImport(intent)
+                        }
+                    },
+                    restoreProviderKeys = {
+                        withContext(NonCancellable + Dispatchers.IO) {
+                            secretStore.restoreProviderKeyImport(intent)
+                        }
+                    },
+                    compareAndSetSnapshot = repository::compareAndSet,
+                )
+            } ?: repository.compareAndSet(snapshot, accepted)
+            if (!commit.committed) {
+                if (requiresAutoSync && commit.snapshot.sync.autoSync) {
+                    pendingMutex.withLock {
+                        if (pending == null) {
+                            pending = PendingSync(commit.snapshot, FirstSyncStrategy.Ask)
+                        }
                     }
                 }
+                return@runCatchingPreservingCancellation null
             }
-            return null
-        }
 
-        if (candidate.syncedVault != null) {
-            val status = accepted.sync.lastSyncStatus ?: "Sync complete"
-            statusNotifier?.showStatus(statusLabel(accepted, status), completed = true)
+            if (candidate.syncedVault != null) {
+                val status = accepted.sync.lastSyncStatus ?: "Sync complete"
+                statusNotifier?.showStatus(statusLabel(accepted, status), completed = true)
+            }
+            onSynced(snapshot, SnapshotCommit(accepted, commit.revision))
+            accepted
+        }.getOrElse { error ->
+            val status = error.message?.takeIf { it.isNotBlank() } ?: "Cloud sync failed"
+            statusNotifier?.showStatus(statusLabel(snapshot, status), completed = false)
+            null
         }
-        onSynced(snapshot, SnapshotCommit(accepted, commit.revision))
-        return accepted
     }
 
     private suspend fun syncIfConfigured(
@@ -319,7 +354,6 @@ class AutoSyncCoordinator(
 private data class PendingSync(
     val snapshot: AppSnapshot,
     val firstSyncStrategy: FirstSyncStrategy,
-    val onSynced: (source: AppSnapshot, commit: SnapshotCommit) -> Unit,
 )
 
 private data class SyncCandidate(

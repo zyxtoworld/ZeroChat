@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { createServer } from 'vite'
+import { createBoundedViteSsrModuleRunner } from './vite-ssr-module-runner.mjs'
+import { assertWebProductionReachability } from './web-production-reachability.mjs'
 
 const server = await createServer({
   logLevel: 'error',
@@ -11,6 +13,7 @@ const server = await createServer({
     },
   },
 })
+const moduleRunner = createBoundedViteSsrModuleRunner(server)
 
 function jsonResponse(value, init = {}) {
   return new Response(JSON.stringify(value), {
@@ -127,10 +130,24 @@ function installCloudflareSyncMock() {
 }
 
 try {
-  const i18n = await server.ssrLoadModule('/src/i18n.ts')
-  const skills = await server.ssrLoadModule('/src/services/skills.ts')
-  const sync = await server.ssrLoadModule('/src/services/sync.ts')
-  const cryptoService = await server.ssrLoadModule('/src/services/crypto.ts')
+  const productionGraph = assertWebProductionReachability()
+  for (const sourcePath of [
+    'src/app/bootstrap.tsx',
+    'src/app/components/SettingsView.tsx',
+    'src/app/skillList.ts',
+    'src/app/store.ts',
+    'src/storage/db.ts',
+  ]) {
+    assert.ok(
+      productionGraph.files.includes(sourcePath),
+      `Skill system authority must be production-reachable: ${sourcePath}`,
+    )
+  }
+  const i18n = await moduleRunner.import('/src/i18n.ts')
+  const skills = await moduleRunner.import('/src/services/skills.ts')
+  const sync = await moduleRunner.import('/src/services/sync.ts')
+  const cryptoService = await moduleRunner.import('/src/services/crypto.ts')
+  const providerMutation = await moduleRunner.import('/src/app/providerMutation.ts')
 
   await i18n.loadLocale('zh-CN')
   i18n.setRuntimeLocale('zh-CN')
@@ -252,6 +269,26 @@ try {
   )
   assert.equal(loadedRefs.length > 0, true, 'pinned skill content should load on demand')
 
+  const credentialOwnerFixture = {
+    providers: [{ id: 'provider-owner', updatedAt: 7 }],
+    updatedAt: 11,
+  }
+  const credentialOwner = providerMutation.markProviderCredentialChanged(
+    credentialOwnerFixture,
+    'provider-owner',
+  )
+  assert.equal(
+    credentialOwner.updatedAt > credentialOwnerFixture.updatedAt,
+    true,
+    'Provider credential changes must advance the AppData sync owner',
+  )
+  assert.equal(
+    credentialOwner.providers[0].updatedAt >
+      credentialOwnerFixture.providers[0].updatedAt,
+    true,
+    'Provider credential changes must advance the Provider sync owner',
+  )
+
   loadedRefs.length = 0
   const largeSkillContent = Array.from({ length: 90 }, (_, index) =>
     [
@@ -324,28 +361,36 @@ try {
     syncIncrementalUploadSource,
     syncCloudflareSource,
   ].join('\n')
-  const appDataMutationSource = await readFile(
-    new URL('../src/services/appDataMutationController.ts', import.meta.url),
+  const providerMutationSource = await readFile(
+    new URL('../src/app/providerMutation.ts', import.meta.url),
     'utf8',
   )
-  const autoSyncControllerSource = await readFile(
-    new URL('../src/services/autoSyncController.ts', import.meta.url),
+  const automaticSyncSource = await readFile(
+    new URL('../src/app/automaticSync.ts', import.meta.url),
     'utf8',
   )
-  const providerSettingsControllerSource = await readFile(
-    new URL('../src/services/providerSettingsController.ts', import.meta.url),
+  const appStoreTestSource = await readFile(
+    new URL('../src/app/__tests__/store.test.ts', import.meta.url),
     'utf8',
   )
-  const settingsSkillControllerSource = await readFile(
-    new URL('../src/services/settingsSkillController.ts', import.meta.url),
+  const settingsViewSource = await readFile(
+    new URL('../src/app/components/SettingsView.tsx', import.meta.url),
     'utf8',
   )
-  const settingsSkillActionsSource = await readFile(
-    new URL('../src/services/settingsSkillActions.ts', import.meta.url),
+  const skillListSource = await readFile(
+    new URL('../src/app/skillList.ts', import.meta.url),
     'utf8',
   )
-  const syncRuntimeControllerSource = await readFile(
-    new URL('../src/services/syncRuntimeController.ts', import.meta.url),
+  const skillListTestSource = await readFile(
+    new URL('../src/app/__tests__/skill-list.test.ts', import.meta.url),
+    'utf8',
+  )
+  const appStoreSource = await readFile(
+    new URL('../src/app/store.ts', import.meta.url),
+    'utf8',
+  )
+  const syncServiceSource = await readFile(
+    new URL('../src/services/sync.ts', import.meta.url),
     'utf8',
   )
   const dbSource = await readFile(new URL('../src/storage/db.ts', import.meta.url), 'utf8')
@@ -396,59 +441,138 @@ try {
     'Cloudflare Worker should accept only scoped manifest, message, Skill, and attachment object keys',
   )
   assert.match(
-    appDataMutationSource,
-    /function ensureLocalWriteTimestamp[\s\S]*?nextRaw === current \|\| nextRaw\.updatedAt > current\.updatedAt[\s\S]*?return bump\(nextRaw\)[\s\S]*?const updateData = useCallback[\s\S]*?Local writes must advance updatedAt[\s\S]*?dataRef\.current = next[\s\S]*?setData\(next\)[\s\S]*?scheduleAutoSyncRef\.current\(next\)/,
-    'all local app-data writes must pass through the mutation controller, advance updatedAt, and immediately feed auto-sync',
+    providerMutationSource,
+    /function ensureLocalMutationTimestamp[\s\S]*?next\.updatedAt > current\.updatedAt[\s\S]*?current\.updatedAt \+ 1/,
+    'all local AppData mutations must advance updatedAt even during same-tick writes or clock rollback',
   )
   assert.match(
-    autoSyncControllerSource,
-    /useEffect\(\(\) => \{[\s\S]*?scheduleAutoSync\(data\)[\s\S]*?\}, \[[\s\S]*?data,[\s\S]*?githubTokenValue,[\s\S]*?activeSyncPassphraseRevision,[\s\S]*?\]\)/,
-    'auto-sync must be scheduled from app-data changes and active sync credential revisions',
+    appStoreSource,
+    /const updateData = \(\s*fn:\s*\(data: AppData\) => AppData,\s*admission\?: DataMutationAdmission,\s*\): void => \{[\s\S]*?dataReplacementAdmissionBlocked\(\)[\s\S]*?ensureLocalMutationTimestamp\(current, nextRaw\)[\s\S]*?setData\(next\)[\s\S]*?scheduleSave\(\)/,
+    'all local AppData mutations must pass through the replacement admission, current store timestamp, and persistence boundary',
   )
   assert.match(
-    providerSettingsControllerSource,
-    /function updateProviderKey[\s\S]*?setProviderKey\(providerId, value\)[\s\S]*?providers: current\.providers\.map[\s\S]*?provider\.id === providerId[\s\S]*?updatedAt: timestamp[\s\S]*?context\.scheduleAutoSync\(saved, 0\)/,
-    'provider key edits must mark the provider as locally changed and immediately queue encrypted secret sync',
+    automaticSyncSource,
+    /useEffect\(\(\) => \{[\s\S]*?reconcileAutoSync\([\s\S]*?clearScheduledSync,[\s\S]*?scheduleAutoSync,[\s\S]*?data,[\s\S]*?syncing,[\s\S]*?\)[\s\S]*?\}, \[[\s\S]*?data,[\s\S]*?githubTokenValue,[\s\S]*?scheduleAutoSync,[\s\S]*?syncPassphraseValue,[\s\S]*?syncing,[\s\S]*?\]\)/,
+    'automatic sync must be scheduled from current AppData and committed sync credential values',
   )
   assert.match(
-    settingsSkillActionsSource,
-    /function updateSkill[\s\S]*?const saved = context\.updateData\(\s*\(current\)[\s\S]*?skills: current\.skills\.map[\s\S]*?context\.scheduleAutoSync\(saved, 0\)/,
-    'skill toggles/metadata edits must update AppData through updateData and immediately queue cloud sync',
+    providerMutationSource,
+    /export function markProviderCredentialChanged\([\s\S]*?current\.updatedAt \+ 1[\s\S]*?target\.updatedAt \+ 1/,
+    'Provider credential owners must advance monotonically before encrypted sync',
   )
   assert.match(
-    settingsSkillActionsSource,
-    /function updateSkillSettings[\s\S]*?const saved = context\.updateData\(\s*\(current\)[\s\S]*?skillSettings:[\s\S]*?context\.scheduleAutoSync\(saved, 0\)/,
-    'skill settings edits must update AppData through updateData',
+    appStoreSource,
+    /saveProviderKey: async \(id, key\)[\s\S]*?runSecretMutation\([\s\S]*?setProviderKey\(id, trimmed\)[\s\S]*?markProviderCredentialChanged\(data, id\)[\s\S]*?delete nextResults\[id\][\s\S]*?sync\?\.autoSync[\s\S]*?sync\.mode !== 'local'/,
+    'Provider key edits must publish only after durable storage, clear stale diagnostics, and merge one pending current-owner sync.',
   )
   assert.match(
-    settingsSkillActionsSource,
-    /skillService\.createUserSkillFromContent\(\s*context\.getSkillDraftName\(\)\.trim\(\),\s*content,/,
-    'blank pasted Skill names must fall through to the localized single-skill fallback instead of using the settings tab label',
+    appStoreTestSource,
+    /publishes a durable Provider key as a new auto-sync owner/,
+    'the current store behavior suite must lock the durable Provider-key publication boundary',
   )
   assert.match(
-    settingsSkillActionsSource,
-    /async function importSkillFiles[\s\S]*?const importedRaw: UserSkill\[\] = \[\][\s\S]*?createUserSkillFromFile\(file\)[\s\S]*?const imported = await services\.persistSkillsContents\(importedRaw\)[\s\S]*?const saved = context\.updateData\(\s*\(current\)[\s\S]*?skills: \[\.\.\.current\.skills, \.\.\.imported\][\s\S]*?const committed = await commitSkillContentRows\([\s\S]*?saved,[\s\S]*?imported,[\s\S]*?context\.scheduleAutoSync\(committed, 0\)/,
-    'imported skill files must build all indexes, persist chunks in one batch, durably commit the published rows, then queue cloud sync from the committed snapshot',
+    appStoreSource,
+    /setSkillToggle: \(id, field, enabled\)[\s\S]*?runSkillToggleMutation\([\s\S]*?skills: data\.skills\.map/,
+    'Skill toggles and metadata edits must update production AppData through the current store boundary',
   )
   assert.match(
-    settingsSkillActionsSource,
-    /async function addSkillFromDraft[\s\S]*?persistSkillContents[\s\S]*?const saved = context\.updateData\(\s*\(current\)[\s\S]*?skills: \[\.\.\.current\.skills, skill\][\s\S]*?const committed = await commitSkillContentRows\([\s\S]*?saved,[\s\S]*?\[skill\],[\s\S]*?context\.scheduleAutoSync\(committed, 0\)/,
-    'pasted skill drafts must persist chunks, durably commit the published row, then queue cloud sync from the committed snapshot',
+    appStoreSource,
+    /updateSkillSettings: \(patch\) => \{[\s\S]*?updateData\(\(data\)[\s\S]*?normalizeSkillSettings[\s\S]*?requestConfiguredAutoSync\(\)/,
+    'global Skill matching settings must be normalized and request configured auto-sync through the current store boundary',
   )
   assert.match(
-    settingsSkillActionsSource,
-    /async function deleteSkill[\s\S]*?deleteSkillDangerPrompt\(context\.t, skill\.name\)[\s\S]*?context\.requestDangerConfirmation[\s\S]*?const latestSkill = context\.dataRef\.current\?\.skills\.find[\s\S]*?const saved = context\.updateData\(\s*\(current\)[\s\S]*?skills: current\.skills\.filter[\s\S]*?committed = await services\.persistPublishedLocalSnapshot\(saved\)[\s\S]*?committed\.skills\.some[\s\S]*?context\.scheduleAutoSync\(committed, 0\)[\s\S]*?services\.deleteSkillContents\(latestSkill\)/,
-    'deleted skills must require danger confirmation, refresh the mutable target, durably commit conflict-recovered AppData, verify canonical removal, then queue cloud cleanup and delete local chunks',
+    appStoreTestSource,
+    /requests configured cloud auto-sync after a global Skill setting changes/,
+    'the current store behavior suite must lock global Skill-setting auto-sync scheduling',
   )
   assert.match(
-    settingsSkillActionsSource,
-    /async function startEditingSkill[\s\S]*?editableSkillContent\(skill\)[\s\S]*?async function saveEditingSkill[\s\S]*?createUserSkillFromContent[\s\S]*?persistSkillContents\(rebuilt\)[\s\S]*?const committed = await commitSkillContentRows\([\s\S]*?saved,[\s\S]*?\[persisted\],[\s\S]*?\[original\],[\s\S]*?context\.scheduleAutoSync\(committed, 0\)[\s\S]*?deleteSkillContentRefs\(staleRefs\)/,
-    'edited Web Skills must lazy-load content, rebuild chunks, durably commit the replacement, queue cloud sync from the committed snapshot, and then clean stale local refs',
+    settingsViewSource,
+    /updateSkillSettings[\s\S]*?skills\.defaultAutoMatch[\s\S]*?min=\{600\}[\s\S]*?max=\{8000\}[\s\S]*?min=\{1\}[\s\S]*?max=\{8\}/,
+    'the production Skills settings view must expose bounded global matching controls',
   )
   assert.match(
-    syncRuntimeControllerSource,
-    /const syncData = await services\.materializeAppDataSkillContents\(current\)[\s\S]*?syncService\.performSync\(syncData, syncContext\)/,
+    appStoreSource,
+    /importSkills: \(files\)[\s\S]*?runSkillMutation\([\s\S]*?imported\.push\(await skillService\.createUserSkillFromFile\(file\)\)[\s\S]*?persistSkillsContents\(imported\)[\s\S]*?commitSkillDataMutation/,
+    'imported Skill files must build all indexes, persist chunks in one batch, and durably commit the published rows',
+  )
+  assert.match(
+    appStoreSource,
+    /addSkill: \(name, content\)[\s\S]*?runSkillMutation\([\s\S]*?persistSkillContents\(skill\)[\s\S]*?commitSkillDataMutation/,
+    'new Skills must persist chunks and durably commit their AppData row in the shared lifecycle lane',
+  )
+  assert.match(
+    settingsViewSource,
+    /deleteSkillAndRestoreFocus = async \(skillId: string\)[\s\S]*?runConfirmedSettingsAction\([\s\S]*?skills\.deleteConfirm[\s\S]*?deleteSkill\(skillId\)/,
+    'the production Skills view must require localized confirmation before deletion',
+  )
+  assert.match(
+    appStoreSource,
+    /deleteSkill: \(id\)[\s\S]*?commitSkillDataMutation[\s\S]*?skills: current\.skills\.filter[\s\S]*?queueSkillContentCleanupRefs\(removedRefs\)[\s\S]*?await cleanupPendingSkillContentRefs\(\)/,
+    'Skill deletion must durably remove the row before cleaning only unreferenced local chunks',
+  )
+  assert.match(
+    appStoreSource,
+    /saveSkillContent: \(id, name, content\)[\s\S]*?persistSkillContents[\s\S]*?commitSkillDataMutation[\s\S]*?queueSkillContentCleanupRefs\(skillContentRefs\(replacedSkill\.previous\)\)[\s\S]*?await cleanupPendingSkillContentRefs\(\)/,
+    'Skill edits must durably publish the replacement before cleaning stale local refs',
+  )
+  assert.match(
+    appStoreSource,
+    /addSkill: \(name, content\)[\s\S]*?queueSkillContentCleanupRefs\(skillContentRefs\(persisted\)\)[\s\S]*?await cleanupPendingSkillContentRefs\(\)/,
+    'failed Skill creation must retain unpublished refs for the shared cleanup retry queue',
+  )
+  assert.match(
+    appStoreSource,
+    /importSkills: \(files\)[\s\S]*?queueSkillContentCleanupRefs\(persisted\.flatMap\(skillContentRefs\)\)[\s\S]*?await cleanupPendingSkillContentRefs\(\)/,
+    'failed Skill imports must retain unpublished refs for the shared cleanup retry queue',
+  )
+  assert.match(
+    appStoreSource,
+    /saveSkillContent: \(id, name, content\)[\s\S]*?catch \(error\)[\s\S]*?queueSkillContentCleanupRefs\(skillContentRefs\(persisted\)\)[\s\S]*?await cleanupPendingSkillContentRefs\(\)/,
+    'failed Skill edits must retain unpublished refs for the shared cleanup retry queue',
+  )
+  for (const behaviorName of [
+    'resolves Skill creation only after the AppData snapshot is durable',
+    'publishes an imported Skill set atomically and cleans failed candidates',
+    'keeps old Skill refs published when an edit snapshot fails',
+    'deletes Skill refs only after the row removal is durable',
+    'keeps Skill persistence behind a durable secret mutation',
+    'does not delete a Skill ref that remains visible through another row',
+    'retries unpublished Skill cleanup after a failed add without a new edit',
+    'retries unpublished Skill cleanup after a failed import without a new edit',
+      'retries replaced Skill cleanup after a successful edit without a new edit',
+      'retries unpublished Skill cleanup after an edit is cancelled without a new edit',
+      'retries removed Skill cleanup after a successful delete without a new edit',
+      'coalesces concurrent pending Skill cleanup without losing its lifecycle',
+    ]) {
+    assert.ok(
+      appStoreTestSource.includes(behaviorName),
+      `current store behavior coverage is missing: ${behaviorName}`,
+    )
+  }
+  assert.match(
+    skillListSource,
+    /INITIAL_SKILL_RENDER_COUNT = 80[\s\S]*?SKILL_RENDER_BATCH_SIZE = 80[\s\S]*?skills\.slice\(0, renderedSkillLimit\)/,
+    'the production Skill list must materialize bounded 80-row batches',
+  )
+  assert.match(
+    settingsViewSource,
+    /IntersectionObserver[\s\S]*?root: target\.closest\('\.zc-settings-scroll'\)[\s\S]*?data-zc-skill-list-more="true"/,
+    'the production Skill list must keep observer-driven loading and a manual show-more fallback',
+  )
+  assert.match(
+    skillListTestSource,
+    /advances in bounded batches[\s\S]*?expands only far enough to reveal the requested row[\s\S]*?inactive view stays light/,
+    'the current Skill-list behavior suite must lock batching, reveal, and inactive rendering',
+  )
+  assert.match(
+    appStoreSource,
+    /const syncData = await materializeAppDataSkillContents\(data\)[\s\S]*?await sync\.performSync\(syncData, \{/,
     'cloud sync must materialize skill contents before upload so remote edits/deletes are complete',
+  )
+  assert.match(
+    syncServiceSource,
+    /export async function pullRemoteChanges\(/,
+    'cloud sync must retain the current pull service boundary',
   )
   assert.match(
     dbSource,
@@ -702,5 +826,9 @@ try {
 
   console.log('Skill system check passed')
 } finally {
-  await server.close()
+  try {
+    await moduleRunner.close()
+  } finally {
+    await server.close()
+  }
 }

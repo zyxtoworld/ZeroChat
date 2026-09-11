@@ -215,11 +215,19 @@ private fun MessageBubble(
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = if (isUser) {
-                        MaterialTheme.colorScheme.primaryContainer
+                        // Current design: user bubble is solid accent with contrast text.
+                        MaterialTheme.colorScheme.primary
                     } else if (message.status == "error") {
                         MaterialTheme.colorScheme.errorContainer
                     } else {
                         MaterialTheme.colorScheme.surfaceVariant
+                    },
+                    contentColor = if (isUser) {
+                        MaterialTheme.colorScheme.onPrimary
+                    } else if (message.status == "error") {
+                        MaterialTheme.colorScheme.onErrorContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
                     },
                 ),
                 modifier = Modifier
@@ -256,7 +264,11 @@ private fun MessageBubble(
                     Text(
                         systemTime(message.createdAt),
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (isUser) {
+                            MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.75f)
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
                         modifier = Modifier.align(if (isUser) Alignment.End else Alignment.Start),
                     )
                 }

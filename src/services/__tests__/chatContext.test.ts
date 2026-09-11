@@ -51,4 +51,24 @@ describe('chat context window selection', () => {
     expect(selectContextMessages(messages, 0)).toHaveLength(4)
     expect(selectContextMessages(messages, Number.NaN)).toHaveLength(12)
   })
+
+  it('drops an orphan assistant at the context boundary without exceeding the limit', () => {
+    const messages: ChatMessage[] = [
+      message('turn-25', 'user'),
+      message('turn-26', 'assistant'),
+      message('turn-27', 'user'),
+      message('turn-28', 'assistant'),
+      message('turn-29', 'user'),
+      message('turn-30', 'assistant'),
+      message('prompt', 'user'),
+    ]
+
+    expect(selectContextMessages(messages, 6).map((item) => item.id)).toEqual([
+      'turn-27',
+      'turn-28',
+      'turn-29',
+      'turn-30',
+      'prompt',
+    ])
+  })
 })

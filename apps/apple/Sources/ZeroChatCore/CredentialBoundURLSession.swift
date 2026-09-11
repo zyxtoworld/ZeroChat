@@ -21,11 +21,14 @@ func syncURLSessionConfiguration(from session: URLSession) -> URLSessionConfigur
 
 enum ResponseBodyLimitError: LocalizedError {
     case exceeded(label: String, maxBytes: Int)
+    case invalidCount(label: String)
 
     var errorDescription: String? {
         switch self {
         case .exceeded(let label, let maxBytes):
             return "\(label) exceeded the \(maxBytes)-byte safety limit."
+        case .invalidCount(let label):
+            return "\(label) reported an invalid byte count."
         }
     }
 }
@@ -36,11 +39,14 @@ func accumulateResponseBodyBytes(
     maxBytes: Int,
     label: String
 ) throws -> Int {
-    precondition(currentBytes >= 0 && nextBytes >= 0 && maxBytes >= 0)
-    guard currentBytes <= maxBytes - nextBytes else {
+    guard currentBytes >= 0, nextBytes >= 0, maxBytes >= 0 else {
+        throw ResponseBodyLimitError.invalidCount(label: label)
+    }
+    let (totalBytes, overflow) = currentBytes.addingReportingOverflow(nextBytes)
+    guard !overflow, totalBytes <= maxBytes else {
         throw ResponseBodyLimitError.exceeded(label: label, maxBytes: maxBytes)
     }
-    return currentBytes + nextBytes
+    return totalBytes
 }
 
 func assertSyncDataSize(_ data: Data, maxBytes: Int, label: String) throws {

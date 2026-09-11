@@ -448,7 +448,7 @@ struct AppleCloudflareSyncTransport {
 
     static func normalizedWorkerEndpoint(_ value: String) throws -> URL {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard var components = URLComponents(string: trimmed), let scheme = components.scheme else {
+        guard let components = URLComponents(string: trimmed), let scheme = components.scheme else {
             throw SyncError.missingEndpoint
         }
 

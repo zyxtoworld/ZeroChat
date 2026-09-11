@@ -369,15 +369,16 @@ namespace winrt::ZeroChat::implementation
         return true;
     }
 
-    winrt::fire_and_forget MainWindow::ProcessSecretWebMessageAsync(
+    winrt::Windows::Foundation::IAsyncAction MainWindow::ProcessSecretWebMessageAsync(
         hstring json,
         hstring requestId,
         WebViewSessionToken webViewSession)
     {
         auto weakThis = get_weak();
-        auto dispatcherQueue = DispatcherQueue();
+        winrt::Microsoft::UI::Dispatching::DispatcherQueue dispatcherQueue{ nullptr };
         try
         {
+            dispatcherQueue = DispatcherQueue();
             co_await winrt::resume_background();
         }
         catch (...)

@@ -39,7 +39,8 @@ struct AppleIncrementalSyncEngine {
         )
         guard manifest.kind == "zerochat.incrementalManifest",
               manifest.version == 1,
-              manifest.updatedAt == head.updatedAt else {
+              manifest.updatedAt == head.updatedAt,
+              hasUniqueSnapshotRecordIds(manifest.data) else {
             throw SyncError.badIncrementalManifest
         }
         return manifest
@@ -52,9 +53,10 @@ struct AppleIncrementalSyncEngine {
         manifest: IncrementalManifest
     ) async throws -> SyncVault {
         let refsByConversation = Dictionary(grouping: manifest.chunks, by: \.conversationId)
-        let refsBySkill = Dictionary(uniqueKeysWithValues: (manifest.skillChunks ?? []).map {
-            (skillRefKey($0.skillId, $0.chunkId), $0)
-        })
+        let refsBySkill = try uniqueIncrementalManifestDictionary(
+            manifest.skillChunks ?? [],
+            keyedBy: { skillRefKey($0.skillId, $0.chunkId) }
+        )
         let refsByAttachment = Dictionary(grouping: manifest.attachmentChunks ?? []) {
             attachmentRefKey($0.conversationId, $0.messageId, $0.attachmentId)
         }
@@ -117,6 +119,7 @@ struct AppleIncrementalSyncEngine {
                     }
 
                     var dataURL = ""
+                    var dataURLByteCount = 0
                     for ref in refs {
                         let envelope = try await transport.readIncrementalObject(
                             endpoint: endpoint,
@@ -139,7 +142,7 @@ struct AppleIncrementalSyncEngine {
                               chunk.updatedAt == ref.updatedAt,
                               chunk.fingerprint == ref.fingerprint,
                               !chunk.content.isEmpty,
-                              attachmentChunkFingerprint(
+                              try attachmentChunkFingerprint(
                                 conversationId: ref.conversationId,
                                 messageId: ref.messageId,
                                 attachmentId: ref.attachmentId,
@@ -148,6 +151,10 @@ struct AppleIncrementalSyncEngine {
                               ) == ref.fingerprint else {
                             throw SyncError.badMessageChunk
                         }
+                        dataURLByteCount = try nextIncrementalAttachmentDataURLByteCount(
+                            currentBytes: dataURLByteCount,
+                            nextContent: chunk.content
+                        )
                         dataURL += chunk.content
                     }
                     guard let safeDataURL = safeImageAttachmentDataURL(dataURL)?.dataURL else {
@@ -362,9 +369,18 @@ struct AppleIncrementalSyncEngine {
         passphrase: String,
         remoteManifest: IncrementalManifest?
     ) async throws -> BuiltIncrementalUpload {
-        let reusableChunks = Dictionary(uniqueKeysWithValues: (remoteManifest?.chunks ?? []).map { ($0.fingerprint, $0) })
-        let reusableSkillChunks = Dictionary(uniqueKeysWithValues: (remoteManifest?.skillChunks ?? []).map { ($0.fingerprint, $0) })
-        let reusableAttachmentChunks = Dictionary(uniqueKeysWithValues: (remoteManifest?.attachmentChunks ?? []).map { ($0.fingerprint, $0) })
+        let reusableChunks = try uniqueIncrementalManifestDictionary(
+            remoteManifest?.chunks ?? [],
+            keyedBy: \.fingerprint
+        )
+        let reusableSkillChunks = try uniqueIncrementalManifestDictionary(
+            remoteManifest?.skillChunks ?? [],
+            keyedBy: \.fingerprint
+        )
+        let reusableAttachmentChunks = try uniqueIncrementalManifestDictionary(
+            remoteManifest?.attachmentChunks ?? [],
+            keyedBy: \.fingerprint
+        )
         var chunks: [PendingChunkUpload] = []
         var refs: [IncrementalChunkRef] = []
         var skillRefs: [IncrementalSkillRef] = []
@@ -385,7 +401,7 @@ struct AppleIncrementalSyncEngine {
                     }
                     let parts = attachmentContentParts(safeDataURL)
                     for (index, content) in parts.enumerated() {
-                        let fingerprint = attachmentChunkFingerprint(
+                        let fingerprint = try attachmentChunkFingerprint(
                             conversationId: conversation.id,
                             messageId: message.id,
                             attachmentId: attachment.id,
@@ -685,16 +701,47 @@ func attachmentChunkFingerprint(
     attachmentId: String,
     index: Int,
     content: String
-) -> String {
-    let values = [conversationId, messageId, attachmentId, content].map { value -> String in
-        guard let encoded = try? JSONEncoder().encode(value),
-              let string = String(data: encoded, encoding: .utf8) else {
-            preconditionFailure("String JSON encoding must succeed.")
+) throws -> String {
+    let values = try [conversationId, messageId, attachmentId, content].map { value -> String in
+        let encoded = try JSONEncoder().encode(value)
+        guard let string = String(data: encoded, encoding: .utf8) else {
+            throw SyncError.badMessageChunk
         }
         return string
     }
     let payload = "{\"conversationId\":\(values[0]),\"messageId\":\(values[1]),\"attachmentId\":\(values[2]),\"index\":\(index),\"content\":\(values[3])}"
     return sha256Hex(Data(payload.utf8))
+}
+
+func uniqueIncrementalManifestDictionary<Value, Key: Hashable>(
+    _ values: [Value],
+    keyedBy keyForValue: (Value) -> Key
+) throws -> [Key: Value] {
+    var result: [Key: Value] = [:]
+    result.reserveCapacity(values.count)
+    for value in values {
+        let key = keyForValue(value)
+        guard result.index(forKey: key) == nil else {
+            throw SyncError.badIncrementalManifest
+        }
+        result[key] = value
+    }
+    return result
+}
+
+func nextIncrementalAttachmentDataURLByteCount(
+    currentBytes: Int,
+    nextContent: String
+) throws -> Int {
+    guard currentBytes >= 0 else {
+        throw SyncError.badMessageChunk
+    }
+
+    let (nextBytes, overflow) = currentBytes.addingReportingOverflow(nextContent.utf8.count)
+    guard !overflow, nextBytes <= maxImageAttachmentDataURLBytes else {
+        throw SyncError.badMessageChunk
+    }
+    return nextBytes
 }
 
 private func sha256Hex(_ data: Data) -> String {

@@ -1,5 +1,5 @@
 use crate::{
-    models::{AppSnapshot, Conversation},
+    models::{AppSnapshot, Conversation, ProviderConfig},
     skills::normalize_whitespace,
 };
 
@@ -40,6 +40,24 @@ pub(crate) fn ensure_active_conversation(
     first_message: &str,
     now: i64,
 ) -> String {
+    ensure_active_conversation_with_provider(snapshot, first_message, now, None)
+}
+
+pub(crate) fn ensure_active_conversation_for_provider(
+    snapshot: &mut AppSnapshot,
+    first_message: &str,
+    now: i64,
+    provider: &ProviderConfig,
+) -> String {
+    ensure_active_conversation_with_provider(snapshot, first_message, now, Some(provider))
+}
+
+fn ensure_active_conversation_with_provider(
+    snapshot: &mut AppSnapshot,
+    first_message: &str,
+    now: i64,
+    provider: Option<&ProviderConfig>,
+) -> String {
     if let Some(existing_id) = snapshot.preferences.active_conversation_id.as_deref() {
         if snapshot
             .conversations
@@ -58,7 +76,10 @@ pub(crate) fn ensure_active_conversation(
 
     let conversation_id = format!("linux-conversation-{}", now);
     let title = title_from_message(first_message);
-    let (provider_id, model) = default_conversation_provider(snapshot);
+    let (provider_id, model) = provider.map_or_else(
+        || default_conversation_provider(snapshot),
+        |provider| (provider.id.clone(), provider.model.clone()),
+    );
 
     snapshot.conversations.push(Conversation {
         id: conversation_id.clone(),

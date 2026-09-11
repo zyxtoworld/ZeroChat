@@ -11,6 +11,13 @@ import type {
   UserSkillChunk,
 } from '../types'
 import { DEFAULT_GIST_FILE } from './syncDefaults'
+import {
+  createRuntimeId,
+  isUsableRuntimeId,
+  reserveRuntimeIds,
+} from './runtimeId'
+
+export { createRuntimeId } from './runtimeId'
 
 export const DEFAULT_SKILL_CONTEXT_BUDGET = 2400
 export const MIN_SKILL_CONTEXT_BUDGET = 600
@@ -19,16 +26,6 @@ export const DEFAULT_MAX_AUTO_SKILLS = 3
 export const DEFAULT_CHAT_CONTEXT_MESSAGE_LIMIT = 24
 export const MIN_CHAT_CONTEXT_MESSAGE_LIMIT = 4
 export const MAX_CHAT_CONTEXT_MESSAGE_LIMIT = 200
-
-const fallbackIdSeed = Math.random().toString(36).slice(2)
-let fallbackIdSequence = 0
-
-export function createRuntimeId(prefix: string): string {
-  return (
-    globalThis.crypto?.randomUUID?.() ??
-    `${prefix}-${fallbackIdSeed}-${Date.now()}-${++fallbackIdSequence}`
-  )
-}
 
 export function defaultSkillSettings(): SkillSettings {
   return {
@@ -71,6 +68,40 @@ export function updateConversation(
         : conversation,
     ),
   })
+}
+
+function orderedProviders(providers: ProviderConfig[]): ProviderConfig[] {
+  return [
+    ...providers.filter((provider) => provider.enabled),
+    ...providers.filter((provider) => !provider.enabled),
+  ]
+}
+
+export function reorderProviders(
+  providers: ProviderConfig[],
+  sourceId: string,
+  targetId: string,
+): ProviderConfig[] {
+  if (!sourceId || sourceId === targetId) {
+    return providers
+  }
+
+  const sourceIndex = providers.findIndex((provider) => provider.id === sourceId)
+  const targetIndex = providers.findIndex((provider) => provider.id === targetId)
+
+  if (sourceIndex < 0 || targetIndex < 0) {
+    return providers
+  }
+
+  const nextProviders = [...providers]
+  const [movedProvider] = nextProviders.splice(sourceIndex, 1)
+
+  if (!movedProvider) {
+    return providers
+  }
+
+  nextProviders.splice(targetIndex, 0, movedProvider)
+  return orderedProviders(nextProviders)
 }
 
 export function hasStreamingMessage(data: AppData): boolean {
@@ -323,9 +354,9 @@ function normalizeSkill(value: unknown): UserSkill | null {
 
   return {
     id:
-      typeof skill.id === 'string' && skill.id
+      isUsableRuntimeId(skill.id)
         ? skill.id
-        : `skill-${Math.random().toString(36).slice(2)}`,
+        : createRuntimeId('skill'),
     name,
     description:
       typeof skill.description === 'string' ? skill.description.trim() : '',
@@ -404,6 +435,9 @@ export function normalizeAppData(data: AppData): AppData {
     skills?: unknown
     skillSettings?: unknown
   }
+  reserveRuntimeIds(data.providers)
+  reserveRuntimeIds(data.conversations)
+  reserveRuntimeIds(raw.skills)
   const skills = Array.isArray(raw.skills)
     ? raw.skills
         .map((skill) => normalizeSkill(skill))

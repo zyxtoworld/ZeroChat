@@ -10,7 +10,10 @@ import {
   isEncryptedObject,
 } from './crypto'
 import { mergeConcurrentAppData } from './concurrentAppDataMerge'
-import { isSyncVaultShape } from './syncShared'
+import {
+  assertRemoteWriteAllowed,
+  isSyncVaultShape,
+} from './syncShared'
 import {
   MAX_SYNC_INCREMENTAL_OBJECT_BYTES,
   assertSyncTextSize,
@@ -486,13 +489,19 @@ export async function createGistStateOperation(
     throw new Error(rt('error.remoteDataBadFormat'))
   }
 
+  const normalizedVault = normalizedGistVault(vault)
+
+  if (!normalizedVault) {
+    throw new Error(rt('error.remoteDataBadFormat'))
+  }
+
   const core: GistStateOperationCore = {
     kind: GIST_OPERATION_KIND,
     version: 2,
     operation: 'state',
     parents: normalizedParentIds,
     tombstones: normalizedDeletionMarkers,
-    vault: normalizeGistVault(vault),
+    vault: normalizedVault,
   }
 
   return {
@@ -1112,6 +1121,7 @@ export async function storeGistCursor(
   heads: readonly string[],
   localData: AppData,
   vault: SyncVault,
+  shouldDeferRemoteWrite?: () => boolean,
 ): Promise<void> {
   const localSyncAt = localData.sync.lastSyncAt
 
@@ -1119,12 +1129,16 @@ export async function storeGistCursor(
     return
   }
 
+  assertRemoteWriteAllowed({ shouldDeferRemoteWrite })
+
   const cursor: GistCursor = {
     version: GIST_CURSOR_VERSION,
     localSyncAt,
     heads: normalizedParents(heads),
     baseline: await createBaseline(vault),
   }
+
+  assertRemoteWriteAllowed({ shouldDeferRemoteWrite })
 
   writeCursorValue(storageKey(gistId, fileName), JSON.stringify(cursor))
 }

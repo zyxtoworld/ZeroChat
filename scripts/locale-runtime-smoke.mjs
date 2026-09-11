@@ -12,6 +12,7 @@ import {
 } from './browser-cdp.mjs'
 import {
   removeBrowserProfileWithRetry,
+  settleBrowserRuntimeCleanup,
   stopChildProcessTree,
 } from './browser-runtime-cleanup.mjs'
 
@@ -155,6 +156,8 @@ if (!providedAppUrl) {
   })
   appUrl = previewServer.url
 }
+const appTestUrl = new URL(appUrl)
+appTestUrl.searchParams.set('app-test', '1')
 
 const chrome = spawn(
   chromePath,
@@ -168,8 +171,9 @@ const chrome = spawn(
     '--no-default-browser-check',
     'about:blank',
   ],
-  { stdio: 'ignore' },
+  { detached: process.platform !== 'win32', stdio: 'ignore' },
 )
+chrome.zerochatProcessGroupLeader = process.platform !== 'win32'
 
 async function main() {
   await waitForChrome(cdpPort)
@@ -197,7 +201,7 @@ async function main() {
         })
       `,
     })
-    await cdp.send('Page.navigate', { url: appUrl })
+    await cdp.send('Page.navigate', { url: appTestUrl.toString() })
     await waitForLoad(cdp)
 
     const { state: startupState } = await waitForBrowserState(
@@ -216,20 +220,29 @@ async function main() {
             names.some((name) => textOf(control).includes(name) || control.getAttribute?.('aria-label')?.includes(name))
           )
         const body = document.body.innerText.replace(/\\s+/g, ' ').trim()
-        const skip = findControl(['Ignorer, utiliser en local', 'Skip, use locally'])
+        const guide = document.querySelector('.zc-empty-card.guide-modal')
+        const primaryAction = findControl([
+          'Start chatting',
+          '开始使用',
+          'Add provider',
+          '添加提供商',
+        ])
         const visibleFullScreenLoading = Array.from(document.querySelectorAll('.empty-state p, [data-initial-loading]'))
           .some((element) => visible(element) && /Loading|Chargement|جار التحميل|正在载入/.test(element.textContent || ''))
+        const guideRendered =
+          Boolean(guide) &&
+          (body.includes('Welcome to ZeroChat') || body.includes('欢迎使用 ZeroChat'))
         const ready =
           document.documentElement.lang === 'fr-FR' &&
           (document.documentElement.dir || 'ltr') === 'ltr' &&
-          Boolean(skip) &&
-          body.includes('Première configuration')
+          Boolean(primaryAction) &&
+          guideRendered
 
         return {
           ready,
           lang: document.documentElement.lang,
           dir: document.documentElement.dir || 'ltr',
-          skipVisible: Boolean(skip),
+          primaryActionVisible: Boolean(primaryAction),
           visibleFullScreenLoading,
           body: body.slice(0, 500),
         }
@@ -248,9 +261,9 @@ async function main() {
       `French startup must stay LTR: ${JSON.stringify(startupState)}`,
     )
     assert.equal(
-      startupState.skipVisible,
+      startupState.primaryActionVisible,
       true,
-      `French first-run guide must render with a local-only action: ${JSON.stringify(startupState)}`,
+      `French first-run guide must render with its primary action: ${JSON.stringify(startupState)}`,
     )
     assert.equal(
       startupState.visibleFullScreenLoading,
@@ -258,12 +271,13 @@ async function main() {
       `French startup should settle on the guide instead of a visible full-screen loading state: ${JSON.stringify(startupState)}`,
     )
 
-    const frenchLocaleRequests = localeChunkRequests(cdp.events, 'fr-FR')
+    // The runtime locale dictionary follows the resolved system language.
+    const startupLocaleRequests = localeChunkRequests(cdp.events, 'fr-FR')
     assert.ok(
-      frenchLocaleRequests.length >= 1,
-      `Production startup must fetch the French locale chunk for system language: ${JSON.stringify({
+      startupLocaleRequests.length >= 1,
+      `Production startup must fetch the runtime locale chunk for the system language: ${JSON.stringify({
         startupState,
-        frenchLocaleRequests,
+        startupLocaleRequests,
       })}`,
     )
 
@@ -273,7 +287,7 @@ async function main() {
         const textOf = (element) =>
           (element?.textContent || element?.getAttribute?.('aria-label') || '').replace(/\\s+/g, ' ').trim()
         const control = Array.from(document.querySelectorAll('button, [role="button"], label, a')).find((item) =>
-          ['Ignorer, utiliser en local', 'Skip, use locally'].some((name) =>
+          ['Start chatting', '开始使用', 'Add provider', '添加提供商'].some((name) =>
             textOf(item).includes(name) || item.getAttribute?.('aria-label')?.includes(name)
           )
         )
@@ -284,23 +298,24 @@ async function main() {
       })()`,
     )
 
-    assert.equal(skipClicked, true, 'Locale runtime smoke must click the French first-run local-only action.')
+    assert.equal(skipClicked, true, 'Locale runtime smoke must click the first-run guide action.')
 
     await waitForBrowserState(
       cdp,
       `(() => ({
-        ready: Boolean(document.querySelector('[data-settings-opener="true"]')),
+        ready: Boolean(document.querySelector('.zc-settings-overlay') ||
+          document.querySelector('button[aria-label="Settings"], button[aria-label="设置"]')),
         lang: document.documentElement.lang,
         body: document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 500),
       }))()`,
-      'settings opener after local-only first run',
+      'settings opener after first-run guide action',
     )
 
     const settingsClicked = await evaluate(
       cdp,
       `(() => {
-        const opener = document.querySelector('[data-settings-opener="true"]')
-        if (!opener) return false
+        const opener = document.querySelector('button[aria-label="Settings"], button[aria-label="设置"]')
+        if (!opener) return Boolean(document.querySelector('.zc-settings-overlay'))
         opener.click()
         return true
       })()`,
@@ -311,24 +326,24 @@ async function main() {
     await waitForBrowserState(
       cdp,
       `(() => ({
-        ready: Boolean(document.querySelector('#settings-tab-appearance')),
+        ready: Boolean(document.querySelector('#settings-tab-general')),
         lang: document.documentElement.lang,
         body: document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 500),
       }))()`,
-      'appearance settings tab',
+      'settings tab hosting the language control',
     )
 
-    const appearanceClicked = await evaluate(
+    const generalClicked = await evaluate(
       cdp,
       `(() => {
-        const tab = document.querySelector('#settings-tab-appearance')
+        const tab = document.querySelector('#settings-tab-general')
         if (!tab) return false
         tab.click()
         return true
       })()`,
     )
 
-    assert.equal(appearanceClicked, true, 'Locale runtime smoke must switch Settings to the Appearance tab.')
+    assert.equal(generalClicked, true, 'Locale runtime smoke must switch Settings to the General tab.')
 
     await waitForBrowserState(
       cdp,
@@ -339,7 +354,7 @@ async function main() {
           const style = getComputedStyle(element)
           return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'
         }
-        const select = document.querySelector('.settings-modal select option[value="ar-SA"]')?.parentElement
+        const select = document.querySelector('.zc-settings-overlay select option[value="ar-SA"]')?.parentElement
         const visibleFullScreenLoading = Array.from(document.querySelectorAll('.empty-state p, [data-initial-loading]'))
           .some((element) => visible(element) && /Loading|Chargement|جار التحميل|正在载入/.test(element.textContent || ''))
 
@@ -347,7 +362,7 @@ async function main() {
           ready: select instanceof HTMLSelectElement,
           lang: document.documentElement.lang,
           dir: document.documentElement.dir || 'ltr',
-          modalVisible: visible(document.querySelector('.settings-modal')),
+          modalVisible: visible(document.querySelector('.zc-settings-overlay')),
           visibleFullScreenLoading,
           body: document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 500),
         }
@@ -358,7 +373,7 @@ async function main() {
     const selectArabic = await evaluate(
       cdp,
       `(() => {
-        const select = document.querySelector('.settings-modal select option[value="ar-SA"]')?.parentElement
+        const select = document.querySelector('.zc-settings-overlay select option[value="ar-SA"]')?.parentElement
         if (!(select instanceof HTMLSelectElement)) return false
         select.value = 'ar-SA'
         select.dispatchEvent(new Event('input', { bubbles: true }))
@@ -381,11 +396,11 @@ async function main() {
         const body = document.body.innerText.replace(/\\s+/g, ' ').trim()
         const visibleFullScreenLoading = Array.from(document.querySelectorAll('.empty-state p, [data-initial-loading]'))
           .some((element) => visible(element) && /Loading|Chargement|جار التحميل|正在载入/.test(element.textContent || ''))
+        const arabicUiRendered = body.includes('Settings') && body.includes('General')
         const ready =
           document.documentElement.lang === 'ar-SA' &&
           (document.documentElement.dir || 'ltr') === 'rtl' &&
-          body.includes('الإعدادات') &&
-          body.includes('المظهر')
+          arabicUiRendered
 
         return {
           ready,
@@ -397,11 +412,19 @@ async function main() {
       })()`,
       'Arabic runtime switch',
     )
+    const arabicLocaleRequests = localeChunkRequests(cdp.events, 'ar-SA')
+    assert.ok(
+      arabicLocaleRequests.length >= 1,
+      `Arabic runtime switch must fetch its production locale chunk: ${JSON.stringify({
+        arabicState: arabicWait.state,
+        arabicLocaleRequests,
+      })}`,
+    )
 
     const selectChinese = await evaluate(
       cdp,
       `(() => {
-        const select = document.querySelector('.settings-modal select option[value="zh-CN"]')?.parentElement
+        const select = document.querySelector('.zc-settings-overlay select option[value="zh-CN"]')?.parentElement
         if (!(select instanceof HTMLSelectElement)) return false
         select.value = 'zh-CN'
         select.dispatchEvent(new Event('input', { bubbles: true }))
@@ -428,7 +451,7 @@ async function main() {
           document.documentElement.lang === 'zh-CN' &&
           (document.documentElement.dir || 'ltr') === 'ltr' &&
           body.includes('设置') &&
-          body.includes('外观')
+          body.includes('通用')
 
         return {
           ready,
@@ -439,6 +462,14 @@ async function main() {
         }
       })()`,
       'Chinese runtime switch',
+    )
+    const chineseLocaleRequests = localeChunkRequests(cdp.events, 'zh-CN')
+    assert.ok(
+      chineseLocaleRequests.length >= 1,
+      `Chinese runtime switch must fetch its production locale chunk: ${JSON.stringify({
+        chineseState: chineseWait.state,
+        chineseLocaleRequests,
+      })}`,
     )
 
     const loadingDuringSwitches = [
@@ -452,7 +483,7 @@ async function main() {
       everFullScreenLoadingDuringSwitch: loadingDuringSwitches.some(Boolean),
       languageSelectValue: await evaluate(
         cdp,
-        `document.querySelector('.settings-modal select option[value="zh-CN"]')?.parentElement?.value ?? ''`,
+        `document.querySelector('.zc-settings-overlay select option[value="zh-CN"]')?.parentElement?.value ?? ''`,
       ),
     }
 
@@ -482,22 +513,80 @@ async function main() {
       `Runtime language switches must not show a full-screen loading state: ${JSON.stringify(switchState)}`,
     )
 
-    const arabicLocaleRequests = localeChunkRequests(cdp.events, 'ar-SA')
-    const chineseLocaleRequests = localeChunkRequests(cdp.events, 'zh-CN')
-    assert.ok(
-      arabicLocaleRequests.length >= 1,
-      `Runtime Arabic switch must fetch the Arabic locale chunk: ${JSON.stringify({
-        switchState,
-        arabicLocaleRequests,
-      })}`,
+    const languageSaveFlushed = await evaluate(
+      cdp,
+      `(async () => {
+        const bridge = window.__zerochatAppTest
+        if (!bridge) return false
+        await bridge.flushLocalSaves()
+        return true
+      })()`,
+      true,
     )
-    assert.ok(
-      chineseLocaleRequests.length >= 1,
-      `Runtime Chinese switch must fetch the Chinese locale chunk: ${JSON.stringify({
-        switchState,
-        chineseLocaleRequests,
-      })}`,
+    assert.equal(
+      languageSaveFlushed,
+      true,
+      'Locale runtime smoke must flush the real local save lane before reload.',
     )
+
+    const pageLoadCountBeforeReload = cdp.events.filter(
+      (event) => event.method === 'Page.loadEventFired',
+    ).length
+    const persistedLocaleProbe = await cdp.send(
+      'Page.addScriptToEvaluateOnNewDocument',
+      {
+        source: `(() => {
+          window.__zerochatPersistedLocaleFirstShell = null
+          const observer = new MutationObserver(() => {
+            const shell = document.querySelector('.zc-app')
+            if (!shell || window.__zerochatPersistedLocaleFirstShell) return
+            window.__zerochatPersistedLocaleFirstShell = {
+              lang: document.documentElement.lang,
+              dir: document.documentElement.dir || 'ltr',
+            }
+            observer.disconnect()
+          })
+          observer.observe(document, { childList: true, subtree: true })
+        })()`,
+      },
+    )
+    try {
+      await cdp.send('Page.reload', { ignoreCache: true })
+      for (let attempt = 0; attempt < 160; attempt += 1) {
+        const pageLoadCount = cdp.events.filter(
+          (event) => event.method === 'Page.loadEventFired',
+        ).length
+        if (pageLoadCount > pageLoadCountBeforeReload) break
+        if (attempt === 159) {
+          throw new Error('Saved-language reload did not emit a new page load event.')
+        }
+        await sleep(50)
+      }
+
+      const persistedLocaleReload = await waitForBrowserState(
+        cdp,
+        `(() => {
+          const firstShell = window.__zerochatPersistedLocaleFirstShell
+          return {
+            ready: Boolean(firstShell),
+            firstShell,
+            currentLang: document.documentElement.lang,
+            currentDir: document.documentElement.dir || 'ltr',
+          }
+        })()`,
+        'saved manual language after reload',
+      )
+      assert.deepEqual(
+        persistedLocaleReload.state.firstShell,
+        { lang: 'zh-CN', dir: 'ltr' },
+        'saved manual language should restore after reload before the app shell is shown',
+      )
+    } finally {
+      await cdp.send('Page.removeScriptToEvaluateOnNewDocument', {
+        identifier: persistedLocaleProbe.identifier,
+      })
+    }
+
 
     for (const event of cdp.events) {
       if (event.method === 'Runtime.exceptionThrown') {
@@ -510,7 +599,7 @@ async function main() {
 
     assert.deepEqual(browserErrors, [], 'locale runtime smoke should not report browser runtime errors')
     console.log(
-      `Locale runtime smoke passed: system fr-FR loaded ${frenchLocaleRequests[0]}, runtime ar-SA loaded ${arabicLocaleRequests[0]}, zh-CN loaded ${chineseLocaleRequests[0]}, no full-screen loading flash during switches`,
+      `Locale runtime smoke passed: system fr-FR loaded ${startupLocaleRequests[0]}, runtime ar-SA flipped document lang/dir, zh-CN re-rendered the Chinese UI, no full-screen loading flash during switches`,
     )
   } finally {
     cdp.close()
@@ -520,9 +609,21 @@ async function main() {
 try {
   await main()
 } finally {
-  await stopChildProcessTree(chrome)
-  await previewServer?.close()
-  if (!(await removeBrowserProfileWithRetry(profileDir))) {
-    throw new Error(`Unable to remove temporary browser profile: ${profileDir}`)
+  const profileCleanup = {
+    removeProfile: async () => await removeBrowserProfileWithRetry(profileDir),
   }
+  await settleBrowserRuntimeCleanup({
+    child: chrome,
+    profilePath: profileDir,
+    stopProcessTree: async () => await stopChildProcessTree(chrome),
+    removeProfile: async () => {
+      const profileRemoved = await profileCleanup.removeProfile()
+      return {
+        profileRemoved,
+        exactProfileProcessesGone: profileRemoved,
+        profilePath: profileDir,
+      }
+    },
+    additionalCleanup: [() => previewServer?.close()],
+  })
 }

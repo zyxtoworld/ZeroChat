@@ -82,7 +82,7 @@ describe('Markdown rendering', () => {
     expect(html).not.toContain('<script>')
   })
 
-  it('allows only absolute HTTP(S) links and inline raster data images', () => {
+  it('allows only safe HTTP(S)/mailto links and inline raster data images', () => {
     const html = renderMarkdown(
       [
         '[script](javascript:alert(1))',
@@ -93,6 +93,7 @@ describe('Markdown rendering', () => {
         '[relative](/settings)',
         '[credentials](https://user:secret@example.com/private)',
         '[safe](https://例子.example/Guide?x=1#top)',
+        '[mail](mailto:alice@example.com?subject=hello)',
         '![script](data:text/html;base64,PHNjcmlwdD4=)',
         '![remote](https://tracker.example/pixel.png)',
         '![relative](/pixel.png)',
@@ -124,6 +125,9 @@ describe('Markdown rendering', () => {
     expect(html).toContain(
       '<a href="https://xn--fsqu00a.example/Guide?x=1#top" target="_blank" rel="noopener noreferrer">safe</a>',
     )
+    expect(html).toContain(
+      '<a href="mailto:alice@example.com?subject=hello" target="_blank" rel="noopener noreferrer">mail</a>',
+    )
     expect(html).toContain('![script](data:text/html;base64,PHNjcmlwdD4=)')
     expect(html).toContain('![remote](https://tracker.example/pixel.png)')
     expect(html).toContain('![relative](/pixel.png)')
@@ -146,6 +150,68 @@ describe('Markdown rendering', () => {
     expect(second).toContain('data-language="Texte brut"')
     expect(second).toContain('data-copy-label="Copier"')
     expect(second).not.toContain('data-copy-label="Copy"')
+  })
+
+  it('keeps hostile provider and sync Markdown inert across rich syntax boundaries', () => {
+    const html = renderMarkdown(
+      [
+        '<svg onload="alert(1)"><script>alert(2)</script></svg>',
+        '<math><mi xlink:href="javascript:alert(3)">x</mi></math>',
+        '<iframe srcdoc="<script>alert(4)</script>"></iframe>',
+        '<div style="background:url(javascript:alert(5))" onerror="alert(6)">text</div>',
+        '[mixed](JaVaScRiPt:alert(7))',
+        '[encoded](java%73cript:alert(8))',
+        '[data](data:text/html,<script>alert(9)</script>)',
+        '[vb](vbscript:msgbox(10))',
+        '[safe](HTTPS://example.com/path)',
+        '[mail](MAILTO:alice@example.com?subject=hello)',
+        '[mail-control](mailto:alice@example.com?subject=hi%0aBcc:evil@example.com)',
+        '![bad](data:text/html;base64,PHNjcmlwdD5hbGVydCgxMSk8L3NjcmlwdD4=)',
+        '![safe](data:image/png;base64,AA==)',
+        '```html',
+        '<script onerror="alert(12)">text</script>',
+        '```',
+      ].join('\n\n'),
+      labels,
+    )
+    const controlHtml = renderMarkdown(
+      '[control](\u0000https://example.com/control)',
+      labels,
+    )
+
+    expect(html).not.toContain('<svg')
+    expect(html).not.toContain('<math')
+    expect(html).not.toContain('<iframe')
+    expect(html).not.toContain('<script')
+    expect(html).not.toContain('<img src="data:text/html')
+    expect(html).not.toContain('href="javascript:')
+    expect(html).not.toContain('href="data:text/html')
+    expect(html).not.toContain('href="vbscript:')
+    expect(html).not.toMatch(/<(?:svg|math|iframe|script)\b/iu)
+    expect(html).not.toMatch(/<[a-z][^>]*\bon(?:error|load)=/iu)
+    expect(html).not.toMatch(/<[a-z][^>]*\bsrcdoc=/iu)
+    expect(html).not.toMatch(/<[a-z][^>]*\bstyle=/iu)
+    expect(html).toContain(
+      '<a href="https://example.com/path" target="_blank" rel="noopener noreferrer">safe</a>',
+    )
+    expect(html).toContain(
+      '<a href="mailto:alice@example.com?subject=hello" target="_blank" rel="noopener noreferrer">mail</a>',
+    )
+    expect(html).not.toContain('href="mailto:alice@example.com?subject=hi%0a')
+    expect(html).toContain('<img src="data:image/png;base64,AA==" alt="safe">')
+    expect(html).toContain('&lt;script onerror=')
+    expect(html).toContain('&gt;text&lt;/script&gt;')
+    expect(controlHtml).not.toContain('href="https://example.com/control"')
+    expect(controlHtml).toContain('�https://example.com/control')
+  })
+
+  it('handles oversized plain input without creating executable markup', () => {
+    const html = renderMarkdown(`# title\n\n${'safe text '.repeat(20_000)}`, labels)
+
+    expect(html).toContain('<h1>title</h1>')
+    expect(html).not.toContain('<script')
+    expect(html).not.toContain('href="')
+    expect(html).not.toContain('src="')
   })
 
   it('keeps typographic prose and leading zero-width input behavior stable', () => {

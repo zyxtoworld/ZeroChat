@@ -1,5 +1,5 @@
 param(
-  [string] $BuildRoot = "C:\ZeroChatWindowsBuild",
+  [string] $BuildRoot = ".local\codex\artifacts\windows-build",
   [string] $Configuration = "Release",
   [string] $Platform = "x64",
   [string] $ScreenshotPath = "",
@@ -12,6 +12,10 @@ param(
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+if (-not [System.IO.Path]::IsPathRooted($BuildRoot)) {
+  $BuildRoot = Join-Path $RepoRoot $BuildRoot
+}
+$BuildRoot = [System.IO.Path]::GetFullPath($BuildRoot)
 $OutputDir = Join-Path $BuildRoot "output\$Platform\$Configuration"
 $ExePath = Join-Path $OutputDir "ZeroChat.exe"
 $WebIndex = Join-Path $OutputDir "web\index.html"

@@ -68,10 +68,12 @@ const keywordGroups: Record<string, string> = {
   yaml: 'false null true',
 }
 
-const safeMarkdownLinkProtocols = new Set(['http:', 'https:'])
+const safeMarkdownLinkProtocols = new Set(['http:', 'https:', 'mailto:'])
 const safeDataImagePattern =
   /^data:image\/(?:gif|png|jpeg|webp);base64,(?:[a-z\d+/]{4})*(?:[a-z\d+/]{4}|[a-z\d+/]{2}==|[a-z\d+/]{3}=)$/i
 const leadingZeroWidthPattern = /^[\u200b-\u200f\ufeff]+/
+// eslint-disable-next-line no-control-regex -- reject C0/DEL before Marked normalizes URLs.
+const unsafeMarkdownControlPattern = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g
 
 let cachedMarkdown:
   | {
@@ -87,6 +89,10 @@ function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
+}
+
+function renderPlainTextMarkdown(value: string): string {
+  return `<p>${escapeHtml(value.replace(unsafeMarkdownControlPattern, '�')).replace(/\r\n?|\n/g, '<br>')}</p>`
 }
 
 function normalizeLanguage(value: string): string {
@@ -162,14 +168,24 @@ function typographicText(value: string): string {
     .replace(/(\S)'(?=$|[\s.,!?;:)\]}])/g, '$1’')
 }
 
-function hasUrlWhitespaceOrControl(value: string): boolean {
-  return Array.from(value).some((character) => {
+function hasUrlControl(value: string): boolean {
+  return (
+    Array.from(value).some((character) => {
     const codePoint = character.codePointAt(0) ?? 0
-    return /\s/u.test(character) || codePoint <= 0x1f || codePoint === 0x7f
-  })
+    return codePoint <= 0x1f || codePoint === 0x7f
+    }) || /%(?:0[0-9a-f]|1[0-9a-f]|7f)/iu.test(value)
+  )
+}
+
+function hasUrlWhitespaceOrControl(value: string): boolean {
+  return /\s/u.test(value) || hasUrlControl(value)
 }
 
 function safeMarkdownLinkUrl(value: string): string | undefined {
+  if (hasUrlControl(value)) {
+    return undefined
+  }
+
   const trimmed = value.trim()
 
   if (!trimmed || hasUrlWhitespaceOrControl(trimmed)) {
@@ -179,12 +195,23 @@ function safeMarkdownLinkUrl(value: string): string | undefined {
   try {
     const url = new URL(trimmed)
 
-    if (
-      !safeMarkdownLinkProtocols.has(url.protocol) ||
-      !url.hostname ||
-      url.username ||
-      url.password
-    ) {
+    if (!safeMarkdownLinkProtocols.has(url.protocol)) {
+      return undefined
+    }
+
+    const hasSafeHttpDestination =
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      Boolean(url.hostname) &&
+      !url.username &&
+      !url.password
+    const hasSafeMailtoDestination =
+      url.protocol === 'mailto:' &&
+      Boolean(url.pathname) &&
+      !url.hostname &&
+      !url.username &&
+      !url.password
+
+    if (!hasSafeHttpDestination && !hasSafeMailtoDestination) {
       return undefined
     }
 
@@ -195,6 +222,10 @@ function safeMarkdownLinkUrl(value: string): string | undefined {
 }
 
 function safeMarkdownImageUrl(value: string): string | undefined {
+  if (hasUrlControl(value)) {
+    return undefined
+  }
+
   const trimmed = value.trim()
 
   return safeDataImagePattern.test(trimmed) ? escapeHtml(trimmed) : undefined
@@ -307,9 +338,15 @@ export function renderMarkdown(
   content: string,
   labels: RenderMarkdownLabels,
 ): string {
-  return markdownParser(labels).parse(content.replace(leadingZeroWidthPattern, ''), {
-    async: false,
-  })
+  const normalizedContent = content.replace(leadingZeroWidthPattern, '')
+
+  if (unsafeMarkdownControlPattern.test(normalizedContent)) {
+    unsafeMarkdownControlPattern.lastIndex = 0
+    return renderPlainTextMarkdown(normalizedContent)
+  }
+
+  unsafeMarkdownControlPattern.lastIndex = 0
+  return markdownParser(labels).parse(normalizedContent, { async: false })
 }
 
 export function markdownHighlightLanguageCount(): number {

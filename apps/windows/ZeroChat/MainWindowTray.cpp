@@ -61,11 +61,41 @@ namespace winrt::ZeroChat::implementation
             return;
         }
 
+        SetLastError(ERROR_SUCCESS);
+        auto originalWindowProc = reinterpret_cast<WNDPROC>(
+            GetWindowLongPtrW(windowHandle, GWLP_WNDPROC));
+        if (!originalWindowProc)
+        {
+            return;
+        }
+
         m_windowHandle = windowHandle;
+        m_originalWindowProc = originalWindowProc;
         m_taskbarCreatedMessage = RegisterWindowMessageW(L"TaskbarCreated");
-        SetPropW(m_windowHandle, WindowPropName, reinterpret_cast<HANDLE>(this));
-        m_originalWindowProc = reinterpret_cast<WNDPROC>(
-            SetWindowLongPtrW(m_windowHandle, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&MainWindow::TrayWindowProc)));
+        if (!SetPropW(m_windowHandle, WindowPropName, reinterpret_cast<HANDLE>(this)))
+        {
+            m_originalWindowProc = nullptr;
+            m_windowHandle = nullptr;
+            return;
+        }
+
+        SetLastError(ERROR_SUCCESS);
+        auto previousWindowProc = reinterpret_cast<WNDPROC>(
+            SetWindowLongPtrW(
+                m_windowHandle,
+                GWLP_WNDPROC,
+                reinterpret_cast<LONG_PTR>(&MainWindow::TrayWindowProc)));
+        if (!previousWindowProc && GetLastError() != ERROR_SUCCESS)
+        {
+            RemovePropW(m_windowHandle, WindowPropName);
+            m_originalWindowProc = nullptr;
+            m_windowHandle = nullptr;
+            return;
+        }
+        if (previousWindowProc)
+        {
+            m_originalWindowProc = previousWindowProc;
+        }
 
         m_trayIconData = {};
         m_trayIconData.cbSize = sizeof(m_trayIconData);
@@ -353,12 +383,15 @@ namespace winrt::ZeroChat::implementation
         }
     }
 
-    LRESULT CALLBACK MainWindow::TrayWindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
+    LRESULT CALLBACK MainWindow::TrayWindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) noexcept
     {
         auto window = reinterpret_cast<MainWindow*>(GetPropW(hwnd, WindowPropName));
 
         if (window)
         {
+            auto originalWindowProc = window->m_originalWindowProc;
+            try
+            {
             if (
                 window->m_taskbarCreatedMessage != 0 &&
                 message == window->m_taskbarCreatedMessage)
@@ -461,6 +494,14 @@ namespace winrt::ZeroChat::implementation
             if (window->m_originalWindowProc)
             {
                 return CallWindowProcW(window->m_originalWindowProc, hwnd, message, wparam, lparam);
+            }
+            }
+            catch (...)
+            {
+                if (originalWindowProc)
+                {
+                    return CallWindowProcW(originalWindowProc, hwnd, message, wparam, lparam);
+                }
             }
         }
 

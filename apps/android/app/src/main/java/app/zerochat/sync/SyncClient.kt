@@ -17,6 +17,8 @@ import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 
@@ -46,10 +48,12 @@ internal suspend fun <T> runWithRollbackOnFailure(
     rollback: suspend () -> Unit,
 ): T = try {
     operation()
-} catch (error: CancellationException) {
-    throw error
 } catch (error: Throwable) {
-    rollback()
+    try {
+        withContext(NonCancellable) { rollback() }
+    } catch (rollbackError: Throwable) {
+        error.addSuppressed(rollbackError)
+    }
     throw error
 }
 
@@ -254,7 +258,7 @@ class SyncClient(
         hasLocalUserContent: Boolean = true,
         hasUnsyncedLocalChanges: Boolean = false,
     ): SyncVault {
-        val result = syncGistVaultV2(
+        val result = performGistVaultSync(
             client = client,
             json = json,
             crypto = crypto,
@@ -355,7 +359,7 @@ class SyncClient(
         val resolvedPassphrase = passphrase?.takeIf { it.isNotBlank() }
             ?: gistPassphrases[resolvedGistId]
             ?: error("Data encryption password is required. Sync once before clearing this Gist.")
-        clearGistV2(
+        performGistClear(
             client = client,
             json = json,
             crypto = crypto,

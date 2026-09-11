@@ -147,7 +147,7 @@ class SyncIncrementalUploadTest {
     }
 
     @Test
-    fun incrementalUploadCancellationSkipsRollbackAndKeepsOriginalSignal() {
+    fun incrementalUploadCancellationRollsBackAndKeepsOriginalSignal() {
         val cancellation = CancellationException("cancelled")
         var rollbackCalls = 0
 
@@ -161,7 +161,7 @@ class SyncIncrementalUploadTest {
         }
 
         assertSame(cancellation, thrown)
-        assertEquals(0, rollbackCalls)
+        assertEquals(1, rollbackCalls)
     }
 
     @Test
@@ -180,6 +180,26 @@ class SyncIncrementalUploadTest {
 
         assertSame(failure, thrown)
         assertEquals(1, rollbackCalls)
+    }
+
+    @Test
+    fun incrementalUploadRollbackFailureDoesNotReplaceThePrimaryError() {
+        val failure = IllegalStateException("upload failed")
+        val rollbackFailure = IllegalArgumentException("rollback failed")
+
+        val thrown = assertThrows(IllegalStateException::class.java) {
+            runBlocking {
+                runWithRollbackOnFailure(
+                    operation = { throw failure },
+                    rollback = { throw rollbackFailure },
+                )
+            }
+        }
+
+        assertSame(failure, thrown)
+        val suppressed = thrown.suppressed.single()
+        assertTrue(suppressed is IllegalArgumentException)
+        assertEquals(rollbackFailure.message, suppressed.message)
     }
 
     private fun conversation(

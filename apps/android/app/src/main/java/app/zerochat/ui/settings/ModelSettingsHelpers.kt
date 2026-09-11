@@ -21,12 +21,36 @@ import app.zerochat.data.preferredModerationModel
 import app.zerochat.data.preferredRealtimeModel
 import app.zerochat.data.selectableModelsForProvider
 
-fun modelSettingsReplaceProvider(
+internal data class ModelSettingsFetchOwner(
+    val requestProvider: ProviderConfig,
+    val apiKey: String,
+    val proxyToken: String,
+)
+
+internal fun modelSettingsFetchOwnerMatches(
+    expected: ModelSettingsFetchOwner,
+    current: ModelSettingsFetchOwner,
+): Boolean {
+    val expectedProvider = expected.requestProvider
+    val currentProvider = current.requestProvider
+    return expectedProvider.id == currentProvider.id &&
+        expectedProvider.createdAt == currentProvider.createdAt &&
+        expectedProvider.kind == currentProvider.kind &&
+        expectedProvider.baseUrl == currentProvider.baseUrl &&
+        expectedProvider.proxyUrl == currentProvider.proxyUrl &&
+        expectedProvider.clientRequestMode == currentProvider.clientRequestMode &&
+        expectedProvider.enabled == currentProvider.enabled &&
+        expectedProvider.needsApiKey == currentProvider.needsApiKey &&
+        expected.apiKey == current.apiKey &&
+        expected.proxyToken == current.proxyToken
+}
+
+internal fun modelSettingsReplaceProvider(
     providers: List<ProviderConfig>,
     provider: ProviderConfig,
 ): List<ProviderConfig> = providers.map { if (it.id == provider.id) provider else it }
 
-fun modelSettingsStableSelectedProviderId(
+internal fun modelSettingsStableSelectedProviderId(
     selectedProviderId: String,
     providers: List<ProviderConfig>,
 ): String =
@@ -36,7 +60,7 @@ fun modelSettingsStableSelectedProviderId(
         providers.firstOrNull()?.id.orEmpty()
     }
 
-fun modelSettingsApplyModels(
+internal fun modelSettingsApplyModels(
     provider: ProviderConfig,
     models: List<String>,
     now: Long,
@@ -49,7 +73,7 @@ fun modelSettingsApplyModels(
     )
 }
 
-fun modelSettingsApplyConfiguredModels(
+internal fun modelSettingsApplyConfiguredModels(
     provider: ProviderConfig,
     models: List<String>,
     now: Long,
@@ -104,7 +128,7 @@ fun modelSettingsApplyConfiguredModels(
     )
 }
 
-fun modelSettingsApplyFetchedModels(
+internal fun modelSettingsApplyFetchedModels(
     provider: ProviderConfig,
     models: List<String>,
     now: Long,
@@ -173,13 +197,18 @@ fun modelSettingsApplyFetchedModels(
     )
 }
 
-fun modelSettingsApplyFetchedModelsToSnapshot(
+internal fun modelSettingsApplyFetchedModelsToSnapshot(
     snapshot: AppSnapshot,
     providerId: String,
     models: List<String>,
     now: Long,
+    expectedOwner: ModelSettingsFetchOwner,
+    currentOwner: ModelSettingsFetchOwner?,
 ): AppSnapshot {
     val provider = snapshot.providers.firstOrNull { it.id == providerId } ?: return snapshot
+    if (currentOwner == null || !modelSettingsFetchOwnerMatches(expectedOwner, currentOwner)) {
+        return snapshot
+    }
     return snapshot.copy(
         providers = modelSettingsReplaceProvider(
             snapshot.providers,
@@ -228,7 +257,7 @@ private fun modelSettingsConfiguredOrFirstModel(
     return current.takeIf(models::contains) ?: models.firstOrNull().orEmpty()
 }
 
-fun modelSettingsFetchBlockerKey(
+internal fun modelSettingsFetchBlockerKey(
     provider: ProviderConfig,
     apiKey: String,
 ): String? =
@@ -238,7 +267,7 @@ fun modelSettingsFetchBlockerKey(
         null
     }
 
-fun modelSettingsManualModels(input: String): List<String> =
+internal fun modelSettingsManualModels(input: String): List<String> =
     input.split(Regex("\\s+")).filter { it.isNotBlank() }
 
 fun modelSettingsModelCapabilityKeys(model: String): List<String> = buildList {
@@ -302,7 +331,7 @@ fun modelSettingsProviderCapabilitySummary(
     translate: (String) -> String,
 ): String = modelSettingsProviderCapabilityKeys(provider).joinToString(" / ", transform = translate)
 
-fun modelSettingsMoveModel(models: List<String>, from: Int, to: Int): List<String> {
+internal fun modelSettingsMoveModel(models: List<String>, from: Int, to: Int): List<String> {
     if (from !in models.indices || to !in models.indices) {
         return models
     }
@@ -313,7 +342,7 @@ fun modelSettingsMoveModel(models: List<String>, from: Int, to: Int): List<Strin
     return copy
 }
 
-fun modelSettingsRemoveModel(
+internal fun modelSettingsRemoveModel(
     provider: ProviderConfig,
     model: String,
     now: Long,
@@ -326,13 +355,13 @@ fun modelSettingsRemoveModel(
     )
 }
 
-fun modelSettingsSelectChatModel(
+internal fun modelSettingsSelectChatModel(
     provider: ProviderConfig,
     model: String,
     now: Long,
 ): ProviderConfig = provider.copy(model = model, updatedAt = now)
 
-fun modelSettingsSelectImageModel(
+internal fun modelSettingsSelectImageModel(
     provider: ProviderConfig,
     model: String,
     now: Long,

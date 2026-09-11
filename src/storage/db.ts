@@ -1,10 +1,11 @@
-import { providerFromPreset, providerPresets } from '../data/presets'
 import { rt } from '../i18n'
 import {
   DEFAULT_CHAT_CONTEXT_MESSAGE_LIMIT,
+  createRuntimeId,
   defaultSkillSettings,
   normalizeAppData,
 } from '../services/appData'
+import { createDefaultOpenAiProvider } from '../services/providerModelCore'
 import type { AppData, Conversation, UserSkill, UserSkillChunk } from '../types'
 import {
   decryptLocalString,
@@ -14,6 +15,8 @@ import {
 } from './localCrypto'
 import { AppDataWriteConflictError } from './appDataWriteConflict'
 import { abortIndexedDbTransactionOrReject } from './indexedDbAbortFailure'
+import { openIndexedDb } from './indexedDbOpen'
+import { CONVERSATION_PLACEHOLDER_TITLE } from '../services/conversations'
 
 const DB_NAME = 'zerochat'
 const DB_VERSION = 1
@@ -21,6 +24,7 @@ const STORE_NAME = 'documents'
 const APP_KEY = 'app'
 const APP_DATA_NAMESPACE = 'app-data'
 const LEGACY_APP_DATA_REVISION = 'legacy'
+const LEGACY_APP_DATA_REVISION_PREFIX = `${LEGACY_APP_DATA_REVISION}:`
 const SKILL_CHUNK_KEY_PREFIX = 'skill-chunk:'
 const LOCAL_SKILL_CHUNK_KEY_PREFIX = `${SKILL_CHUNK_KEY_PREFIX}local:`
 const EXTERNAL_SKILL_CHUNK_KEY_PREFIX = `${SKILL_CHUNK_KEY_PREFIX}external:`
@@ -98,19 +102,10 @@ function reportLegacySkillContentMigrationFailure(
 }
 
 function openDatabase(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION)
-
-    request.onupgradeneeded = () => {
-      const db = request.result
-
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME)
-      }
+  return openIndexedDb(DB_NAME, DB_VERSION, (database) => {
+    if (!database.objectStoreNames.contains(STORE_NAME)) {
+      database.createObjectStore(STORE_NAME)
     }
-
-    request.onerror = () => reject(request.error)
-    request.onsuccess = () => resolve(request.result)
   })
 }
 
@@ -119,9 +114,14 @@ function appDataRevision(stored: unknown | null): AppDataRevision {
     return null
   }
 
-  return isLocalEncryptedRecord(stored)
-    ? `encrypted:${stored.iv}`
-    : LEGACY_APP_DATA_REVISION
+  if (isLocalEncryptedRecord(stored)) {
+    return `encrypted:${stored.iv}`
+  }
+
+  const serialized = JSON.stringify(stored)
+  return typeof serialized === 'string'
+    ? `${LEGACY_APP_DATA_REVISION_PREFIX}${serialized}`
+    : `${LEGACY_APP_DATA_REVISION_PREFIX}unserializable`
 }
 
 async function writeAppDataIfRevisionMatches(
@@ -368,7 +368,8 @@ async function batchPutDocuments(
 
   await new Promise<void>((resolve, reject) => {
     let completed = false
-    let tx: IDBTransaction
+    let tx: IDBTransaction | undefined
+    let operationError: unknown
 
     const rejectOnce = (error: unknown) => {
       if (completed) {
@@ -380,32 +381,31 @@ async function batchPutDocuments(
       reject(error)
     }
 
+    const abortWith = (error: unknown) => {
+      operationError = error
+      abortIndexedDbTransactionOrReject(tx, error, rejectOnce)
+    }
+
     try {
       tx = db.transaction(STORE_NAME, 'readwrite')
+      tx.oncomplete = () => {
+        if (completed) {
+          return
+        }
+
+        completed = true
+        db.close()
+        resolve()
+      }
+      tx.onerror = () => rejectOnce(operationError ?? tx?.error)
+      tx.onabort = () => rejectOnce(operationError ?? tx?.error)
       const store = tx.objectStore(STORE_NAME)
 
       for (const record of records) {
         store.put(record.value, record.key)
       }
     } catch (error: unknown) {
-      rejectOnce(error)
-      return
-    }
-
-    tx.oncomplete = () => {
-      if (completed) {
-        return
-      }
-
-      completed = true
-      db.close()
-      resolve()
-    }
-    tx.onerror = () => {
-      rejectOnce(tx.error)
-    }
-    tx.onabort = () => {
-      rejectOnce(tx.error)
+      abortWith(error)
     }
   })
 }
@@ -422,6 +422,7 @@ async function batchMigrateLegacyPlaintextDocuments(
   await new Promise<void>((resolve, reject) => {
     let completed = false
     let tx: IDBTransaction
+    let operationError: unknown
 
     const rejectOnce = (error: unknown) => {
       if (completed) {
@@ -433,6 +434,11 @@ async function batchMigrateLegacyPlaintextDocuments(
       reject(error)
     }
 
+    const abortWith = (error: unknown): void => {
+      operationError = error
+      abortIndexedDbTransactionOrReject(tx, error, rejectOnce)
+    }
+
     try {
       tx = db.transaction(STORE_NAME, 'readwrite')
       const store = tx.objectStore(STORE_NAME)
@@ -440,7 +446,7 @@ async function batchMigrateLegacyPlaintextDocuments(
       for (const record of records) {
         const request = store.get(record.key)
 
-        request.onerror = () => rejectOnce(request.error ?? tx.error)
+        request.onerror = () => abortWith(request.error ?? tx.error)
         request.onsuccess = () => {
           if (request.result !== record.plaintext) {
             return
@@ -449,12 +455,12 @@ async function batchMigrateLegacyPlaintextDocuments(
           try {
             store.put(record.value, record.key)
           } catch (error: unknown) {
-            rejectOnce(error)
+            abortWith(error)
           }
         }
       }
     } catch (error: unknown) {
-      rejectOnce(error)
+      abortWith(error)
       return
     }
 
@@ -467,12 +473,8 @@ async function batchMigrateLegacyPlaintextDocuments(
       db.close()
       resolve()
     }
-    tx.onerror = () => {
-      rejectOnce(tx.error)
-    }
-    tx.onabort = () => {
-      rejectOnce(tx.error)
-    }
+    tx.onerror = () => rejectOnce(operationError ?? tx.error)
+    tx.onabort = () => rejectOnce(operationError ?? tx.error)
   })
 }
 
@@ -542,7 +544,8 @@ async function deleteDocuments(keys: string[]): Promise<void> {
 
   await new Promise<void>((resolve, reject) => {
     let completed = false
-    let tx: IDBTransaction
+    let tx: IDBTransaction | undefined
+    let operationError: unknown
 
     const rejectOnce = (error: unknown) => {
       if (completed) {
@@ -554,32 +557,32 @@ async function deleteDocuments(keys: string[]): Promise<void> {
       reject(error)
     }
 
+    const abortWith = (error: unknown) => {
+      operationError = error
+      abortIndexedDbTransactionOrReject(tx, error, rejectOnce)
+    }
+
     try {
       tx = db.transaction(STORE_NAME, 'readwrite')
+      tx.oncomplete = () => {
+        if (completed) {
+          return
+        }
+
+        completed = true
+        db.close()
+        resolve()
+      }
+      tx.onerror = () => rejectOnce(operationError ?? tx?.error)
+      tx.onabort = () => rejectOnce(operationError ?? tx?.error)
       const store = tx.objectStore(STORE_NAME)
 
       for (const key of keys) {
-        store.delete(key)
+        const request = store.delete(key)
+        request.onerror = () => abortWith(request.error ?? tx?.error)
       }
     } catch (error: unknown) {
-      rejectOnce(error)
-      return
-    }
-
-    tx.oncomplete = () => {
-      if (completed) {
-        return
-      }
-
-      completed = true
-      db.close()
-      resolve()
-    }
-    tx.onerror = () => {
-      rejectOnce(tx.error)
-    }
-    tx.onabort = () => {
-      rejectOnce(tx.error)
+      abortWith(error)
     }
   })
 }
@@ -1020,7 +1023,7 @@ export async function loadAppData(): Promise<AppData | null> {
   }
 
   const data = normalizeAppData(stored as AppData)
-  loadedAppDataRevision = LEGACY_APP_DATA_REVISION
+  loadedAppDataRevision = appDataRevision(stored)
 
   try {
     await saveAppData(data)
@@ -1059,12 +1062,12 @@ export async function clearAppData(): Promise<void> {
 export function createConversation(
   providerId: string,
   model: string,
-  title = rt('conversation.newTitle'),
+  title = CONVERSATION_PLACEHOLDER_TITLE,
 ): Conversation {
   const now = Date.now()
 
   return {
-    id: crypto.randomUUID(),
+    id: createRuntimeId('conversation'),
     title,
     providerId,
     model,
@@ -1075,8 +1078,11 @@ export function createConversation(
 }
 
 export function createDefaultData(): AppData {
-  const defaultProvider = providerFromPreset(providerPresets[0])
   const now = Date.now()
+  const defaultProvider = createDefaultOpenAiProvider(
+    createRuntimeId('provider'),
+    now,
+  )
   const firstConversation = createConversation(
     defaultProvider.id,
     defaultProvider.model,

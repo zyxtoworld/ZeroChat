@@ -4,6 +4,7 @@ import type {
 } from 'react'
 import {
   useCallback,
+  useEffect,
   useState,
 } from 'react'
 
@@ -14,7 +15,10 @@ import {
   dragHasAcceptedAudioSource,
   isAcceptedAudioSourceFile,
 } from './audioAttachments'
-import { setDataTransferDropEffect } from './dragDropEffects'
+import {
+  installDragDropCancelListeners,
+  setDataTransferDropEffect,
+} from './dragDropEffects'
 import { transferHasFile } from './imageAttachments'
 
 interface UseAudioComposerControllerOptions {
@@ -114,6 +118,15 @@ export function useAudioComposerController({
     setAudioSourceDragActive(false)
     setAudioSourceDragRejected(false)
   }, [])
+
+  useEffect(
+    () =>
+      installDragDropCancelListeners(() => {
+        setAudioSourceDragActive(false)
+        setAudioSourceDragRejected(false)
+      }),
+    [],
+  )
 
   const reportAudioSourceRejection = useCallback(
     (rejection: AudioSourceFileRejection | null): void => {

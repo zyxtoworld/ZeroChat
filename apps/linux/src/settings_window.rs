@@ -10,7 +10,6 @@ use crate::{
     ui_helpers::{edge_margin, panel_spacing, row_spacing},
 };
 use adw::prelude::*;
-use gtk::prelude::*;
 use std::rc::Rc;
 
 pub(crate) fn settings_page(
@@ -191,8 +190,8 @@ fn settings_tab_grid(locale: &str, compact: bool, settings_stack: &gtk::Stack) -
     let grid = gtk::FlowBox::new();
     grid.set_selection_mode(gtk::SelectionMode::None);
     grid.set_homogeneous(true);
-    grid.set_row_spacing(row_spacing(compact));
-    grid.set_column_spacing(row_spacing(compact));
+    grid.set_row_spacing(row_spacing(compact) as u32);
+    grid.set_column_spacing(row_spacing(compact) as u32);
     grid.set_max_children_per_line(if compact { 2 } else { 3 });
     grid.set_hexpand(true);
 

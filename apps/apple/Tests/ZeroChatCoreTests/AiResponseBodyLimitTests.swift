@@ -36,6 +36,17 @@ final class AiResponseBodyLimitTests: XCTestCase {
         }
     }
 
+    func testSuccessfulEmptyChatStreamBecomesTypedFailure() throws {
+        XCTAssertEqual(try validatedChatStreamResponse("answer"), "answer")
+
+        XCTAssertThrowsError(try validatedChatStreamResponse(" \n\t")) { error in
+            guard case AiError.chatResponseEmpty = error else {
+                XCTFail("Expected typed empty chat response failure, got \(error)")
+                return
+            }
+        }
+    }
+
     func testAudioResponseValidationRejectsTextualBodiesEvenWithAudioMime() {
         XCTAssertFalse(
             providerAudioResponseLooksValid(

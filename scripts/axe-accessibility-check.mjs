@@ -7,11 +7,13 @@ import { resolveFetchSafeLoopbackPort } from './fetch-safe-loopback-port.mjs'
 import { startViteDevLoopbackServer } from './vite-loopback-server.mjs'
 import {
   connectCdp,
-  readJson as readCdpJson,
+  findMainFrameLoadCompletionEvent,
+  waitForCdpPageTarget,
   waitForChrome as waitForCdpChrome,
 } from './browser-cdp.mjs'
 import {
   removeBrowserProfileWithRetry,
+  settleBrowserRuntimeCleanup,
   stopChildProcessTree,
 } from './browser-runtime-cleanup.mjs'
 
@@ -62,10 +64,6 @@ function sleep(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms)
   })
-}
-
-async function readJson(url, init) {
-  return readCdpJson(url, init)
 }
 
 function connect(wsUrl) {
@@ -122,19 +120,18 @@ const chrome = spawn(
     'about:blank',
   ],
   {
+    detached: process.platform !== 'win32',
     stdio: 'ignore',
     windowsHide: true,
   },
 )
+chrome.zerochatProcessGroupLeader = process.platform !== 'win32'
 
 let cdp = null
 
 try {
   await waitForChrome(cdpPort, chrome)
-  const target = await readJson(
-    `http://127.0.0.1:${cdpPort}/json/new?${encodeURIComponent('about:blank')}`,
-    { method: 'PUT' },
-  )
+  const target = await waitForCdpPageTarget(cdpPort, { timeoutMs: 30_000 })
   cdp = await connect(target.webSocketDebuggerUrl)
 
   async function evaluate(expression, awaitPromise = false) {
@@ -181,19 +178,13 @@ try {
     await sleep(100)
   }
 
-  async function waitForLoad() {
-    await evaluate(
-      `new Promise((resolve) => {
-        const done = () => resolve(document.readyState)
-        if (document.readyState === 'complete') done()
-        else window.addEventListener('load', done, { once: true })
-      })`,
-      true,
-    )
-  }
-
   await cdp.send('Page.enable')
+  const pageFrameTree = await cdp.send('Page.getFrameTree')
+  const mainFrameId = pageFrameTree.frameTree?.frame?.id
+  assert.ok(mainFrameId, 'Axe accessibility check could not resolve the main CDP frame')
   await cdp.send('Runtime.enable')
+  // Native confirm() dialogs would otherwise block Runtime.evaluate forever.
+  await cdp.send('Page.setBypassCSP', { enabled: false }).catch(() => {})
   await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
     source: `
       Object.defineProperty(navigator, 'languages', {
@@ -206,8 +197,29 @@ try {
       })
     `,
   })
+  const navigationStart = cdp.events.length
   await cdp.send('Page.navigate', { url: appUrl })
-  await waitForLoad()
+  const loadDeadline = Date.now() + 30_000
+  while (Date.now() < loadDeadline) {
+    if (findMainFrameLoadCompletionEvent(cdp.events, navigationStart, mainFrameId)) {
+      break
+    }
+    await sleep(50)
+  }
+  if (!findMainFrameLoadCompletionEvent(cdp.events, navigationStart, mainFrameId)) {
+    const observedPageEvents = [
+      ...new Set(
+        cdp.events
+          .slice(navigationStart)
+          .map((event) => event.method)
+          .filter((method) => method?.startsWith('Page.')),
+      ),
+    ]
+    throw new Error(
+      `Timed out waiting for Axe main-frame page load completion; observed Page events: ${observedPageEvents.join(', ') || 'none'}`,
+    )
+  }
+  await evaluate(`document.readyState === 'complete'`)
   await evaluate(axeSource)
   await evaluate(`
     window.__zeroChatAxe = {
@@ -279,10 +291,22 @@ try {
       },
     }
   `)
-  await evaluate(`window.__zeroChatAxe.waitForText(['First setup', '首次配置'])`, true)
+  await evaluate(`window.__zeroChatAxe.waitForText(['First setup', '首次配置', '欢迎使用 ZeroChat', 'Welcome to ZeroChat'])`, true)
 
   async function runAxe(label) {
     await sleep(150)
+    await evaluate(`(async () => {
+      const animations = typeof document.getAnimations === 'function'
+        ? document.getAnimations().filter((animation) => {
+            const timing = animation.effect?.getComputedTiming?.()
+            return animation.playState === 'running' && timing?.iterations !== Infinity
+          })
+        : []
+      await Promise.all(animations.map((animation) =>
+        animation.finished.catch(() => undefined),
+      ))
+      return true
+    })()`, true)
     const violations = await evaluate(
       `axe.run(document, {
         runOnly: {
@@ -324,6 +348,8 @@ try {
       'Skip, use locally',
       'Skip, use local first',
       '跳过，先本地使用',
+      'Start chatting',
+      '开始使用',
     ])
   `)
   await evaluate(`window.__zeroChatAxe.waitForText(['New chat', '新建对话'])`, true)
@@ -331,11 +357,11 @@ try {
   await setViewport(1440, 900, false)
   await runAxe('chat desktop')
 
-  await evaluate(`window.__zeroChatAxe.click(['Open settings', '打开设置'])`)
+  await evaluate(`window.__zeroChatAxe.click(['Open settings', '打开设置', 'Settings', '设置'])`)
   await evaluate(`window.__zeroChatAxe.waitForText(['Settings', '设置'])`, true)
   await runAxe('settings providers desktop')
 
-  await evaluate(`window.__zeroChatAxe.clickSelector('#settings-tab-appearance')`)
+  await evaluate(`window.__zeroChatAxe.clickSelector('#settings-tab-general')`)
   await evaluate(`window.__zeroChatAxe.setSelectValue('ar-SA')`)
   await evaluate(`window.__zeroChatAxe.waitForDocumentLanguage('ar-SA', 'rtl')`, true)
   await setViewport(390, 780, true)
@@ -345,14 +371,38 @@ try {
   await setViewport(320, 640, true)
   await runAxe('settings data compact mobile')
 
-  await evaluate(`window.__zeroChatAxe.click(['Reset local data', '重置本机数据', 'إعادة تعيين البيانات المحلية'])`)
-  await evaluate(`window.__zeroChatAxe.waitForText(['Reset local data', '重置本机数据', 'إعادة تعيين البيانات المحلية'])`, true)
-  await runAxe('reset local data alertdialog compact mobile')
+  // Click without awaiting evaluate: a native confirm() blocks the JS thread
+  // until the dialog is handled.
+  const clickPromise = evaluate(`window.__zeroChatAxe.click(['Reset local data', '重置本机数据', '清除全部本地数据', 'Erase all local data', 'إعادة تعيين البيانات المحلية'])`).catch(
+    () => 'dialog-blocked',
+  )
+  await new Promise((r) => setTimeout(r, 800))
+  try {
+    await cdp.send('Page.handleJavaScriptDialog', { accept: true }, { timeoutMs: 5000 })
+  } catch {
+    // dialog may already be gone or never opened
+  }
+  await clickPromise
+  await runAxe('reset local data action compact mobile')
 } finally {
   cdp?.close()
-  await stopChildProcessTree(chrome)
-  await devServer?.close()
-  const profileRemoved = await removeBrowserProfileWithRetry(profileDir, 120)
+  const profileCleanup = {
+    removeProfile: async () => await removeBrowserProfileWithRetry(profileDir, 120),
+  }
+  const { profileRemoved } = await settleBrowserRuntimeCleanup({
+    child: chrome,
+    profilePath: profileDir,
+    stopProcessTree: async () => await stopChildProcessTree(chrome),
+    removeProfile: async () => {
+      const profileRemoved = await profileCleanup.removeProfile()
+      return {
+        profileRemoved,
+        exactProfileProcessesGone: profileRemoved,
+        profilePath: profileDir,
+      }
+    },
+    additionalCleanup: [() => devServer?.close()],
+  })
   assert.ok(profileRemoved, `Axe browser profile cleanup failed: ${profileDir}`)
 }
 

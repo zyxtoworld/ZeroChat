@@ -2,6 +2,36 @@ package app.zerochat.data
 
 import java.util.UUID
 
+private const val generationOnlyImageModelMarker = "dall-e-3"
+private val standardEmbeddingModelFallbacks = listOf(
+    "text-embedding-3-large",
+    "text-embedding-3-small",
+)
+private val standardAudioSpeechModelFallbacks = listOf(
+    "gpt-4o-mini-tts",
+    "tts-1-hd",
+    "tts-1",
+)
+private val standardAudioTranscriptionModelFallbacks = listOf(
+    "gpt-4o-transcribe",
+    "gpt-4o-mini-transcribe",
+    "whisper-1",
+)
+private val standardRealtimeModelFallbacks = listOf(
+    "gpt-realtime-2",
+    "gpt-audio-1.5",
+    "gpt-realtime",
+    "gpt-audio-mini",
+    "gpt-realtime-mini",
+    "gpt-4o-realtime-preview",
+    "gpt-4o-realtime",
+)
+private val standardModerationModelFallbacks = listOf(
+    "omni-moderation-latest",
+    "omni-moderation",
+    "moderation-latest",
+)
+
 private val customOpenAiRelayCapabilities = listOf(
     "chat",
     "vision",
@@ -338,8 +368,13 @@ internal fun chatModelsForProvider(provider: ProviderConfig?): List<String> =
     selectableModelsForProvider(provider).filter(::isLikelyChatModel)
 
 private fun modelVersionScore(model: String, family: String): Int {
+    // Dated model ids such as gpt-5-2025-08-07 are snapshots, not revisions.
+    val versionSource = model.replace(
+        Regex("""[-_]\d{4}[-_]\d{2}[-_]\d{2}"""),
+        "",
+    )
     val match = Regex("$family[-_ ]?(\\d+(?:[._-]\\d+)*)", RegexOption.IGNORE_CASE)
-        .find(model)
+        .find(versionSource)
         ?: return 0
     val version = match.groupValues.getOrNull(1).orEmpty()
 
@@ -454,6 +489,105 @@ internal fun chatModelForConversation(
     return defaultChatModelForProvider(provider)
 }
 
+private fun declaredProviderCapabilities(provider: ProviderConfig): List<String> {
+    if (provider.capabilities.isNotEmpty()) {
+        return provider.capabilities
+    }
+
+    return when (provider.kind) {
+        ProviderKind.Anthropic -> listOf("chat", "vision", "tools", "model-list")
+        ProviderKind.OpenAIResponses -> listOf(
+            "chat",
+            "vision",
+            "tools",
+            "image-generation",
+            "image-editing",
+            "model-list",
+        )
+        ProviderKind.OpenAICompatible -> listOf("chat", "vision", "tools", "embeddings", "model-list")
+    }
+}
+
+private fun providerDeclaresCapability(
+    provider: ProviderConfig?,
+    capability: ProviderModelCapability,
+): Boolean {
+    if (provider == null || provider.kind == ProviderKind.Anthropic) {
+        return false
+    }
+
+    val capabilities = declaredProviderCapabilities(provider)
+    return when (capability) {
+        ProviderModelCapability.Audio -> "audio" in capabilities
+        ProviderModelCapability.Chat -> "chat" in capabilities
+        ProviderModelCapability.ImageGeneration -> "image-generation" in capabilities
+        ProviderModelCapability.ImageEditing -> "image-editing" in capabilities
+        ProviderModelCapability.Embeddings -> "embeddings" in capabilities
+        ProviderModelCapability.Realtime -> "realtime" in capabilities
+        ProviderModelCapability.Moderation -> "moderation" in capabilities
+    }
+}
+
+private fun hasAuthoritativeModelCatalog(provider: ProviderConfig?): Boolean =
+    provider?.let { uniqueModels(it.models).isNotEmpty() } == true
+
+private fun standardFallbackModelsForCapability(
+    provider: ProviderConfig?,
+    capability: ProviderModelCapability,
+    models: List<String>,
+): List<String> {
+    if (models.isNotEmpty()) {
+        return models
+    }
+
+    if (!providerDeclaresCapability(provider, capability)) {
+        return emptyList()
+    }
+
+    if (hasAuthoritativeModelCatalog(provider)) {
+        return selectableModelsForProvider(provider).filter {
+            !it.lowercase().contains(generationOnlyImageModelMarker)
+        }
+    }
+
+    return when (capability) {
+        ProviderModelCapability.Embeddings -> standardEmbeddingModelFallbacks
+        ProviderModelCapability.Audio -> standardAudioTranscriptionModelFallbacks +
+            standardAudioSpeechModelFallbacks
+        ProviderModelCapability.Realtime -> standardRealtimeModelFallbacks
+        ProviderModelCapability.Moderation -> standardModerationModelFallbacks
+        else -> emptyList()
+    }
+}
+
+private fun audioModelsForProvider(
+    provider: ProviderConfig?,
+    transcription: Boolean,
+): List<String> {
+    val models = selectableModelsForProvider(provider).filter {
+        if (transcription) isLikelyAudioTranscriptionModel(it) else isLikelyAudioSpeechModel(it)
+    }
+    if (models.isNotEmpty()) {
+        return models
+    }
+
+    if (!providerDeclaresCapability(provider, ProviderModelCapability.Audio)) {
+        return emptyList()
+    }
+
+    if (hasAuthoritativeModelCatalog(provider)) {
+        return selectableModelsForProvider(provider).filter {
+            !it.lowercase().contains(generationOnlyImageModelMarker)
+        }
+    }
+
+    return if (transcription) {
+        standardAudioTranscriptionModelFallbacks
+    } else {
+        standardAudioSpeechModelFallbacks
+    }
+}
+
 fun isLikelyImageModel(model: String): Boolean {
   val normalized = model.lowercase()
 
@@ -501,7 +635,11 @@ internal fun imageModelsForProvider(provider: ProviderConfig?): List<String> {
         return emptyList()
     }
 
-    return selectableModelsForProvider(provider).filter(::isLikelyImageModel)
+    return standardFallbackModelsForCapability(
+        provider,
+        ProviderModelCapability.ImageGeneration,
+        selectableModelsForProvider(provider).filter(::isLikelyImageModel),
+    )
 }
 
 internal fun imageEditingModelsForProvider(provider: ProviderConfig?): List<String> {
@@ -509,7 +647,11 @@ internal fun imageEditingModelsForProvider(provider: ProviderConfig?): List<Stri
         return emptyList()
     }
 
-    return selectableModelsForProvider(provider).filter(::isLikelyImageEditingModel)
+    return standardFallbackModelsForCapability(
+        provider,
+        ProviderModelCapability.ImageEditing,
+        selectableModelsForProvider(provider).filter(::isLikelyImageEditingModel),
+    )
 }
 
 private fun preferredModelByMarkers(
@@ -544,7 +686,7 @@ fun preferredImageModel(models: List<String>): String {
         }
     }
 
-    return models.firstOrNull().orEmpty()
+    return models.firstOrNull(::isLikelyImageModel).orEmpty()
 }
 
 internal fun preferredEmbeddingModel(models: List<String>): String =
@@ -585,13 +727,13 @@ internal fun preferredAudioModel(models: List<String>): String =
         .ifEmpty { preferredModelByMarkers(models, listOf("audio"), ::isLikelyAudioModel) }
 
 internal fun modelForProviderAudioSpeech(provider: ProviderConfig?): String {
-    val models = selectableModelsForProvider(provider).filter(::isLikelyAudioSpeechModel)
+    val models = audioModelsForProvider(provider, transcription = false)
     val configured = provider?.audioSpeechModel?.trim().orEmpty()
     return configured.takeIf(models::contains) ?: preferredAudioSpeechModel(models)
 }
 
 internal fun modelForProviderAudioTranscription(provider: ProviderConfig?): String {
-    val models = selectableModelsForProvider(provider).filter(::isLikelyAudioTranscriptionModel)
+    val models = audioModelsForProvider(provider, transcription = true)
     val configured = provider?.audioTranscriptionModel?.trim().orEmpty()
     return configured.takeIf(models::contains) ?: preferredAudioTranscriptionModel(models)
 }
@@ -630,14 +772,26 @@ internal fun modelsForProviderCapability(
         ProviderModelCapability.Chat -> chatModelsForProvider(provider)
         ProviderModelCapability.ImageGeneration -> imageModelsForProvider(provider)
         ProviderModelCapability.ImageEditing -> imageEditingModelsForProvider(provider)
-        ProviderModelCapability.Embeddings -> selectableModelsForProvider(provider)
-            .filter(::isLikelyEmbeddingModel)
-        ProviderModelCapability.Audio -> selectableModelsForProvider(provider)
-            .filter(::isLikelyAudioModel)
-        ProviderModelCapability.Realtime -> selectableModelsForProvider(provider)
-            .filter(::isLikelyRealtimeModel)
-        ProviderModelCapability.Moderation -> selectableModelsForProvider(provider)
-            .filter(::isLikelyModerationModel)
+        ProviderModelCapability.Embeddings -> standardFallbackModelsForCapability(
+            provider,
+            capability,
+            selectableModelsForProvider(provider).filter(::isLikelyEmbeddingModel),
+        )
+        ProviderModelCapability.Audio -> standardFallbackModelsForCapability(
+            provider,
+            capability,
+            selectableModelsForProvider(provider).filter(::isLikelyAudioModel),
+        )
+        ProviderModelCapability.Realtime -> standardFallbackModelsForCapability(
+            provider,
+            capability,
+            selectableModelsForProvider(provider).filter(::isLikelyRealtimeModel),
+        )
+        ProviderModelCapability.Moderation -> standardFallbackModelsForCapability(
+            provider,
+            capability,
+            selectableModelsForProvider(provider).filter(::isLikelyModerationModel),
+        )
     }
 }
 

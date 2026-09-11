@@ -6,7 +6,7 @@ enough that every release can actually run it.
 ## Required Gate
 
 ```bash
-pnpm install --frozen-lockfile
+pnpm install --frozen-lockfile --prod=false
 pnpm run verify:release
 ```
 
@@ -42,8 +42,12 @@ gate requires 95+ scores and the PRD FCP/TTI startup thresholds. The browser smo
 in Chrome/Chromium, clicks through setup/settings/Skills/image controls, checks
 RTL language switching, and validates multiple desktop/mobile viewport sizes.
 The same gate runs `pnpm run check:redlines` as the Icon/cloud-sync redlines
-guard: Web must keep the visible `本地 · 开启云同步` action and accessible label
-`云同步: 本地 · 开启云同步 · 云同步关闭`; Android must keep `zerochat-app-icon`,
+guard: Web Settings > Sync keeps the current local-only mode, its concise
+`仅本机` label, the no-upload explanation, and the visible `上次同步`/`立即同步`
+controls. The `云同步` labelled mode group uses pressed-state native buttons;
+when their mode permits, these actions are keyboard-focusable, pointer-clickable,
+and remain absent from deprecated duplicate sidebar/header sync controls;
+Android must keep `zerochat-app-icon`,
 `zerochat-cloud-sync-status`, Settings > Sync routing, and the Cloudflare sync
 smoke; Apple must keep `AppleCloudSyncStatusStrip`; Windows must keep
 `ZeroChat.ico` plus `ApplyWindowIcon()`; and Linux must keep the branded
@@ -67,11 +71,14 @@ That focused command builds the Web app, runs Web/source quality gates, browser
 and visual smokes, starts an isolated local preview for current-page QA, checks
 `--only-web-local-artifacts`, and then runs local cleanup. It is diagnostic
 Web/PWA evidence only; it does not replace `pnpm run verify:release` and cannot
-close native runtime, trusted MSIX, disposable live-sync, hosted CI, or
-live-provider full-capability release blockers.
-It refreshes and validates diagnostic source fingerprints immediately after the
-production build, before expensive browser and visual QA, so stale native or
-release diagnostic state fails early.
+close native runtime, trusted MSIX, hosted CI, live-provider full-capability,
+or browser-origin UI release blockers. It also cannot replace the separate
+validated live-sync release-pass report when that evidence is stale or missing.
+It deliberately does not read or refresh all-platform release diagnostics and
+does not write the release checkpoint or generated current-evidence docs.
+Native and aggregate diagnostic freshness belongs to `verify:release`; the
+focused command fails closed only on its own Web/source/browser/PWA/visual
+evidence.
 The visual audit captures screenshots to `.visual-audit/` so the UI can be
 checked by eye before publishing. It also rejects browser runtime errors,
 wrong-size PNGs, and screenshots that appear blank or visually collapsed; open
@@ -321,8 +328,14 @@ diagnostic, live-provider no-credential diagnostic, native prerequisite refresh,
 strict release preflight diagnostic, release-blocker validation, an expected
 runtime-artifact blocker audit, and final local cleanup in order. The wrapper
 audits the full `pnpm run check:runtime-artifacts` failure shape and succeeds
-only when the remaining broad runtime-artifact failure is the current trusted
-MSIX host AppX cleanup blocker; stale Web current-page digests, stale native
+only when the remaining broad runtime-artifact failure matches the exact audited
+blocker set derived from current reports, including trusted-MSIX host state and
+live-sync source freshness.
+It accepts either a blocked AppX host preflight or a clear host that still needs
+an elevated rerun. Current host status is report-derived, never hard-coded in
+this guide; use `.manual-qa/windows-msix-host-preflight.json` and the generated
+current-evidence handoff for the active state.
+Stale Web current-page digests, stale native
 fingerprints, live-sync release-pass mistakes, hosted-CI overclaims, or
 live-provider full-capability overclaims fail the aggregate diagnostic. The
 wrapper strips `ZEROCHAT_LIVE_PROVIDER*`,
@@ -402,9 +415,10 @@ target package-size gates so IPA, macOS `.app`, and Linux release-binary budget
 evidence travel with the runtime QA handoff. The same
 `nextSteps` object also carries `releaseGateCommands` and
 `releaseEvidenceCommands` so a native prerequisite blocker still hands off the
-staged all-platform gates plus the native runtime, live sync release-pass,
-hosted native CI, and live-provider full-capability evidence checks that remain
-before final release.
+staged all-platform gates plus the native runtime, hosted native CI, and
+live-provider full-capability evidence checks that remain before final release.
+The same handoff keeps the validated live-sync release-pass report in the final
+gate so stale or skipped sync diagnostics cannot replace the current pass.
 The combined live-sync variant adds the same
 `--require-live-sync-passed-report=.manual-qa/live-sync-release-drill.json`
 requirement before the normal release gate, so an all-platform release cannot
@@ -440,11 +454,10 @@ sheet evidence together.
   the full JSON. Keep that report together with
   `.manual-qa/web-current-icon-sync-dom.json`. The runtime-artifact gate now
   rejects a current-page QA set that does not prove the branded `favicon.svg`
-  app logo is visible and both the sidebar (`sync-pill`) and chat-header
-  (`chat-sync-strip`) cloud-sync actions are visible, enabled,
-  keyboard-focusable, pointer-clickable, and still read `本地 · 开启云同步` with
-  accessible label `云同步: 本地 · 开启云同步 · 云同步关闭`; it also clicks both
-  actions and rejects the evidence unless each lands on Settings > Sync.
+  app logo is visible. The same evidence must prove deprecated sidebar
+  (`sync-pill`) and chat-header (`chat-sync-strip`) sync controls are absent;
+  the only current Web sync controls live in Settings > Sync and are guarded by
+  the source/render/browser contracts instead of duplicated header actions.
   The current-page QA target must be the ZeroChat app itself; the script checks
   the local HTML shell for ZeroChat title, root, loading, favicon, and manifest
   markers before collecting screenshots so an unrelated local Vite server cannot
@@ -600,10 +613,15 @@ sheet evidence together.
   the Web UI, verifies the assistant message card, captures
   `.manual-qa/web-live-ui-provider-smoke-current-relay.png`, and then deletes the temporary
   browser profile. If you override
-  `ZEROCHAT_LIVE_PROVIDER_UI_URL`, point it only at a local ZeroChat app URL
-  on `127.0.0.1`, `localhost`, or `[::1]`; the UI smoke refuses remote pages,
-  credentials, query strings, and fragments before injecting disposable
-  provider credentials. To prove the browser UI path through a deployed AI
+  `ZEROCHAT_LIVE_PROVIDER_UI_URL`, point it either at a local ZeroChat app URL
+  on `127.0.0.1`, `localhost`, or `[::1]`, or at the exact HTTPS root of the
+  configured Worker in Worker-hosted-key mode. The remote app and proxy Origins
+  must match exactly; all other remote pages, credentials, query strings,
+  fragments, and non-root paths are refused before any browser or Provider
+  request. The anonymous temporary-Worker drill builds the current production
+  `dist`, deploys the app and Worker together, and locks a second deployment to
+  that exact same Origin so Cloudflare cannot interpose an unsolvable
+  cross-origin preflight challenge. To prove the browser UI path through a deployed AI
   proxy/Worker, set `ZEROCHAT_LIVE_PROVIDER_UI_PROXY_URL` to the remote HTTPS
   Worker root; the UI smoke rejects local/private-network proxy hosts,
   credentials, query strings, fragments, and provider Base URL lookalikes before
@@ -779,12 +797,16 @@ sheet evidence together.
   directories, validates trusted/full runtime artifacts, validates cleanup, and
   saves
 `.manual-qa\windows-msix-current-trusted-install-update-qa.json`. The lower
-level helper's `-TrustCertificate`, `-TrustMachineCertificate`,
-`-TrustSigningRoot`, and `-TrustedCertificatePath <public .cer>` path imports
-the certificate into Current User Trusted People, Local Machine Trusted
-People, and Local Machine Root before calling `Add-AppxPackage`; cleanup
-  removes those entries with `-RemoveTrustedCertificate`,
-  `-RemoveTrustedMachineCertificate`, and `-RemoveTrustedSigningRoot`. Use the
+level helper's primary self-signed QA path uses `-TrustMachineCertificate` and
+`-TrustedCertificatePath <public .cer>` to import the leaf certificate into
+Local Machine Trusted People before calling `Add-AppxPackage`; normal cleanup
+removes that entry with `-RemoveTrustedMachineCertificate`. The release path
+must not import the leaf into Current User Trusted People or Local Machine
+Root. The optional `-TrustSigningRoot` switch is only for an actual CA root and
+rejects a non-CA certificate from its X509 Basic Constraints. The elevated
+requirement remains because App Installer checks machine trust. The helper no
+longer exposes Current User trust switches; its broader outer cleanup only
+removes historical residue left by older QA runs. Use the
   helper's `-Update` mode only after a previous signed build is already
 installed so version ordering and the post-update installed version are
 checked by the script. The trusted report must also contain the current
@@ -836,8 +858,9 @@ fails if the signed MSIX artifact is missing.
   `pnpm run qa:android:current` runs the same emulator QA with `--skip-build`
   against the current APK and is the preferred path for refreshing screenshots,
   Cloudflare sync proof, and the contact sheet after build evidence has already
-  been captured. Budget roughly 25-30 minutes for the full Android runtime pass
-  on slower local machines. The wrapper never selects an attached physical
+  been captured. Budget roughly 50-60 minutes for the full Android runtime pass
+  on slower local machines; the encrypted Cloudflare drill alone can take roughly
+  29 minutes under emulator load. The wrapper never selects an attached physical
   device implicitly; set `ANDROID_SERIAL` or pass `-- --allow-physical-device`
   to authorize one. If UI smoke is current but Cloudflare smoke needs recovery,
   `pnpm run qa:android:refresh-cloud` first revalidates the UI report's APK hash
@@ -898,6 +921,18 @@ fails if the signed MSIX artifact is missing.
   Flatpak/AppImage package builds and sandbox QA passes before publishing.
 
 ## Data Safety
+
+- For the temporary browser-origin Worker drill, use
+  `pnpm run drill:live-provider-ui-temporary-worker` only with a disposable
+  Cloudflare token supplied through
+  `ZEROCHAT_LIVE_PROVIDER_UI_TEMPORARY_CLOUDFLARE_API_TOKEN_FILE`. The value is
+  a path readable by this one run (a short-lived UTF-8 file or anonymous pipe),
+  not a token pasted into arguments, reports, or logs. The drill reads it once,
+  maps it only to the temporary `CLOUDFLARE_API_TOKEN` of the Wrangler deploy
+  and delete children, and keeps the token out of build, browser, and report
+  children. Success, failure, timeout, and interruption all delete the exact
+  temporary Worker and isolated Wrangler directory; the drill never runs
+  `wrangler logout` and cannot clear an existing global Wrangler session.
 
 - Never commit API keys, GitHub Tokens, Cloudflare secrets, browser profiles, or
   generated build directories.

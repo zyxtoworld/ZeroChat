@@ -85,20 +85,11 @@ public final class KeychainStore: Sendable {
 
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
-
-        if status == errSecItemNotFound {
-            return nil
-        }
-
-        guard status == errSecSuccess, let data = item as? Data else {
-            throw KeychainError.status(status)
-        }
-
-        return String(data: data, encoding: .utf8)
+        return try decodeKeychainRead(status: status, item: item)
     }
 
-    public func cloudflareAccessKey() -> String {
-        guard let passphrase = try? get(account: "sync-passphrase"),
+    public func cloudflareAccessKey() throws -> String {
+        guard let passphrase = try get(account: "sync-passphrase"),
               !passphrase.isEmpty else {
             return ""
         }
@@ -124,14 +115,33 @@ public final class KeychainStore: Sendable {
     }
 }
 
+func decodeKeychainRead(status: OSStatus, item: CFTypeRef?) throws -> String? {
+    if status == errSecItemNotFound {
+        return nil
+    }
+
+    guard status == errSecSuccess else {
+        throw KeychainError.status(status)
+    }
+    guard let data = item as? Data,
+          let value = String(data: data, encoding: .utf8) else {
+        throw KeychainError.invalidData
+    }
+
+    return value
+}
+
 public enum KeychainError: LocalizedError {
     case status(OSStatus)
+    case invalidData
 
     public var errorDescription: String? {
         switch self {
         case .status(let status):
             return SecCopyErrorMessageString(status, nil) as String?
                 ?? "Keychain operation failed with status \(status)."
+        case .invalidData:
+            return "Keychain item contained invalid text data."
         }
     }
 }

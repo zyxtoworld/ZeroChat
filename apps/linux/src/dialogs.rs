@@ -1,7 +1,8 @@
 use crate::{
     LinuxAppState,
     background::{
-        poll_background_result, spawn_cloudflare_clear_request, spawn_gist_clear_request,
+        BACKGROUND_TASK_DISCONNECTED, poll_background_result, spawn_cloudflare_clear_request,
+        spawn_gist_clear_request,
     },
     i18n::{localize_sync_error, tr},
     set_window_content,
@@ -292,24 +293,28 @@ fn present_clear_cloud_confirmation(
             let locale_for_result = locale_for_response.clone();
             let status_for_result = status_for_response.clone();
             let button_for_result = button_for_response.clone();
-            poll_background_result(receiver, move |result| {
-                button_for_result.set_sensitive(true);
-                match result {
-                    Ok(()) => {
-                        status_for_result
-                            .set_text(tr(&locale_for_result, "message.cloudSyncCleared"));
-                    }
-                    Err(message) => {
-                        let prefix = tr(&locale_for_result, "message.cloudClearFailedPrefix");
-                        let detail = localize_sync_error(&locale_for_result, &message);
-                        if detail.trim_start().starts_with(prefix) {
-                            status_for_result.set_text(&detail);
-                        } else {
-                            status_for_result.set_text(&format!("{prefix}: {detail}"));
+            poll_background_result(
+                receiver,
+                move |result| {
+                    button_for_result.set_sensitive(true);
+                    match result {
+                        Ok(()) => {
+                            status_for_result
+                                .set_text(tr(&locale_for_result, "message.cloudSyncCleared"));
+                        }
+                        Err(message) => {
+                            let prefix = tr(&locale_for_result, "message.cloudClearFailedPrefix");
+                            let detail = localize_sync_error(&locale_for_result, &message);
+                            if detail.trim_start().starts_with(prefix) {
+                                status_for_result.set_text(&detail);
+                            } else {
+                                status_for_result.set_text(&format!("{prefix}: {detail}"));
+                            }
                         }
                     }
-                }
-            });
+                },
+                || Err(BACKGROUND_TASK_DISCONNECTED.to_owned()),
+            );
         }
         dialog.close();
     });

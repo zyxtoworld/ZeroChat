@@ -57,7 +57,7 @@ class ProviderKeyImportTransactionTest {
         }
 
         assertTrue(thrown === failure)
-        assertEquals(listOf("stage", "snapshot", "restore"), events)
+        assertEquals(listOf("stage", "snapshot", "snapshot"), events)
     }
 
     @Test
@@ -181,6 +181,51 @@ class ProviderKeyImportTransactionTest {
             }
         }
         assertEquals(listOf("stage", "save", "finish"), finishEvents)
+    }
+
+    @Test
+    fun snapshotFailureAfterDurableWriteRestoresStagedKeysAndSnapshot() {
+        val source = snapshot(1)
+        val candidate = snapshot(2)
+        val failure = IllegalStateException("snapshot response lost")
+        var durableSnapshot = source
+        var storedKey = "old-key"
+        var compareCalls = 0
+
+        val thrown = runCatching {
+            runBlocking {
+                commitProviderKeyImportTransaction(
+                    source = source,
+                    candidate = candidate,
+                    sourceRevision = 1,
+                    currentRevision = { 1 },
+                    stageProviderKeys = { storedKey = "new-key" },
+                    finishProviderKeys = {},
+                    restoreProviderKeys = { storedKey = "old-key" },
+                    compareAndSetSnapshot = { expected, replacement ->
+                        compareCalls += 1
+                        if (compareCalls == 1) {
+                            assertEquals(source, expected)
+                            durableSnapshot = replacement
+                            throw failure
+                        }
+
+                        assertEquals(candidate, expected)
+                        durableSnapshot = replacement
+                        SnapshotCompareAndSetResult(
+                            snapshot = replacement,
+                            revision = 2,
+                            committed = true,
+                        )
+                    },
+                )
+            }
+        }.exceptionOrNull()
+
+        assertTrue(thrown === failure)
+        assertEquals(source, durableSnapshot)
+        assertEquals("old-key", storedKey)
+        assertEquals(2, compareCalls)
     }
 
     private suspend fun transaction(

@@ -35,8 +35,15 @@ import app.zerochat.ui.NativeI18n
 import app.zerochat.ui.chat.providerProxyTokenForRequest
 import kotlinx.coroutines.launch
 
+internal fun modelsFetchFailureNotice(
+    i18n: NativeI18n,
+    @Suppress("UNUSED_PARAMETER") error: Throwable,
+): String =
+    i18n.t("notice.modelsFetchFailed")
+        .replace("{message}", i18n.t("error.apiRequestFailed"))
+
 @Composable
-fun ModelCatalogEditor(
+internal fun ModelCatalogEditor(
     snapshot: AppSnapshot,
     provider: ProviderConfig,
     onSnapshotChange: (AppSnapshot) -> Unit,
@@ -81,37 +88,96 @@ fun ModelCatalogEditor(
                 }
                 loading = true
                 scope.launch {
+                    var requestOwner: ModelSettingsFetchOwner? = null
                     try {
                         val result = runCatchingPreservingCancellation {
                             val requestProvider = providerRequest(provider, snapshot)
+                            val providerKey = secretStore.providerKey(provider.id)
+                            val proxyToken = providerProxyTokenForRequest(requestProvider) {
+                                secretStore.cloudflareAccessKey()
+                            }
+                            requestOwner = ModelSettingsFetchOwner(
+                                requestProvider = requestProvider,
+                                apiKey = providerKey,
+                                proxyToken = proxyToken,
+                            )
                             aiClient.listModels(
                                 provider = requestProvider,
                                 apiKey = providerKey,
-                                proxyToken = providerProxyTokenForRequest(requestProvider) {
-                                    secretStore.cloudflareAccessKey()
-                                },
+                                proxyToken = proxyToken,
                             )
                         }
                         result.onSuccess { models ->
+                            var applied = false
                             onSnapshotReduce { current ->
-                                val provider = current.providers.firstOrNull { it.id == provider.id }
+                                val currentProvider = current.providers.firstOrNull { it.id == provider.id }
                                     ?: return@onSnapshotReduce current
+                                val currentRequestProvider = providerRequest(currentProvider, current)
+                                val currentOwner = runCatchingPreservingCancellation {
+                                    ModelSettingsFetchOwner(
+                                        requestProvider = currentRequestProvider,
+                                        apiKey = secretStore.providerKey(provider.id),
+                                        proxyToken = providerProxyTokenForRequest(currentRequestProvider) {
+                                            secretStore.cloudflareAccessKey()
+                                        },
+                                    )
+                                }.getOrNull()
+                                val expectedOwner = requestOwner
+                                    ?: return@onSnapshotReduce current
+                                if (currentOwner == null ||
+                                    !modelSettingsFetchOwnerMatches(expectedOwner, currentOwner)
+                                ) {
+                                    return@onSnapshotReduce current
+                                }
+                                applied = true
                                 current.copy(
                                     providers = modelSettingsReplaceProvider(
                                         current.providers,
-                                        modelSettingsApplyFetchedModels(provider, models, nowMillis()),
+                                        modelSettingsApplyFetchedModels(
+                                            currentProvider,
+                                            models,
+                                            nowMillis(),
+                                        ),
                                     ),
                                 )
                             }
-                            onNotice(
-                                i18n.t("notice.modelsFetched").replace("{count}", models.size.toString()),
-                                SettingsNoticeKind.Success,
-                            )
+                            if (applied) {
+                                onNotice(
+                                    i18n.t("notice.modelsFetched")
+                                        .replace("{count}", models.size.toString()),
+                                    SettingsNoticeKind.Success,
+                                )
+                            }
                         }.onFailure {
-                            onNotice(
-                                i18n.t("notice.modelsFetchFailed").replace("{message}", it.message.orEmpty()),
-                                SettingsNoticeKind.Error,
-                            )
+                            val expectedOwner = requestOwner
+                            var stillCurrent = expectedOwner == null
+                            if (expectedOwner != null) {
+                                onSnapshotReduce { current ->
+                                    val currentProvider = current.providers
+                                        .firstOrNull { it.id == provider.id }
+                                    val currentOwner = currentProvider?.let {
+                                        val currentRequestProvider = providerRequest(it, current)
+                                        runCatchingPreservingCancellation {
+                                            ModelSettingsFetchOwner(
+                                                requestProvider = currentRequestProvider,
+                                                apiKey = secretStore.providerKey(provider.id),
+                                                proxyToken = providerProxyTokenForRequest(currentRequestProvider) {
+                                                    secretStore.cloudflareAccessKey()
+                                                },
+                                            )
+                                        }.getOrNull()
+                                    }
+                                    stillCurrent = currentOwner != null &&
+                                        modelSettingsFetchOwnerMatches(expectedOwner, currentOwner)
+                                    current
+                                }
+                            }
+                            if (stillCurrent) {
+                                onNotice(
+                                    modelsFetchFailureNotice(i18n, it),
+                                    SettingsNoticeKind.Error,
+                                )
+                            }
                         }
                     } finally {
                         loading = false

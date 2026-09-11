@@ -217,12 +217,14 @@ REQUIRE_ALLOWED_ORIGINS = "true"
 ```
 
 注意：
-- Origin 必须精确匹配协议、域名和端口。
+- 跨域 Origin 必须精确匹配协议、域名和端口；由 Worker 自身托管的网页访问同一 Worker 时始终允许，无需加入名单。
 - `http://127.0.0.1:5173` 和 `http://localhost:5173` 是两个不同 Origin。
 - 命令行或原生客户端通常没有浏览器 Origin，Worker 会允许它们继续使用 Cloudflare 访问密钥访问。
 - 自动登记数量默认最多 8 个，可用 `MAX_AUTO_ALLOWED_ORIGINS` 调整。
 
 ### 7. 部署 Worker
+
+模板会把 `../dist` 绑定到 `ASSETS`。部署前先在仓库根目录构建当前 Web/PWA 产物，并保留复制出来的 `wrangler.toml` 里的 `[assets]` 配置，这样同一个 Worker 才会同时提供 ZeroChat 应用壳、静态资源、`/proxy` 和同步路由。
 
 在 `cloudflare/` 目录运行：
 
@@ -352,7 +354,7 @@ ALLOW_KEYLESS_UPSTREAMS = "true"
 - 请勿提交 `cloudflare/wrangler.toml`、`.dev.vars` 或任何包含真实 key 的文件。
 - 服务商 Base URL 必须是 HTTPS。
 - 自定义中转 host 默认会在通过正确 Cloudflare 访问密钥后自动登记；服务商设置变化时，Web/PWA 会通过 `/proxy/hosts` 替换已学习列表，所以删除或修改后的旧 Base URL 也会从 Worker 移除；如需固定白名单，手动填写 `ALLOWED_HOSTS` 并设置 `AUTO_ALLOWED_HOSTS=false`；如需连内置官方上游也关闭，再设置 `ALLOW_DEFAULT_PROVIDER_HOSTS=false`。
-- 浏览器 Origin 默认自动登记，但必须先通过正确 Cloudflare 访问密钥；如需完全手动，设置 `AUTO_ALLOWED_ORIGINS=false`、`ALLOWED_ORIGINS` 和 `REQUIRE_ALLOWED_ORIGINS=true`。
+- Worker 自身托管网页的同源请求始终允许；其他浏览器 Origin 默认自动登记，但必须先通过正确 Cloudflare 访问密钥；如需完全手动限制跨域来源，设置 `AUTO_ALLOWED_ORIGINS=false`、`ALLOWED_ORIGINS` 和 `REQUIRE_ALLOWED_ORIGINS=true`。
 - AI API Key 长期使用时优先放 Cloudflare Secret，而不是让浏览器保存。
 - 不建议使用公共中转替所有用户托管 key；ZeroChat 的安全边界是“用户自己的 Worker 保存用户自己的 key”。
 

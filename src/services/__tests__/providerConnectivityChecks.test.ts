@@ -7,6 +7,7 @@ import type {
 } from '../../types'
 import {
   cancelProviderConnectivityCheckRuns,
+  clearProviderConnectivityResult,
   createProviderConnectivityCheckActions,
   type ProviderConnectivityCheckContext,
   type ProviderConnectivityCheckServices,
@@ -182,6 +183,335 @@ describe('provider connectivity check helpers', () => {
     vi.useRealTimers()
   })
 
+  it('clears stale Provider results without disturbing other providers', () => {
+    let current = {
+      p1: { field: 'baseUrl' } as ProviderConnectivityResult,
+      p2: { field: 'providerKey' } as ProviderConnectivityResult,
+    }
+    const setProviderConnectivityResults = vi.fn((updater) => {
+      current = updater(current)
+    })
+
+    clearProviderConnectivityResult(
+      { setProviderConnectivityResults },
+      'missing',
+    )
+    expect(current).toMatchObject({ p1: { field: 'baseUrl' }, p2: { field: 'providerKey' } })
+
+    clearProviderConnectivityResult(
+      { setProviderConnectivityResults },
+      'p1',
+    )
+    expect(current).toEqual({ p2: { field: 'providerKey' } })
+  })
+
+  it('reports missing selected models and empty model refreshes before network work', async () => {
+    const missing = createHarness({
+      initialData: appData([
+        provider('p1', {
+          audioSpeechModel: '',
+          audioTranscriptionModel: '',
+          embeddingModel: '',
+          imageModel: '',
+          moderationModel: '',
+          realtimeModel: '',
+        }),
+      ]),
+    })
+
+    for (const kind of [
+      'audio-speech',
+      'audio-transcription',
+      'embeddings',
+      'moderation',
+      'realtime',
+      'image',
+    ] as const) {
+      await missing.actions.checkSelectedModel('p1', kind)
+    }
+    expect(missing.context.setNotice).toHaveBeenCalled()
+
+    vi.mocked(missing.services.listProviderModels).mockResolvedValueOnce([])
+    await missing.actions.refreshProviderModels('p1')
+    expect(missing.context.setNotice).toHaveBeenCalledWith(
+      'notice.modelsFetched:{"count":0}',
+      'success',
+      'models',
+    )
+  })
+
+  it('keeps capability checks fail-closed for missing providers, models, keys, and disabled providers', async () => {
+    const harness = createHarness()
+    await harness.actions.checkProviderCapability('missing', 'audio-speech')
+
+    const missingModel = createHarness({
+      initialData: appData([
+        provider('p1', {
+          audioSpeechModel: '',
+          capabilities: ['chat', 'audio'],
+        }),
+      ]),
+    })
+    await missingModel.actions.checkProviderCapability('p1', 'audio-speech')
+
+    const disabledImage = createHarness({
+      initialData: appData([
+        provider('p1', {
+          enabled: false,
+          capabilities: ['chat', 'image-generation'],
+        }),
+      ]),
+    })
+    await disabledImage.actions.checkProviderCapability('p1', 'image-generation')
+
+    const missingImageModel = createHarness({
+      initialData: appData([
+        provider('p1', {
+          capabilities: ['chat', 'image-generation'],
+          imageModel: '',
+          models: ['p1-chat'],
+        }),
+      ]),
+    })
+    await missingImageModel.actions.checkProviderCapability('p1', 'image-generation')
+
+    const missingImageKey = createHarness({
+      providerKeys: {},
+      initialData: appData([
+        provider('p1', {
+          capabilities: ['chat', 'image-generation'],
+        }),
+      ]),
+    })
+    await missingImageKey.actions.checkProviderCapability('p1', 'image-generation')
+    expect(missingImageKey.context.setNotice).toHaveBeenCalled()
+  })
+
+  it('ignores missing providers and busy provider operations before network work', async () => {
+    const missing = createHarness()
+
+    await expect(
+      missing.actions.runProviderConnectivityCheck('missing'),
+    ).resolves.toBeNull()
+    await missing.actions.checkSelectedModel('missing', 'chat')
+    await missing.actions.checkProviderCapability('missing', 'image-generation')
+    await missing.actions.checkProviderFullCapabilities('missing')
+    await missing.actions.refreshProviderModels('missing')
+
+    const busy = createHarness({ checkingProviderId: 'provider:p2' })
+    await busy.actions.checkProviderFullCapabilities('p1')
+
+    expect(missing.services.listProviderModels).not.toHaveBeenCalled()
+    busy.modelLoadProviderIdRef.current = 'p2'
+    await busy.actions.refreshProviderModels('p1')
+
+    expect(busy.services.listProviderModels).not.toHaveBeenCalled()
+    expect(busy.services.executeProviderCapabilityRequestPlan).not.toHaveBeenCalled()
+  })
+
+  it('reports model-list failures and empty configured catalogs without probing a model', async () => {
+    const failedCatalog = createHarness()
+    vi.mocked(failedCatalog.services.listProviderModels).mockRejectedValueOnce(
+      new ProviderRequestError('auth', 'catalog authentication failed', {
+        retryable: false,
+        status: 401,
+      }),
+    )
+
+    const failedResult = await failedCatalog.actions.runProviderConnectivityCheck('p1')
+
+    expect(failedResult).toMatchObject({
+      field: 'providerKey',
+      tone: 'error',
+    })
+    expect(failedCatalog.services.streamChat).not.toHaveBeenCalled()
+
+    const emptyCatalog = createHarness({
+      initialData: appData([
+        provider('p1', {
+          audioSpeechModel: '',
+          audioTranscriptionModel: '',
+          embeddingModel: '',
+          imageModel: '',
+          model: '',
+          models: [],
+          moderationModel: '',
+          realtimeModel: '',
+        }),
+      ]),
+    })
+    vi.mocked(emptyCatalog.services.listProviderModels).mockResolvedValueOnce([])
+
+    const emptyResult = await emptyCatalog.actions.runProviderConnectivityCheck('p1')
+
+    expect(emptyResult).toMatchObject({
+      field: 'baseUrl',
+      message: 'notice.providerConnectivityFailed:{"message":"error.modelRequired"}',
+      tone: 'error',
+    })
+    expect(emptyCatalog.services.streamChat).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when a proxied capability has no derived access key', async () => {
+    const harness = createHarness({
+      initialData: appData([
+        provider('p1', {
+          capabilities: ['embeddings'],
+          embeddingModel: 'text-embedding-3-large',
+          models: ['p1-chat', 'text-embedding-3-large'],
+          needsApiKey: false,
+          proxyUrl: 'https://proxy.example.com/zerochat',
+        }),
+      ]),
+      providerKeys: {},
+    })
+    vi.mocked(harness.services.accessKeyFromPassword).mockResolvedValue('')
+
+    await harness.actions.checkProviderCapability('p1', 'embeddings')
+    await harness.actions.checkSelectedModel('p1', 'embeddings')
+
+    expect(harness.services.executeProviderCapabilityRequestPlan).not.toHaveBeenCalled()
+    expect(harness.context.setNotice).toHaveBeenCalledWith(
+      'error.cloudflareAccessKeyRequired',
+      'warning',
+      'provider-capabilities',
+    )
+    expect(harness.context.setNotice).toHaveBeenCalledWith(
+      'notice.modelConnectivityFailed:{"message":"error.cloudflareAccessKeyRequired"}',
+      'error',
+      'model-embedding',
+    )
+  })
+
+  it('reports image proxy derivation failures and full-capability provider-key blockers', async () => {
+    const imageHarness = createHarness({
+      initialData: appData([
+        provider('p1', {
+          capabilities: ['image-generation'],
+          models: ['p1-chat', 'p1-image'],
+          needsApiKey: false,
+          proxyUrl: 'https://proxy.example.com/zerochat',
+        }),
+      ]),
+      providerKeys: {},
+    })
+    vi.mocked(imageHarness.services.accessKeyFromPassword).mockRejectedValueOnce(
+      new Error('proxy access key failed'),
+    )
+
+    await imageHarness.actions.checkProviderCapability('p1', 'image-generation')
+
+    expect(imageHarness.context.setNotice).toHaveBeenCalledWith(
+      expect.stringContaining('proxy access key failed'),
+      'error',
+      'provider-capabilities',
+    )
+
+    const fullHarness = createHarness({
+      initialData: appData([
+        provider('p1', {
+          capabilities: ['embeddings'],
+          embeddingModel: 'text-embedding-3-large',
+          models: ['p1-chat', 'text-embedding-3-large'],
+        }),
+      ]),
+      providerKeys: {},
+    })
+
+    await fullHarness.actions.checkProviderFullCapabilities('p1')
+
+    expect(fullHarness.providerResultsRef.current.p1).toMatchObject({
+      field: 'providerKey',
+      tone: 'warning',
+    })
+    expect(fullHarness.context.setNotice).toHaveBeenLastCalledWith(
+      'notice.providerFullCapabilityCheckFailed:{"failed":1,"total":1}',
+      'warning',
+      'provider-capabilities',
+    )
+  })
+
+  it('handles disabled and capability-less providers without starting full checks', async () => {
+    const disabled = createHarness({
+      initialData: appData([
+        provider('p1', {
+          capabilities: ['embeddings'],
+          embeddingModel: 'text-embedding-3-large',
+          enabled: false,
+          models: ['p1-chat', 'text-embedding-3-large'],
+        }),
+      ]),
+    })
+    await disabled.actions.checkProviderCapability('p1', 'embeddings')
+
+    expect(disabled.context.setNotice).toHaveBeenCalledWith(
+      'notice.providerDisabled:{"provider":"P1"}',
+      'error',
+      'provider-capabilities',
+    )
+
+    const noChecks = createHarness({
+      initialData: appData([
+        provider('p1', {
+          capabilities: ['chat'],
+        }),
+      ]),
+    })
+    await noChecks.actions.checkProviderFullCapabilities('p1')
+
+    expect(noChecks.context.setCheckingProviderId).not.toHaveBeenCalledWith(
+      'p1:capabilities',
+    )
+  })
+
+  it.each([
+    ['anthropic', '/messages'],
+    ['openai-responses', '/responses'],
+  ] as const)('reports the %s chat endpoint when its probe fails', async (kind, endpoint) => {
+    const harness = createHarness({
+      initialData: appData([
+        provider('p1', {
+          kind,
+        }),
+      ]),
+    })
+    vi.mocked(harness.services.streamChat).mockRejectedValueOnce(
+      new Error('chat probe failed'),
+    )
+
+    const result = await harness.actions.runProviderConnectivityCheck('p1')
+
+    expect(result?.message).toContain(`${endpoint} · p1-chat · chat probe failed`)
+  })
+
+  it('formats non-object provider failures and rethrows state-write failures', async () => {
+    const nonObjectFailure = createHarness()
+    vi.mocked(nonObjectFailure.services.streamChat).mockRejectedValueOnce(
+      'provider returned a string error',
+    )
+
+    const result = await nonObjectFailure.actions.runProviderConnectivityCheck('p1')
+
+    expect(result?.message).toContain('provider returned a string error')
+
+    const stateFailure = createHarness({
+      initialData: appData([
+        provider('p1', {
+          capabilities: ['embeddings'],
+          embeddingModel: 'text-embedding-3-large',
+          models: ['p1-chat', 'text-embedding-3-large'],
+        }),
+      ]),
+    })
+    stateFailure.context.setProviderConnectivityResults = vi.fn(() => {
+      throw new Error('state write failed')
+    })
+
+    await expect(
+      stateFailure.actions.checkProviderCapability('p1', 'embeddings'),
+    ).rejects.toThrow('state write failed')
+  })
+
   it('surfaces provider-key requirements before provider connectivity checks', async () => {
     const harness = createHarness({ providerKeys: {} })
 
@@ -240,6 +570,103 @@ describe('provider connectivity check helpers', () => {
     expect(harness.services.accessKeyFromPassword).not.toHaveBeenCalled()
   })
 
+  it('probes and preserves an explicit chat model omitted by the provider catalog', async () => {
+    const harness = createHarness({
+      initialData: appData([
+        provider('p1', {
+          model: 'gpt-manual-alias',
+          models: ['old-chat', 'p1-image'],
+        }),
+      ]),
+    })
+    vi.mocked(harness.services.listProviderModels).mockResolvedValueOnce([
+      'gpt-5.6-catalog',
+      'p1-image',
+    ])
+    vi.mocked(harness.services.streamChat).mockImplementationOnce(
+      async ({ model, onToken }) => {
+        if (model !== 'gpt-manual-alias') {
+          throw new ProviderRequestError(
+            'server',
+            'catalog model temporarily unavailable',
+            { retryable: true, status: 503 },
+          )
+        }
+
+        onToken('OK')
+      },
+    )
+
+    const result = await harness.actions.runProviderConnectivityCheck('p1')
+
+    expect(harness.services.streamChat).toHaveBeenCalledTimes(1)
+    expect(harness.services.streamChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'gpt-manual-alias',
+        provider: expect.objectContaining({
+          model: 'gpt-manual-alias',
+          models: ['gpt-manual-alias', 'gpt-5.6-catalog', 'p1-image'],
+        }),
+      }),
+    )
+    expect(result).toMatchObject({
+      field: 'none',
+      models: ['gpt-manual-alias', 'gpt-5.6-catalog', 'p1-image'],
+      tone: 'success',
+    })
+    expect(harness.context.setProviderModels).toHaveBeenCalledWith(
+      'p1',
+      ['gpt-manual-alias', 'gpt-5.6-catalog', 'p1-image'],
+      'gpt-manual-alias',
+    )
+  })
+
+  it('probes a newly configured explicit model before a stronger fetched catalog model', async () => {
+    const harness = createHarness({
+      initialData: appData([
+        provider('p1', {
+          model: 'gpt-5-6-pro',
+          models: ['gpt-5-5', 'p1-image'],
+        }),
+      ]),
+    })
+    vi.mocked(harness.services.listProviderModels).mockResolvedValueOnce([
+      'gpt-5-6-pro',
+      'gpt-5.6-sol-wm',
+      'p1-image',
+    ])
+    vi.mocked(harness.services.streamChat).mockImplementationOnce(
+      async ({ model, onToken }) => {
+        if (model !== 'gpt-5-6-pro') {
+          throw new ProviderRequestError(
+            'server',
+            'auto-preferred catalog model temporarily unavailable',
+            { retryable: true, status: 503 },
+          )
+        }
+
+        onToken('OK')
+      },
+    )
+
+    const result = await harness.actions.runProviderConnectivityCheck('p1')
+
+    expect(harness.services.streamChat).toHaveBeenCalledTimes(1)
+    expect(harness.services.streamChat).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'gpt-5-6-pro' }),
+    )
+    expect(result).toMatchObject({
+      field: 'none',
+      models: ['gpt-5-6-pro', 'gpt-5.6-sol-wm', 'p1-image'],
+      tone: 'success',
+    })
+    expect(harness.context.setProviderModels).toHaveBeenCalledWith(
+      'p1',
+      ['gpt-5-6-pro', 'gpt-5.6-sol-wm', 'p1-image'],
+      'gpt-5-6-pro',
+    )
+  })
+
   it('derives proxy access keys for proxied provider connectivity checks', async () => {
     const proxied = provider('p1', {
       needsApiKey: false,
@@ -264,6 +691,7 @@ describe('provider connectivity check helpers', () => {
         },
       ],
       [],
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
     expect(
       vi.mocked(harness.services.replaceManagedProxyHosts).mock
@@ -314,6 +742,7 @@ describe('provider connectivity check helpers', () => {
         },
       ],
       [],
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
     expect(harness.services.listProviderModels).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1006,6 +1435,7 @@ describe('provider connectivity check helpers', () => {
         },
       ],
       [],
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
     expect(
       vi.mocked(harness.services.replaceManagedProxyHosts).mock
@@ -1379,7 +1809,7 @@ describe('provider connectivity check helpers', () => {
     await harness.actions.checkProviderFullCapabilities('p1')
 
     expect(harness.context.setNotice).toHaveBeenLastCalledWith(
-      'notice.providerFullCapabilityCheckFailed:{"details":"capability.image-editing: /images/edits · HTTP 404 · This provider or relay does not expose that endpoint. · If this uses a ZeroChat Worker proxy, verify the Worker deployment, hosted provider key, and proxy action path; if it calls a third-party relay directly, that relay must expose this capability route.","failed":1,"total":4}',
+      'notice.providerFullCapabilityCheckFailed:{"failed":1,"total":4}',
       'error',
       'provider-capabilities',
     )
@@ -1393,7 +1823,7 @@ describe('provider connectivity check helpers', () => {
       },
       field: 'baseUrl',
       message:
-        'notice.providerFullCapabilityCheckFailed:{"details":"capability.image-editing: /images/edits · HTTP 404 · This provider or relay does not expose that endpoint. · If this uses a ZeroChat Worker proxy, verify the Worker deployment, hosted provider key, and proxy action path; if it calls a third-party relay directly, that relay must expose this capability route.","failed":1,"total":4}',
+        'notice.providerFullCapabilityCheckFailed:{"failed":1,"total":4}',
       retryable: true,
       retryAction: 'fullCapabilities',
       tone: 'error',
@@ -1421,13 +1851,13 @@ describe('provider connectivity check helpers', () => {
     expect(harness.providerResultsRef.current.p1).toMatchObject({
       field: 'proxyUrl',
       message:
-        'notice.providerFullCapabilityCheckFailed:{"details":"capability.embeddings: /embeddings · upstream 503","failed":1,"total":1}',
+        'notice.providerFullCapabilityCheckFailed:{"failed":1,"total":1}',
       retryable: true,
       retryAction: 'fullCapabilities',
       tone: 'error',
     })
     expect(harness.context.setNotice).toHaveBeenLastCalledWith(
-      'notice.providerFullCapabilityCheckFailed:{"details":"capability.embeddings: /embeddings · upstream 503","failed":1,"total":1}',
+      'notice.providerFullCapabilityCheckFailed:{"failed":1,"total":1}',
       'error',
       'provider-capabilities',
     )
@@ -1455,13 +1885,13 @@ describe('provider connectivity check helpers', () => {
     expect(harness.providerResultsRef.current.p1).toMatchObject({
       field: 'none',
       message:
-        'notice.providerFullCapabilityCheckFailed:{"details":"capability.realtime: error.realtimeServerDrill · settings.capabilityCheckModel:{\\"model\\":\\"gpt-realtime\\"}","failed":1,"total":2}',
+        'notice.providerFullCapabilityCheckFailed:{"failed":1,"total":2}',
       retryable: false,
       retryAction: 'fullCapabilities',
       tone: 'warning',
     })
     expect(harness.context.setNotice).toHaveBeenLastCalledWith(
-      'notice.providerFullCapabilityCheckFailed:{"details":"capability.realtime: error.realtimeServerDrill · settings.capabilityCheckModel:{\\"model\\":\\"gpt-realtime\\"}","failed":1,"total":2}',
+      'notice.providerFullCapabilityCheckFailed:{"failed":1,"total":2}',
       'warning',
       'provider-capabilities',
     )
@@ -1684,6 +2114,7 @@ describe('provider connectivity check helpers', () => {
         },
       ],
       [],
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
     expect(
       vi.mocked(harness.services.replaceManagedProxyHosts).mock
@@ -1920,6 +2351,41 @@ describe('provider connectivity check helpers', () => {
 
     expect(harness.context.setProviderModels).toHaveBeenCalledTimes(1)
     expect(harness.modelLoadProviderIdRef.current).toBe('')
+  })
+
+  it('cancels managed proxy host preparation without publishing a failure', async () => {
+    const proxied = provider('p1', {
+      baseUrl: 'https://custom-relay.example.test/v1',
+      needsApiKey: false,
+      proxyUrl: 'https://proxy.example.com/zerochat',
+    })
+    const harness = createHarness({
+      initialData: appData([proxied]),
+      providerKeys: {},
+    })
+    vi.mocked(harness.services.replaceManagedProxyHosts).mockImplementationOnce(
+      (_current, _previous, options) =>
+        new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('Aborted', 'AbortError')),
+            { once: true },
+          )
+        }),
+    )
+
+    const run = harness.actions.runProviderConnectivityCheck('p1')
+    await vi.waitFor(() =>
+      expect(harness.services.replaceManagedProxyHosts).toHaveBeenCalledTimes(1),
+    )
+    const signal = vi.mocked(harness.services.replaceManagedProxyHosts).mock
+      .calls[0]?.[2]?.signal
+
+    cancelProviderConnectivityCheckRuns()
+
+    expect(signal?.aborted).toBe(true)
+    await expect(run).resolves.toBeNull()
+    expect(harness.providerResultsRef.current).toEqual({})
   })
 
   it('drops capability results when cleanup wins the helper handoff microtask', async () => {

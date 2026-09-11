@@ -34,6 +34,7 @@ struct WindowActivationReporter: NSViewRepresentable {
         private var activationObserver: NSObjectProtocol?
         private var closeObserver: NSObjectProtocol?
         private var registeredWindowId: UUID?
+        private var attachmentGeneration: UInt64 = 0
 
         init(windowId: UUID, commandCenter: AppleCommandCenter) {
             self.windowId = windowId
@@ -45,7 +46,16 @@ struct WindowActivationReporter: NSViewRepresentable {
         }
 
         func attach(to view: NSView) {
-            DispatchQueue.main.async {
+            attachmentGeneration &+= 1
+            let generation = attachmentGeneration
+
+            DispatchQueue.main.async { [weak self, weak view] in
+                guard let self,
+                      let view,
+                      self.attachmentGeneration == generation else {
+                    return
+                }
+
                 guard let nextWindow = view.window, self.window !== nextWindow else {
                     self.refreshWindowRegistration()
                     if view.window?.isKeyWindow == true {
@@ -83,6 +93,7 @@ struct WindowActivationReporter: NSViewRepresentable {
         }
 
         func detach() {
+            attachmentGeneration &+= 1
             unregisterCurrentWindow()
             removeObservers()
             window = nil

@@ -274,4 +274,26 @@ describe('audio transcription provider service', () => {
       name: 'AbortError',
     })
   })
+
+  it('cancels an unread transcription response when cancellation wins before body handoff', async () => {
+    const controller = new AbortController()
+    const cancel = vi.fn()
+    const response = new Response(new ReadableStream<Uint8Array>({ cancel }))
+
+    await expect(
+      transcribeAudioFile({
+        apiKey: 'provider-key',
+        fetcher: vi.fn(() => {
+          queueMicrotask(() => controller.abort())
+          return Promise.resolve(response)
+        }) as typeof fetch,
+        file: new File(['audio'], 'clip.webm', { type: 'audio/webm' }),
+        provider: provider(),
+        proxyToken: '',
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+
+    expect(cancel).toHaveBeenCalledTimes(1)
+  })
 })

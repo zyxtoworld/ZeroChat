@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../types'
+import { scrollInteractionElementTo } from './interactionFocus'
 
 export interface MessageVirtualRange {
   conversationId: string
@@ -29,11 +30,99 @@ export function virtualizedLatestAssistantAnnouncement(
   return latest.content.trim()
 }
 
+export function scrollMessagesElementToLatest(
+  messageList: HTMLElement | null,
+  behavior: ScrollBehavior,
+): boolean {
+  return scrollInteractionElementTo(messageList, {
+    top: messageList?.scrollHeight ?? 0,
+    behavior,
+  })
+}
+
 export const MESSAGE_VIRTUALIZATION_THRESHOLD = 50
 export const MESSAGE_VIRTUALIZATION_OVERSCAN = 5
 export const MESSAGE_LIST_GAP_PX = 18
 export const MESSAGE_ESTIMATED_ROW_HEIGHT = 132
 export const MESSAGE_INITIAL_RENDER_WINDOW = 24
+
+interface MessageVirtualResizeObserver {
+  disconnect: () => void
+  observe: (target: Element, options?: ResizeObserverOptions) => void
+}
+
+const MESSAGE_VIRTUAL_RESIZE_OBSERVER_OPTIONS = {
+  box: 'border-box',
+} satisfies ResizeObserverOptions
+
+type MessageVirtualResizeObserverFactory = (
+  onResize: () => void,
+) => MessageVirtualResizeObserver | null
+
+function createBrowserMessageVirtualResizeObserver(
+  onResize: () => void,
+): MessageVirtualResizeObserver | null {
+  if (typeof globalThis.ResizeObserver !== 'function') {
+    return null
+  }
+
+  return new globalThis.ResizeObserver(() => onResize())
+}
+
+export function installMessageVirtualResizeObserver(
+  messageList: HTMLElement | null,
+  onResize: () => void,
+  createObserver: MessageVirtualResizeObserverFactory =
+    createBrowserMessageVirtualResizeObserver,
+): () => void {
+  if (!messageList) {
+    return () => undefined
+  }
+
+  let active = true
+  const notifyResize = () => {
+    if (active) onResize()
+  }
+  let observer: MessageVirtualResizeObserver | null
+
+  try {
+    observer = createObserver(notifyResize)
+  } catch {
+    active = false
+    return () => undefined
+  }
+
+  if (!observer) {
+    return () => undefined
+  }
+
+  try {
+    observer.observe(messageList, MESSAGE_VIRTUAL_RESIZE_OBSERVER_OPTIONS)
+    messageList
+      .querySelectorAll<HTMLElement>('[data-message-id]')
+      .forEach((message) =>
+        observer?.observe(message, MESSAGE_VIRTUAL_RESIZE_OBSERVER_OPTIONS),
+      )
+  } catch {
+    active = false
+    try {
+      observer.disconnect()
+    } catch {
+      // Resize observation is optional; synchronous row measurement remains available.
+    }
+
+    return () => undefined
+  }
+
+  return () => {
+    active = false
+    try {
+      observer?.disconnect()
+    } catch {
+      // Keep React cleanup contained if an embedded runtime rejects observer teardown.
+    }
+  }
+}
 
 interface MessageVirtualRangeDerivationOptions {
   conversationId: string

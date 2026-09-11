@@ -213,7 +213,7 @@ pub(crate) fn play_speech_audio_bytes(
             return gtk::glib::ControlFlow::Break;
         }
 
-        if player.is_ended() {
+        if player.is_ended() || player.error().is_some() {
             playback_for_finish
                 .borrow_mut()
                 .finish_if_current(&message_id, serial);

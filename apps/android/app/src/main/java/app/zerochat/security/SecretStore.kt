@@ -11,8 +11,11 @@ import app.zerochat.data.LocalResetIntentMetadata
 import app.zerochat.data.LocalResetRecoveryAction
 import app.zerochat.data.ProviderKeyImportIntentMetadata
 import app.zerochat.data.ProviderKeyImportRecoveryAction
+import app.zerochat.data.SyncPassphraseIntentMetadata
+import app.zerochat.data.SyncPassphraseRecoveryAction
 import app.zerochat.data.localResetRecoveryAction
 import app.zerochat.data.providerKeyImportRecoveryAction
+import app.zerochat.data.syncPassphraseRecoveryAction
 import java.security.MessageDigest
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -21,6 +24,7 @@ private const val ACCESS_KEY_PREFIX = "zerochat-access:v1:"
 private const val PENDING_PROVIDER_DELETIONS_KEY = "pending-provider-deletions"
 private const val PENDING_LOCAL_RESET_KEY = "pending-local-reset"
 private const val PENDING_PROVIDER_KEY_IMPORT_KEY = "pending-provider-key-import"
+private const val PENDING_SYNC_PASSPHRASE_KEY = "pending-sync-passphrase"
 
 @Serializable
 private data class PendingLocalResetRecord(
@@ -52,6 +56,21 @@ private data class PendingProviderKeyImportRecord(
     )
 }
 
+@Serializable
+private data class PendingSyncPassphraseRecord(
+    val sourceFingerprint: String? = null,
+    val replacementFingerprint: String,
+    val replacementUpdatedAt: Long,
+    val previousValue: String?,
+    val replacementValue: String?,
+) {
+    fun metadata(): SyncPassphraseIntentMetadata = SyncPassphraseIntentMetadata(
+        sourceFingerprint = sourceFingerprint,
+        replacementFingerprint = replacementFingerprint,
+        replacementUpdatedAt = replacementUpdatedAt,
+    )
+}
+
 internal data class ProviderDeletionRecoveryPlan(
     val credentialIdsToRemove: Set<String>,
 )
@@ -70,6 +89,7 @@ class SecretStore(context: Context) {
     private val json = Json { ignoreUnknownKeys = false }
     private var localResetBackupCache: PendingLocalResetRecord? = null
     private var providerKeyImportBackupCache: PendingProviderKeyImportRecord? = null
+    private var syncPassphraseBackupCache: PendingSyncPassphraseRecord? = null
     private val masterKey = MasterKey.Builder(context)
         .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
         .build()
@@ -249,12 +269,18 @@ class SecretStore(context: Context) {
             (pendingProviderKeyImportRecord() ?: providerKeyImportBackupCache)?.metadata()
         }
 
+    internal fun pendingSyncPassphraseIntent(): SyncPassphraseIntentMetadata? =
+        synchronized(secretStoreLock) {
+            (pendingSyncPassphraseRecord() ?: syncPassphraseBackupCache)?.metadata()
+        }
+
     internal fun stageProviderKeyImport(
         intent: ProviderKeyImportIntentMetadata,
         replacements: Map<String, String>,
     ) {
         synchronized(secretStoreLock) {
             requireNoPendingLocalReset()
+            requireNoPendingSyncPassphrase()
             check(pendingProviderDeletionIds().isEmpty()) {
                 "Provider credential deletion is pending recovery."
             }
@@ -347,9 +373,118 @@ class SecretStore(context: Context) {
             true
         }
 
+    internal fun restorePendingLocalResetAfterSnapshotLoadFailure(): Boolean =
+        synchronized(secretStoreLock) {
+            val pending = pendingLocalResetRecord() ?: return@synchronized false
+            localResetBackupCache = pending
+            restorePendingLocalReset(pending)
+            localResetBackupCache = null
+            true
+        }
+
+    internal fun stageSyncPassphrase(
+        intent: SyncPassphraseIntentMetadata,
+        value: String,
+    ) {
+        synchronized(secretStoreLock) {
+            requireNoPendingLocalReset()
+            requireNoPendingProviderKeyImport()
+            check(pendingProviderDeletionIds().isEmpty()) {
+                "Provider credential deletion is pending recovery."
+            }
+            val replacementValue = value.takeUnless(String::isBlank)
+            pendingSyncPassphraseRecord()?.let { pending ->
+                check(pending.metadata() == intent && pending.replacementValue == replacementValue) {
+                    "A different sync passphrase snapshot replacement is pending recovery."
+                }
+                syncPassphraseBackupCache = pending
+                return
+            }
+            check(syncPassphraseBackupCache == null) {
+                "Sync passphrase snapshot replacement is pending recovery."
+            }
+
+            val pending = PendingSyncPassphraseRecord(
+                sourceFingerprint = intent.sourceFingerprint,
+                replacementFingerprint = intent.replacementFingerprint,
+                replacementUpdatedAt = intent.replacementUpdatedAt,
+                previousValue = preferences.getString("sync-passphrase", null),
+                replacementValue = replacementValue,
+            )
+            syncPassphraseBackupCache = pending
+            try {
+                preferences.commitOrThrow("Could not stage sync passphrase snapshot replacement.") {
+                    writeSyncPassphrase(replacementValue)
+                    putString(PENDING_SYNC_PASSPHRASE_KEY, json.encodeToString(pending))
+                }
+            } catch (error: Throwable) {
+                val restoreError = runCatching {
+                    restorePendingSyncPassphrase(pending)
+                }.exceptionOrNull()
+                restoreError?.let(error::addSuppressed)
+                if (restoreError == null) {
+                    syncPassphraseBackupCache = null
+                }
+                throw error
+            }
+        }
+    }
+
+    internal fun finishSyncPassphrase(intent: SyncPassphraseIntentMetadata) {
+        synchronized(secretStoreLock) {
+            val pending = requirePendingSyncPassphrase(intent)
+            syncPassphraseBackupCache = pending
+            preferences.commitOrThrow("Could not finish sync passphrase snapshot replacement.") {
+                writeSyncPassphrase(pending.replacementValue)
+                remove(PENDING_SYNC_PASSPHRASE_KEY)
+            }
+            syncPassphraseBackupCache = null
+        }
+    }
+
+    internal fun restoreSyncPassphrase(intent: SyncPassphraseIntentMetadata) {
+        synchronized(secretStoreLock) {
+            val pending = requirePendingSyncPassphrase(intent)
+            restorePendingSyncPassphrase(pending)
+            syncPassphraseBackupCache = null
+        }
+    }
+
+    internal fun reconcilePendingSyncPassphrase(
+        currentFingerprint: String,
+    ): SyncPassphraseRecoveryAction? = synchronized(secretStoreLock) {
+        val pending = pendingSyncPassphraseRecord() ?: return@synchronized null
+        syncPassphraseBackupCache = pending
+        val action = syncPassphraseRecoveryAction(pending.metadata(), currentFingerprint)
+        when (action) {
+            SyncPassphraseRecoveryAction.RestorePrevious ->
+                restorePendingSyncPassphrase(pending)
+            SyncPassphraseRecoveryAction.KeepReplacement ->
+                preferences.commitOrThrow("Could not recover sync passphrase snapshot replacement.") {
+                    writeSyncPassphrase(pending.replacementValue)
+                    remove(PENDING_SYNC_PASSPHRASE_KEY)
+                }
+            SyncPassphraseRecoveryAction.Block -> error(
+                "Pending sync passphrase snapshot replacement does not match the durable snapshot.",
+            )
+        }
+        syncPassphraseBackupCache = null
+        action
+    }
+
+    internal fun restorePendingSyncPassphraseAfterSnapshotLoadFailure(): Boolean =
+        synchronized(secretStoreLock) {
+            val pending = pendingSyncPassphraseRecord() ?: return@synchronized false
+            syncPassphraseBackupCache = pending
+            restorePendingSyncPassphrase(pending)
+            syncPassphraseBackupCache = null
+            true
+        }
+
     internal fun stageLocalReset(intent: LocalResetIntentMetadata) {
         synchronized(secretStoreLock) {
             requireNoPendingProviderKeyImport()
+            requireNoPendingSyncPassphrase()
             pendingLocalResetRecord()?.let { pending ->
                 check(pending.metadata() == intent) {
                     "A different local credential reset is already pending recovery."
@@ -443,6 +578,23 @@ class SecretStore(context: Context) {
         }
     }
 
+    private fun android.content.SharedPreferences.Editor.writeSyncPassphrase(
+        value: String?,
+    ) {
+        if (value.isNullOrBlank()) {
+            remove("sync-passphrase")
+        } else {
+            putString("sync-passphrase", value)
+        }
+    }
+
+    private fun restorePendingSyncPassphrase(pending: PendingSyncPassphraseRecord) {
+        preferences.commitOrThrow("Could not restore sync passphrase after snapshot replacement failure.") {
+            writeSyncPassphrase(pending.previousValue)
+            remove(PENDING_SYNC_PASSPHRASE_KEY)
+        }
+    }
+
     private fun requirePendingProviderKeyImport(
         expected: ProviderKeyImportIntentMetadata,
     ): PendingProviderKeyImportRecord = checkNotNull(
@@ -458,6 +610,23 @@ class SecretStore(context: Context) {
     private fun pendingProviderKeyImportRecord(): PendingProviderKeyImportRecord? =
         preferences.getString(PENDING_PROVIDER_KEY_IMPORT_KEY, null)?.let {
             json.decodeFromString<PendingProviderKeyImportRecord>(it)
+        }
+
+    private fun requirePendingSyncPassphrase(
+        expected: SyncPassphraseIntentMetadata,
+    ): PendingSyncPassphraseRecord = checkNotNull(
+        pendingSyncPassphraseRecord() ?: syncPassphraseBackupCache,
+    ) {
+        "Sync passphrase snapshot replacement intent is missing."
+    }.also { pending ->
+        check(pending.metadata() == expected) {
+            "Sync passphrase snapshot replacement intent changed during commit."
+        }
+    }
+
+    private fun pendingSyncPassphraseRecord(): PendingSyncPassphraseRecord? =
+        preferences.getString(PENDING_SYNC_PASSPHRASE_KEY, null)?.let {
+            json.decodeFromString<PendingSyncPassphraseRecord>(it)
         }
 
     private fun requirePendingLocalReset(
@@ -494,8 +663,38 @@ class SecretStore(context: Context) {
         }
     }
 
+    private fun requireNoPendingSyncPassphrase() {
+        check(
+            !preferences.contains(PENDING_SYNC_PASSPHRASE_KEY) &&
+                syncPassphraseBackupCache == null,
+        ) {
+            "Sync passphrase snapshot replacement is pending recovery."
+        }
+    }
+
     private fun requireNoPendingSecretTransaction() {
         requireNoPendingLocalReset()
         requireNoPendingProviderKeyImport()
+        requireNoPendingSyncPassphrase()
+    }
+}
+
+internal fun restorePendingSecretTransactionsAfterSnapshotLoadFailure(
+    secretStore: SecretStore,
+) {
+    val failures = mutableListOf<Throwable>()
+    fun attemptRecovery(recover: () -> Unit) {
+        try {
+            recover()
+        } catch (error: Throwable) {
+            failures += error
+        }
+    }
+    attemptRecovery { secretStore.restorePendingLocalResetAfterSnapshotLoadFailure() }
+    attemptRecovery { secretStore.restorePendingProviderKeyImportAfterSnapshotLoadFailure() }
+    attemptRecovery { secretStore.restorePendingSyncPassphraseAfterSnapshotLoadFailure() }
+    failures.firstOrNull()?.let { first ->
+        failures.drop(1).forEach(first::addSuppressed)
+        throw first
     }
 }

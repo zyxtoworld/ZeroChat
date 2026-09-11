@@ -1,8 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
 const chatServiceMocks = vi.hoisted(() => ({
-  regenerateAssistantMessageGeneration: vi.fn(async () => true),
-  submitEditedUserMessageGeneration: vi.fn(async () => true),
   synthesizeSpeechAudio: vi.fn(async () => ({
     blob: new Blob(['audio'], { type: 'audio/mpeg' }),
     model: 'speech-model',
@@ -17,8 +15,6 @@ vi.mock('../chat', () => chatServiceMocks)
 
 import {
   loadCachedLazyService,
-  regenerateAssistantMessageGeneration,
-  submitEditedUserMessageGeneration,
   synthesizeSpeechAudio,
   transcribeAudioFile,
 } from '../lazy'
@@ -81,28 +77,5 @@ describe('loadCachedLazyService', () => {
     expect(chatServiceMocks.transcribeAudioFile).toHaveBeenCalledWith(
       transcriptionOptions,
     )
-  })
-
-  it('routes message reruns through the shared chat lazy runtime', async () => {
-    const editedOptions = {} as Parameters<
-      typeof submitEditedUserMessageGeneration
-    >[0]
-    const regenerateOptions = {} as Parameters<
-      typeof regenerateAssistantMessageGeneration
-    >[0]
-
-    await expect(
-      submitEditedUserMessageGeneration(editedOptions),
-    ).resolves.toBe(true)
-    await expect(
-      regenerateAssistantMessageGeneration(regenerateOptions),
-    ).resolves.toBe(true)
-
-    expect(
-      chatServiceMocks.submitEditedUserMessageGeneration,
-    ).toHaveBeenCalledWith(editedOptions)
-    expect(
-      chatServiceMocks.regenerateAssistantMessageGeneration,
-    ).toHaveBeenCalledWith(regenerateOptions)
   })
 })

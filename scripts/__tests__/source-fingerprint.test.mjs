@@ -7,8 +7,11 @@ import {
   dependencyClosureSourceFiles,
   dependencyClosureSourceFingerprint,
 } from '../source-fingerprint.mjs'
+import { resolveWebProductionGraph } from '../web-production-reachability.mjs'
 import {
   liveProviderApiSourceFingerprintRoots,
+  liveProviderSourceFingerprint,
+  liveProviderUiSourceFiles,
   liveProviderUiSourceFingerprintExcludedDirectoryNames,
   liveProviderUiSourceFingerprintRoots,
 } from '../live-provider-source-fingerprint.mjs'
@@ -40,6 +43,8 @@ describe('dependency-closure source fingerprint', () => {
         roots: liveProviderApiSourceFingerprintRoots,
       })
 
+      expect(providerFiles).toContain('scripts/live-provider-chat-response.mjs')
+      expect(providerFiles).toContain('scripts/live-provider-empty-chat-retry.mjs')
       expect(providerFiles).toContain('src/services/imageAttachments.ts')
       expect(providerFiles).toContain('src/services/providerRequestMode.ts')
     },
@@ -71,18 +76,62 @@ describe('dependency-closure source fingerprint', () => {
   it(
     'excludes component tests from the live-provider browser UI runtime fingerprint',
     async () => {
-      const files = await dependencyClosureSourceFiles({
-        roots: liveProviderUiSourceFingerprintRoots,
-        excludedDirectories: liveProviderUiSourceFingerprintExcludedDirectoryNames,
-      })
+      const productionGraph = resolveWebProductionGraph()
+      const files = await liveProviderUiSourceFiles({ productionGraph })
+      const productionSources = new Set(productionGraph.files)
 
-      expect(files).toContain('src/components/FirstRunGuideProviderFields.tsx')
+      expect(files).toContain('src/app/components/Onboarding.tsx')
       expect(files).toContain('scripts/browser-cdp.mjs')
-      expect(files.some((file) => file.startsWith('src/components/__tests__/'))).toBe(false)
+      expect(files.some((file) => file.startsWith('src/app/__tests__/'))).toBe(false)
+      expect(
+        files.filter((file) => file.startsWith('src/') && !productionSources.has(file)),
+      ).toEqual([])
+      expect(
+        productionGraph.files.filter(
+          (file) => file.startsWith('src/') && !files.includes(file),
+        ),
+      ).toEqual([])
+      expect(files).toContain('public/sw.js')
+      expect(files).toContain('scripts/service-worker-source.js')
       expect(liveProviderUiSourceFingerprintExcludedDirectoryNames).toContain('__tests__')
     },
     repositoryTraversalTestTimeoutMs,
   )
+
+  it('rejects transitive Web sources outside the production entry graph', async () => {
+    const cwd = await fixture()
+    await writeFile(
+      path.join(cwd, 'index.html'),
+      '<script type="module" src="/src/app/bootstrap.tsx"></script>\n',
+    )
+    await writeFile(
+      path.join(cwd, 'tsconfig.app.json'),
+      JSON.stringify({ compilerOptions: { jsx: 'react-jsx' }, include: ['src'] }),
+    )
+    await mkdir(path.join(cwd, 'src/app'), { recursive: true })
+    await mkdir(path.join(cwd, 'scripts'), { recursive: true })
+    await writeFile(
+      path.join(cwd, 'src/app/bootstrap.tsx'),
+      "import '../reachable'\nexport const bootstrap = true\n",
+    )
+    await writeFile(path.join(cwd, 'src/reachable.ts'), 'export const reachable = true\n')
+    await writeFile(
+      path.join(cwd, 'src/unreachableController.ts'),
+      'export const unreachable = true\n',
+    )
+    await writeFile(
+      path.join(cwd, 'scripts/probe.mjs'),
+      "import '../src/unreachableController.ts'\n",
+    )
+
+    await expect(
+      liveProviderSourceFingerprint({
+        cwd,
+        roots: ['scripts/probe.mjs'],
+        kind: 'fixture.liveProviderSourceFingerprint.v1',
+      }),
+    ).rejects.toThrow(/not production-reachable/u)
+  })
 
   it('tracks static imports, re-exports, import types, and literal dynamic imports', async () => {
     const cwd = await fixture()
@@ -111,6 +160,19 @@ describe('dependency-closure source fingerprint', () => {
       'src/static.ts',
       'src/typed.ts',
     ])
+  })
+
+  it('resolves dotted module basenames before a source extension', async () => {
+    const cwd = await fixture()
+    await writeFile(path.join(cwd, 'src/root.ts'), "import './markdown.worker'\n")
+    await writeFile(
+      path.join(cwd, 'src/markdown.worker.ts'),
+      'export const workerReady = true\n',
+    )
+
+    await expect(
+      dependencyClosureSourceFiles({ cwd, roots: ['src/root.ts'] }),
+    ).resolves.toEqual(['src/markdown.worker.ts', 'src/root.ts'])
   })
 
   it('changes when only a transitive dependency changes', async () => {

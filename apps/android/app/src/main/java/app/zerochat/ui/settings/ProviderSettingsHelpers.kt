@@ -106,13 +106,18 @@ fun providerSettingsApplyConnectivityModels(
     now: Long,
 ): ProviderConfig = modelSettingsApplyFetchedModels(provider, models, now)
 
-fun providerSettingsApplyConnectivityModelsToSnapshot(
+internal fun providerSettingsApplyConnectivityModelsToSnapshot(
     snapshot: AppSnapshot,
     providerId: String,
     models: List<String>,
     now: Long,
+    expectedOwner: ModelSettingsFetchOwner,
+    currentOwner: ModelSettingsFetchOwner?,
 ): AppSnapshot {
     val provider = snapshot.providers.firstOrNull { it.id == providerId } ?: return snapshot
+    if (currentOwner == null || !modelSettingsFetchOwnerMatches(expectedOwner, currentOwner)) {
+        return snapshot
+    }
     return snapshot.copy(
         providers = providerSettingsReplaceProvider(
             snapshot.providers,

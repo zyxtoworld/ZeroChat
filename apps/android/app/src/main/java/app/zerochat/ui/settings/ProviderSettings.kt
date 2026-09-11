@@ -28,6 +28,13 @@ import kotlinx.coroutines.launch
 private const val PROVIDER_LIST_INITIAL_RENDER_LIMIT = 4
 private const val PROVIDER_LIST_RENDER_BATCH = 6
 
+internal fun providerConnectivityFailureNotice(
+    i18n: NativeI18n,
+    @Suppress("UNUSED_PARAMETER") error: Throwable,
+): String =
+    i18n.t("notice.providerConnectivityFailed")
+        .replace("{message}", i18n.t("error.apiRequestFailed"))
+
 @Composable
 fun ProviderSettings(
     snapshot: AppSnapshot,
@@ -66,6 +73,20 @@ fun ProviderSettings(
         visibleProviders = visibleProviders,
         requestedProviderId = expandedProviderId,
     )
+
+    fun currentFetchOwner(current: AppSnapshot, providerId: String): ModelSettingsFetchOwner? {
+        val currentProvider = current.providers.firstOrNull { it.id == providerId } ?: return null
+        return runCatching {
+            val currentRequestProvider = providerRequest(currentProvider, current)
+            ModelSettingsFetchOwner(
+                requestProvider = currentRequestProvider,
+                apiKey = secretStore.providerKey(providerId),
+                proxyToken = providerProxyTokenForRequest(currentRequestProvider) {
+                    secretStore.cloudflareAccessKey()
+                },
+            )
+        }.getOrNull()
+    }
 
     SettingsCard(i18n.t("setting.providers")) {
         Button(
@@ -156,40 +177,69 @@ fun ProviderSettings(
 
                     checkingProviderId = provider.id
                     scope.launch {
+                        var requestOwner: ModelSettingsFetchOwner? = null
                         try {
                             val result = runCatchingPreservingCancellation {
                                 val requestProvider = providerRequest(provider, snapshot)
+                                val proxyToken = providerProxyTokenForRequest(requestProvider) {
+                                    secretStore.cloudflareAccessKey()
+                                }
+                                requestOwner = ModelSettingsFetchOwner(
+                                    requestProvider = requestProvider,
+                                    apiKey = providerKey,
+                                    proxyToken = proxyToken,
+                                )
                                 aiClient.listModels(
                                     provider = requestProvider,
                                     apiKey = providerKey,
-                                    proxyToken = providerProxyTokenForRequest(requestProvider) {
-                                        secretStore.cloudflareAccessKey()
-                                    },
+                                    proxyToken = proxyToken,
                                 )
                             }
 
                             result.onSuccess { models ->
+                                val expectedOwner = requestOwner ?: return@onSuccess
+                                var applied = false
                                 onSnapshotReduce { current ->
-                                    val provider = current.providers.firstOrNull { it.id == provider.id }
-                                        ?: return@onSnapshotReduce current
-                                    current.copy(
-                                        providers = providerSettingsReplaceProvider(
-                                            current.providers,
-                                            providerSettingsApplyConnectivityModels(provider, models, nowMillis()),
-                                        ),
+                                    val updated = providerSettingsApplyConnectivityModelsToSnapshot(
+                                        snapshot = current,
+                                        providerId = provider.id,
+                                        models = models,
+                                        now = nowMillis(),
+                                        expectedOwner = expectedOwner,
+                                        currentOwner = currentFetchOwner(current, provider.id),
+                                    )
+                                    applied = updated !== current
+                                    updated
+                                }
+                                if (applied) {
+                                    onNotice(
+                                        i18n.t("notice.providerConnectivityPassed")
+                                            .replace("{count}", models.size.toString()),
+                                        SettingsNoticeKind.Success,
                                     )
                                 }
-                                onNotice(
-                                    i18n.t("notice.providerConnectivityPassed")
-                                        .replace("{count}", models.size.toString()),
-                                    SettingsNoticeKind.Success,
-                                )
-                            }.onFailure {
-                                onNotice(
-                                    i18n.t("notice.providerConnectivityFailed")
-                                        .replace("{message}", it.message.orEmpty()),
-                                    SettingsNoticeKind.Error,
-                                )
+                            }.onFailure { error ->
+                                val expectedOwner = requestOwner
+                                if (expectedOwner == null) {
+                                    onNotice(
+                                        providerConnectivityFailureNotice(i18n, error),
+                                        SettingsNoticeKind.Error,
+                                    )
+                                } else {
+                                    var current = false
+                                    onSnapshotReduce { snapshot ->
+                                        current = currentFetchOwner(snapshot, provider.id)?.let {
+                                            modelSettingsFetchOwnerMatches(expectedOwner, it)
+                                        } == true
+                                        snapshot
+                                    }
+                                    if (current) {
+                                        onNotice(
+                                            providerConnectivityFailureNotice(i18n, error),
+                                            SettingsNoticeKind.Error,
+                                        )
+                                    }
+                                }
                             }
                         } finally {
                             checkingProviderId = ""

@@ -12,7 +12,6 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -21,10 +20,17 @@ import {
   sameAndroidSourceFingerprint,
   writeAndroidDebugApkBuildStamp,
 } from './android-source-fingerprint.mjs'
+import {
+  androidGradleChildEnvironment,
+  androidGradleExecutionPaths,
+} from './android-gradle-local-boundary.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, '..')
 const androidDir = path.join(repoRoot, 'apps', 'android')
+const androidLocalPaths = androidGradleExecutionPaths(repoRoot)
+mkdirSync(androidLocalPaths.tempRoot, { recursive: true })
+mkdirSync(androidLocalPaths.gradleUserHome, { recursive: true })
 const javaExecutable = process.platform === 'win32' ? 'java.exe' : 'java'
 const gradleWrapper = path.join(
   androidDir,
@@ -40,7 +46,7 @@ function androidExecutionDir() {
     return androidDir
   }
 
-  const linkRoot = path.join(os.tmpdir(), 'zerochat-android-junctions')
+  const linkRoot = path.join(androidLocalPaths.tempRoot, 'zerochat-android-junctions')
   const linkName = createHash('sha256').update(androidDir).digest('hex').slice(0, 16)
   const linkPath = path.join(linkRoot, linkName)
 
@@ -115,7 +121,7 @@ function readLockOwner(ownerPath) {
 }
 
 function acquireAndroidBuildLock() {
-  const lockRoot = path.join(os.tmpdir(), 'zerochat-android-build-locks')
+  const lockRoot = path.join(androidLocalPaths.tempRoot, 'zerochat-android-build-locks')
   const lockName = createHash('sha256').update(androidDir).digest('hex').slice(0, 16)
   const lockPath = path.join(lockRoot, lockName)
   const ownerPath = path.join(lockPath, 'owner.json')
@@ -255,7 +261,7 @@ if (!androidSdk) {
 }
 
 const env = {
-  ...process.env,
+  ...androidGradleChildEnvironment({ repoRoot }),
   ANDROID_HOME: process.env.ANDROID_HOME ?? androidSdk,
   ANDROID_SDK_ROOT: process.env.ANDROID_SDK_ROOT ?? androidSdk,
 }
@@ -291,6 +297,7 @@ const executionArgs = [...stableJunctionArgs, ...requestedTasks]
 
 console.log(`Using JAVA_HOME=${env.JAVA_HOME ?? 'PATH java'}`)
 console.log(`Using ANDROID_SDK_ROOT=${env.ANDROID_SDK_ROOT}`)
+console.log(`Using GRADLE_USER_HOME=${env.GRADLE_USER_HOME}`)
 if (usesAsciiJunction) {
   console.log(`Using ASCII Gradle project path=${gradleCwd}`)
   console.log(

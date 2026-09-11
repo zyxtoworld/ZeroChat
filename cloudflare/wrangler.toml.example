@@ -2,6 +2,10 @@ name = "zerochat-sync"
 main = "sync-worker.js"
 compatibility_date = "2026-05-01"
 
+[assets]
+directory = "../dist"
+binding = "ASSETS"
+
 [vars]
 # This is not the raw data encryption password. ZeroChat derives it from the
 # password in Settings > Data and shows the value to paste here.

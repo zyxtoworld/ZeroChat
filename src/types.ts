@@ -115,6 +115,13 @@ export interface MessageAttachment {
   createdAt: number
 }
 
+export interface GeneratedImage {
+  dataUrl?: string
+  url?: string
+  mimeType: string
+  revisedPrompt?: string
+}
+
 export interface QueuedTextRequest {
   providerId: string
   model: string
@@ -131,6 +138,7 @@ export interface ChatMessage {
   role: MessageRole
   content: string
   createdAt: number
+  generationId?: string
   status?: 'queued' | 'streaming' | 'done' | 'error'
   error?: string
   attachments?: MessageAttachment[]

@@ -2,7 +2,7 @@ param(
   [ValidateSet("Debug", "Release", "All")]
   [string] $Configuration = "Release",
   [string] $Platform = "x64",
-  [string] $BuildRoot = "C:\ZeroChatWindowsBuild",
+  [string] $BuildRoot = ".local\codex\artifacts\windows-build",
   [switch] $SkipWebBuild,
   [switch] $MsixReady
 )
@@ -10,6 +10,10 @@ param(
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+if (-not [System.IO.Path]::IsPathRooted($BuildRoot)) {
+  $BuildRoot = Join-Path $RepoRoot $BuildRoot
+}
+$BuildRoot = [System.IO.Path]::GetFullPath($BuildRoot)
 $SolutionPath = Join-Path $RepoRoot "apps\windows\ZeroChat.sln"
 
 function Find-MSBuild {
@@ -45,6 +49,55 @@ function Invoke-Checked {
   if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
   }
+}
+
+function Get-AsciiBuildRoot {
+  param(
+    [string] $PhysicalBuildRoot,
+    [string] $ProjectRoot
+  )
+
+  if ($PhysicalBuildRoot -notmatch '[^\x00-\x7F]') {
+    return [pscustomobject]@{ Path = $PhysicalBuildRoot; Drive = $null }
+  }
+
+  $ArtifactsRoot = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot ".local\codex\artifacts"))
+  $ArtifactsUri = [System.Uri]::new("$($ArtifactsRoot.TrimEnd('\'))\")
+  $PhysicalBuildUri = [System.Uri]::new("$($PhysicalBuildRoot.TrimEnd('\'))\")
+  $Relative = [System.Uri]::UnescapeDataString(
+    $ArtifactsUri.MakeRelativeUri($PhysicalBuildUri).ToString()
+  ).Replace('/', '\').TrimEnd('\')
+  if (-not $Relative) {
+    $Relative = "."
+  }
+  if (
+    $Relative -eq ".." -or
+    $Relative.StartsWith("..$([System.IO.Path]::DirectorySeparatorChar)") -or
+    [System.IO.Path]::IsPathRooted($Relative)
+  ) {
+    throw "Windows build output must stay under the project-local .local\codex\artifacts directory: $PhysicalBuildRoot"
+  }
+
+  foreach ($Letter in @("Z", "Y", "X", "W", "V")) {
+    & subst "$Letter`:" 2>$null
+    if ($LASTEXITCODE -eq 0) {
+      continue
+    }
+
+    & subst "$Letter`:" $ArtifactsRoot
+    if ($LASTEXITCODE -ne 0) {
+      throw "Unable to create temporary ASCII build mapping $Letter`: for $ArtifactsRoot"
+    }
+
+    $MappedPath = if ($Relative -eq ".") {
+      "$Letter`:\"
+    } else {
+      [System.IO.Path]::Combine("$Letter`:\", $Relative)
+    }
+    return [pscustomobject]@{ Path = $MappedPath; Drive = $Letter }
+  }
+
+  throw "No free temporary drive letter is available for the project-local Windows build mapping."
 }
 
 function Get-RelativeFileMap([string] $Root) {
@@ -146,47 +199,63 @@ if (-not (Test-Path (Join-Path $RepoRoot "dist\index.html"))) {
 
 $MSBuild = Find-MSBuild
 $Configurations = if ($Configuration -eq "All") { @("Debug", "Release") } else { @($Configuration) }
+$PhysicalBuildRoot = $BuildRoot
+$AsciiBuildRoot = $PhysicalBuildRoot
+$TemporaryBuildDrive = $null
 
-foreach ($Item in $Configurations) {
-  Write-Host "Building Windows $Item|$Platform with $MSBuild"
-  $BuildArgs = @(
-    $SolutionPath,
-    "/restore",
-    "/p:Configuration=$Item",
-    "/p:Platform=$Platform",
-    "/p:ZeroChatBuildRoot=$BuildRoot"
-  )
-  if ($MsixReady) {
-    $BuildArgs += "/p:ZeroChatMsixBuild=true"
-  }
+try {
+  $AsciiMapping = Get-AsciiBuildRoot -PhysicalBuildRoot $PhysicalBuildRoot -ProjectRoot $RepoRoot
+  $AsciiBuildRoot = $AsciiMapping.Path
+  $TemporaryBuildDrive = $AsciiMapping.Drive
 
-  Invoke-Checked $MSBuild $BuildArgs
-
-  $OutputDir = Join-Path $BuildRoot "output\$Platform\$Item"
-  $OutputExe = Join-Path $BuildRoot "output\$Platform\$Item\ZeroChat.exe"
-  $OutputWebDir = Join-Path $BuildRoot "output\$Platform\$Item\web"
-  $OutputWeb = Join-Path $OutputWebDir "index.html"
-
-  if (-not (Test-Path $OutputExe)) {
-    throw "Windows build did not produce $OutputExe"
-  }
-
-  if (-not (Test-Path $OutputWeb)) {
-    throw "Windows build did not copy the Web/PWA bundle to $OutputWeb"
-  }
-
-  if ($MsixReady) {
-    Remove-WebView2RuntimeUserDataDirs $OutputDir
-  }
-
-  Assert-WebBundleMatchesDist $OutputWebDir
-}
-
-$Configurations |
-  ForEach-Object {
-    $BuiltExe = Join-Path $BuildRoot "output\$Platform\$_\ZeroChat.exe"
-    if (Test-Path -LiteralPath $BuiltExe) {
-      Get-Item -LiteralPath $BuiltExe
+  foreach ($Item in $Configurations) {
+    Write-Host "Building Windows $Item|$Platform with $MSBuild"
+    $BuildArgs = @(
+      $SolutionPath,
+      "/restore",
+      "/p:Configuration=$Item",
+      "/p:Platform=$Platform",
+      "/p:ZeroChatBuildRoot=$AsciiBuildRoot"
+    )
+    if ($MsixReady) {
+      $BuildArgs += "/p:ZeroChatMsixBuild=true"
     }
-  } |
-  Select-Object FullName, Length, LastWriteTime
+
+    Invoke-Checked $MSBuild $BuildArgs
+
+    $OutputDir = Join-Path $PhysicalBuildRoot "output\$Platform\$Item"
+    $OutputExe = Join-Path $PhysicalBuildRoot "output\$Platform\$Item\ZeroChat.exe"
+    $OutputWebDir = Join-Path $PhysicalBuildRoot "output\$Platform\$Item\web"
+    $OutputWeb = Join-Path $OutputWebDir "index.html"
+
+    if (-not (Test-Path $OutputExe)) {
+      throw "Windows build did not produce $OutputExe"
+    }
+
+    if (-not (Test-Path $OutputWeb)) {
+      throw "Windows build did not copy the Web/PWA bundle to $OutputWeb"
+    }
+
+    if ($MsixReady) {
+      Remove-WebView2RuntimeUserDataDirs $OutputDir
+    }
+
+    Assert-WebBundleMatchesDist $OutputWebDir
+  }
+
+  $Configurations |
+    ForEach-Object {
+      $BuiltExe = Join-Path $PhysicalBuildRoot "output\$Platform\$_\ZeroChat.exe"
+      if (Test-Path -LiteralPath $BuiltExe) {
+        Get-Item -LiteralPath $BuiltExe
+      }
+    } |
+    Select-Object FullName, Length, LastWriteTime
+} finally {
+  if ($TemporaryBuildDrive) {
+    & subst "$TemporaryBuildDrive`:" /d
+    if ($LASTEXITCODE -ne 0) {
+      throw "Temporary build mapping $TemporaryBuildDrive`: could not be removed."
+    }
+  }
+}

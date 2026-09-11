@@ -20,7 +20,7 @@ import app.zerochat.data.ProviderConfig
 import app.zerochat.ui.NativeI18n
 
 @Composable
-fun ModelProviderPicker(
+internal fun ModelProviderPicker(
     providers: List<ProviderConfig>,
     selectedProviderId: String,
     i18n: NativeI18n,

@@ -81,12 +81,12 @@ pub(crate) fn chunk_fingerprint(
     messages: &[ChatMessage],
     updated_at: i64,
 ) -> Result<String> {
-    sha256_hex(&serde_json::to_vec(&ConversationFingerprint {
+    Ok(sha256_hex(&serde_json::to_vec(&ConversationFingerprint {
         conversation_id,
         index,
         messages,
         updated_at,
-    })?)
+    })?))
 }
 
 pub(crate) fn skill_chunk_fingerprint(
@@ -94,11 +94,11 @@ pub(crate) fn skill_chunk_fingerprint(
     chunk_id: &str,
     content: &str,
 ) -> Result<String> {
-    sha256_hex(&serde_json::to_vec(&SkillFingerprint {
+    Ok(sha256_hex(&serde_json::to_vec(&SkillFingerprint {
         skill_id,
         chunk_id,
         content,
-    })?)
+    })?))
 }
 
 pub(crate) fn attachment_chunk_fingerprint(
@@ -108,13 +108,13 @@ pub(crate) fn attachment_chunk_fingerprint(
     index: i32,
     content: &str,
 ) -> Result<String> {
-    sha256_hex(&serde_json::to_vec(&AttachmentFingerprint {
+    Ok(sha256_hex(&serde_json::to_vec(&AttachmentFingerprint {
         conversation_id,
         message_id,
         attachment_id,
         index,
         content,
-    })?)
+    })?))
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

@@ -22,7 +22,7 @@ import app.zerochat.data.ProviderConfig
 import app.zerochat.ui.NativeI18n
 
 @Composable
-fun ModelDefaultChoices(
+internal fun ModelDefaultChoices(
     snapshot: AppSnapshot,
     provider: ProviderConfig,
     onSnapshotChange: (AppSnapshot) -> Unit,

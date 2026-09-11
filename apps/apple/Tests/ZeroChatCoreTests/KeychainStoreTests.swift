@@ -60,3 +60,28 @@ import Testing
 
     #expect(calls == ["delete"])
 }
+
+@Test func keychainReadReturnsMissingOnlyForItemNotFound() throws {
+    let missing = try decodeKeychainRead(status: errSecItemNotFound, item: nil)
+    let value = try decodeKeychainRead(
+        status: errSecSuccess,
+        item: Data("secret".utf8) as CFData
+    )
+
+    #expect(missing == nil)
+    #expect(value == "secret")
+}
+
+@Test func keychainReadPropagatesNonMissingStatus() {
+    var capturedStatus: OSStatus?
+
+    do {
+        _ = try decodeKeychainRead(status: errSecAuthFailed, item: nil)
+    } catch KeychainError.status(let status) {
+        capturedStatus = status
+    } catch {
+        Issue.record("Unexpected Keychain read error: \(error)")
+    }
+
+    #expect(capturedStatus == errSecAuthFailed)
+}

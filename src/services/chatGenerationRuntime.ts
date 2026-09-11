@@ -1,4 +1,4 @@
-import type { NoticeTarget } from '../components/Notice'
+import type { NoticeTarget } from './noticeTypes'
 import type { Translator } from '../i18n'
 import type { ChatMessage } from '../types'
 import { reportDetachedNotice } from './detachedFailureReporting'
@@ -132,6 +132,7 @@ export async function withGenerationAutoRetry<T>(
       options.signal.throwIfAborted()
       return result
     } catch (error: unknown) {
+      options.signal.throwIfAborted()
       if (
         retryIndex >= MAX_GENERATION_AUTO_RETRIES ||
         !shouldAutoRetryGenerationError(error)

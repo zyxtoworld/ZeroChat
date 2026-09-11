@@ -11,8 +11,7 @@ func shouldRetryCloudflareHeadConflict(
     afterAttempt attempt: Int,
     maxAttempts: Int = 3
 ) -> Bool {
-    precondition(maxAttempts > 0)
-    precondition(attempt >= 0)
+    guard maxAttempts > 0, attempt >= 0 else { return false }
     return attempt + 1 < maxAttempts
 }
 

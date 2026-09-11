@@ -326,25 +326,14 @@ for (const locale of localeNames) {
 const base = dictionaries.get('zh')
 const english = dictionaries.get('en')
 const { source: i18nSource } = await readSource('src/i18n.ts')
-const { source: appShellSource } = await readSource('src/App.tsx')
-const { source: appRootSource } = await readSource('src/ZeroChatAppRoot.tsx')
-const { source: appBootstrapControllerSource } = await readSource(
-  'src/services/appBootstrapController.ts',
-)
-const { source: appChromeControllerSource } = await readSource(
-  'src/services/appChromeController.ts',
-)
-const { source: appRuntimeControllerSource } = await readSource(
-  'src/services/appRuntimeController.ts',
-)
-const { source: appStateScreensSource } = await readSource('src/components/AppStateScreens.tsx')
-const { source: conversationLifecycleControllerSource } = await readSource(
-  'src/services/conversationLifecycleController.ts',
-)
+const { source: appShellSource } = await readSource('src/app/App.tsx')
+const { source: appBootstrapSource } = await readSource('src/app/bootstrap.tsx')
+const { source: startupShellSource } = await readSource('src/app/startupShell.ts')
+const { source: appStoreSource } = await readSource('src/app/store.ts')
 const { source: conversationServiceSource } = await readSource('src/services/conversations.ts')
 const indexHtml = await readFile('index.html', 'utf8')
-const startupScript = await readFile('public/zerochat-startup.js', 'utf8')
-const appSource = `${appShellSource}\n${appRootSource}\n${appBootstrapControllerSource}\n${appChromeControllerSource}\n${appRuntimeControllerSource}\n${conversationLifecycleControllerSource}`
+const startupScript = startupShellSource
+const appSource = `${appShellSource}\n${appBootstrapSource}\n${startupShellSource}\n${appStoreSource}`
 
 const requiredSystemLocaleMarkers = [
   "let runtimeLocale: Locale = resolveLocale('system')",
@@ -357,24 +346,23 @@ const requiredSystemLocaleMarkers = [
   'localeLoadPromises.delete(locale)',
 ]
 const requiredAppLocaleMarkers = [
-  "const [locale, setLocale] = useState<Locale>(() => resolveLocale('system'))",
-  'const locale = appServices.resolveInitialLocale(initial)',
-  'return resolveLocale(data.preferences.language, getLanguages())',
-  'await appServices.loadLocale(locale)',
-  'context.setLocale(bootstrapped.locale)',
-  'loadLocale(targetLocale)',
+  'resolveLocale(data?.preferences.language)',
+  'await loadLocale(runtimeLocale)',
+  'let languageChangeGeneration = 0',
+  'const generation = ++languageChangeGeneration',
+  "notifyContained(rt('notice.localeLoadFailed'), 'error')",
+  'refreshSystemLanguage: async (signal) => {',
+  'document.documentElement.lang = runtimeLocale',
   'if (!data) {',
 ]
-const requiredAppStateScreensLocaleMarkers = [
-  "<p>{t('ui.loading')}</p>",
-]
 const requiredStartupLocaleMarkers = [
-  'src="%BASE_URL%zerochat-startup.js" defer vite-ignore',
-  '[navigator.language,...navigator.languages]',
-  ".map(l=>a.find(v=>l.toLowerCase().startsWith(v[0]+v[1]))).find(Boolean)||'en-US'",
-  'd=document.documentElement',
-  "d.dir=l==='ar-SA'?'rtl':'ltr'",
-  "document.querySelector('[data-initial-loading]')",
+  '<script type="module" src="/src/app/bootstrap.tsx"></script>',
+  'function browserLanguages()',
+  'export function resolveStartupLocale(',
+  'for (const language of languages)',
+  'doc.documentElement.lang = locale',
+  "doc.documentElement.dir = locale === 'ar-SA' ? 'rtl' : 'ltr'",
+  "doc.querySelector<HTMLElement>('[data-initial-loading]')",
 ]
 const forbiddenBlockingLocaleMarkers = [
   'const localeSettled = localeReady && locale === targetLocale',
@@ -403,16 +391,6 @@ const missingAppLocaleMarkers = requiredAppLocaleMarkers.filter(
 if (missingAppLocaleMarkers.length) {
   failures.push(
     `app language-readiness markers are missing: ${missingAppLocaleMarkers.join(' | ')}`,
-  )
-}
-
-const missingAppStateScreensLocaleMarkers = requiredAppStateScreensLocaleMarkers.filter(
-  (marker) => !appStateScreensSource.includes(marker),
-)
-
-if (missingAppStateScreensLocaleMarkers.length) {
-  failures.push(
-    `app state screen language-readiness markers are missing: ${missingAppStateScreensLocaleMarkers.join(' | ')}`,
   )
 }
 
@@ -461,29 +439,16 @@ if (eagerLocaleImports.length) {
 if (!base || !english) {
   failures.push('Missing zh or en dictionary.')
 } else {
-  const defaultConversationTitles = localeNames
-    .map((locale) => dictionaries.get(locale)?.get('conversation.newTitle'))
-    .filter((value) => typeof value === 'string' && value.length > 0)
-  const missingDefaultTitleAliases = defaultConversationTitles.filter(
-    (title) => !conversationServiceSource.includes(title),
-  )
-  const unsafeDefaultTitleAliases = ["'新对'", "'नई चै'", "'대'"].filter((title) =>
-    conversationServiceSource.includes(title),
-  )
+  const canonicalPlaceholderContract =
+    /export const CONVERSATION_PLACEHOLDER_TITLE\s*=\s*['"]conversation\.newTitle['"][\s\S]*?const defaultConversationTitles\s*=\s*new Set\(\[\s*CONVERSATION_PLACEHOLDER_TITLE,?\s*\]\)/
 
-  if (missingDefaultTitleAliases.length) {
+  if (!canonicalPlaceholderContract.test(conversationServiceSource)) {
     failures.push(
-      `Conversation service default title aliases are missing: ${missingDefaultTitleAliases.join(', ')}`,
+      'Conversation service must recognize only the canonical placeholder sentinel; localized title text must remain valid user-authored literals.',
     )
   }
 
-  if (unsafeDefaultTitleAliases.length) {
-    failures.push(
-      `Conversation service default title aliases are too broad or truncated: ${unsafeDefaultTitleAliases.join(', ')}`,
-    )
-  }
-
-  if (!conversationLifecycleControllerSource.includes("context.t('conversation.newTitle'),")) {
+  if (!conversationServiceSource.includes("t('conversation.newTitle')")) {
     failures.push('New local conversations must be created with the current localized title.')
   }
 

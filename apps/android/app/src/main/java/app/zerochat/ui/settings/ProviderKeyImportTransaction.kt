@@ -4,6 +4,8 @@ import app.zerochat.data.AppSnapshot
 import app.zerochat.data.SnapshotCommit
 import app.zerochat.data.SnapshotCompareAndSetResult
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 
 internal class ProviderKeyImportConflictException :
     IllegalStateException("Local data changed while the backup was being imported.")
@@ -17,6 +19,7 @@ internal suspend fun commitProviderKeyImportTransaction(
     finishProviderKeys: suspend () -> Unit,
     restoreProviderKeys: suspend () -> Unit,
     compareAndSetSnapshot: suspend (AppSnapshot, AppSnapshot) -> SnapshotCompareAndSetResult,
+    conflictError: () -> IllegalStateException = ::ProviderKeyImportConflictException,
 ): SnapshotCommit {
     require(candidate != source) { "Backup import candidate did not change the snapshot." }
 
@@ -24,7 +27,16 @@ internal suspend fun commitProviderKeyImportTransaction(
     val committed = try {
         compareAndSetSnapshot(source, candidate)
     } catch (error: Throwable) {
-        restoreStagedProviderKeys(error, restoreProviderKeys)
+        withContext(NonCancellable) {
+            compensateCommittedProviderKeyImport(
+                source = source,
+                candidate = candidate,
+                primaryError = error,
+                finishProviderKeys = finishProviderKeys,
+                restoreProviderKeys = restoreProviderKeys,
+                compareAndSetSnapshot = compareAndSetSnapshot,
+            )
+        }
         throw error
     }
 
@@ -33,13 +45,13 @@ internal suspend fun commitProviderKeyImportTransaction(
             finishProviderKeys()
             return SnapshotCommit(candidate, committed.revision)
         }
-        val conflict = ProviderKeyImportConflictException()
+        val conflict = conflictError()
         restoreStagedProviderKeys(conflict, restoreProviderKeys)
         throw conflict
     }
 
     if (currentRevision() != sourceRevision) {
-        val conflict = ProviderKeyImportConflictException()
+        val conflict = conflictError()
         compensateCommittedProviderKeyImport(
             source = source,
             candidate = candidate,

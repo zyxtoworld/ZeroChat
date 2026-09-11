@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createServer } from 'vite'
+import { createBoundedViteSsrModuleRunner } from './vite-ssr-module-runner.mjs'
 import {
   redactLiveSyncReportText,
   sanitizeLiveSyncReportValue,
@@ -692,6 +693,9 @@ async function deleteDisposableGist(gistId, token) {
   if (!response.ok && response.status !== 404) {
     throw new Error(`Failed to delete disposable Gist: HTTP ${response.status}`)
   }
+
+  const deletedGist = await readGist(gistId, token)
+  assert.equal(deletedGist, null, 'Disposable Gist should be absent after delete')
 }
 
 function normalizeEndpoint(value) {
@@ -884,6 +888,7 @@ const server = await createServer({
     },
   },
 })
+const moduleRunner = createBoundedViteSsrModuleRunner(server)
 
 const reportMissingInputKeys = getMissingLiveSyncInputKeys(mode)
 const report = {
@@ -999,10 +1004,10 @@ async function bestEffortCleanupAfterFailure() {
 }
 
 try {
-  syncService = await server.ssrLoadModule('/src/services/sync.ts')
-  const skills = await server.ssrLoadModule('/src/services/skills.ts')
-  const accessKey = await server.ssrLoadModule('/src/services/accessKey.ts')
-  const cryptoService = await server.ssrLoadModule('/src/services/crypto.ts')
+  syncService = await moduleRunner.import('/src/services/sync.ts')
+  const skills = await moduleRunner.import('/src/services/skills.ts')
+  const accessKey = await moduleRunner.import('/src/services/accessKey.ts')
+  const cryptoService = await moduleRunner.import('/src/services/crypto.ts')
   const context = {
     encryptionPassphrase: passphrase,
     githubToken: '',
@@ -1267,5 +1272,9 @@ try {
   await writeFailureLiveSyncReportOrThrow(report, error)
   throw new Error(report.error)
 } finally {
-  await server.close()
+  try {
+    await moduleRunner.close()
+  } finally {
+    await server.close()
+  }
 }

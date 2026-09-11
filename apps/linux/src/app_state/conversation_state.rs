@@ -2,6 +2,18 @@ use super::{LinuxAppState, now_millis};
 use crate::{conversations::default_conversation_provider, models::Conversation};
 
 impl LinuxAppState {
+    pub(crate) fn conversations(&self) -> Vec<Conversation> {
+        self.snapshot.borrow().conversations.clone()
+    }
+
+    pub(crate) fn active_conversation_id(&self) -> Option<String> {
+        self.snapshot
+            .borrow()
+            .preferences
+            .active_conversation_id
+            .clone()
+    }
+
     pub(crate) fn active_conversation(&self) -> Option<Conversation> {
         let snapshot = self.snapshot.borrow();
         snapshot

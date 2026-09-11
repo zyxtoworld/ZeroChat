@@ -4,7 +4,7 @@ import { access, mkdir, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { resolveFetchSafeLoopbackPort } from './fetch-safe-loopback-port.mjs'
-import { startViteDevLoopbackServer } from './vite-loopback-server.mjs'
+import { startVitePreviewLoopbackServer } from './vite-loopback-server.mjs'
 import {
   connectCdp,
   readJson as readCdpJson,
@@ -12,6 +12,7 @@ import {
 } from './browser-cdp.mjs'
 import {
   removeBrowserProfileWithRetry,
+  settleBrowserRuntimeCleanup,
   stopChildProcessTree,
 } from './browser-runtime-cleanup.mjs'
 
@@ -149,7 +150,7 @@ const providedAppUrl =
   process.env.ZEROCHAT_COMPOSER_AUTOSIZE_URL ?? process.env.ZEROCHAT_SMOKE_URL
 let appUrl = providedAppUrl ?? ''
 const profileDir = path.join(os.tmpdir(), `zerochat-composer-autosize-${Date.now()}`)
-let devServer = null
+let previewServer = null
 let chrome = null
 let cdp = null
 
@@ -157,11 +158,18 @@ await mkdir(profileDir, { recursive: true })
 
 try {
   if (!providedAppUrl) {
-    devServer = await startViteDevLoopbackServer({
+    // Serve the production dist/ build from the single HTML entry so this smoke
+    // runs against the same bundle QA ships.
+    await access(path.resolve('dist', 'index.html')).catch(() => {
+      throw new Error(
+        'dist/index.html is missing. Run node scripts/web-production-build.mjs before composer autosize smoke.',
+      )
+    })
+    previewServer = await startVitePreviewLoopbackServer({
       configuredPort: process.env.ZEROCHAT_COMPOSER_AUTOSIZE_APP_PORT,
       serverLabel: 'Composer autosize app server',
     })
-    appUrl = devServer.url
+    appUrl = previewServer.url
   }
 
   chrome = spawn(
@@ -178,10 +186,12 @@ try {
       'about:blank',
     ],
     {
+      detached: process.platform !== 'win32',
       stdio: 'ignore',
       windowsHide: true,
     },
   )
+  chrome.zerochatProcessGroupLeader = process.platform !== 'win32'
 
   await waitForCdpChrome(cdpPort, { childProcess: chrome })
 
@@ -231,7 +241,7 @@ try {
     )
   }
 
-  async function waitForCondition(expression, label) {
+  async function waitForCondition(expression, label, diagnosticExpression) {
     for (let attempt = 0; attempt < 120; attempt += 1) {
       if (await evaluate(expression)) {
         return
@@ -239,7 +249,12 @@ try {
       await sleep(50)
     }
 
-    throw new Error(`Timed out waiting for ${label}`)
+    const diagnostic = diagnosticExpression
+      ? await evaluate(diagnosticExpression)
+      : undefined
+    throw new Error(
+      `Timed out waiting for ${label}${diagnostic ? `: ${JSON.stringify(diagnostic)}` : ''}`,
+    )
   }
 
   async function setComposerValue(value) {
@@ -258,9 +273,41 @@ try {
   }
 
   async function waitForComposerValue(value, label) {
+    const lineCount = value.split('\n').length
     await waitForCondition(
-      `document.querySelector('[data-composer-autosize="true"]')?.value === ${JSON.stringify(value)}`,
+      `(() => {
+        const el = document.querySelector('[data-composer-autosize="true"]')
+        if (!el || el.value !== ${JSON.stringify(value)}) return false
+        // The composer resizes in a React effect after the controlled value commit.
+        // Wait until the height has
+        // settled to this value's expected size before sampling metrics.
+        const styles = getComputedStyle(el)
+        const lineHeight = parseFloat(styles.lineHeight)
+        const chrome = ['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth']
+          .map((key) => parseFloat(styles[key]) || 0)
+          .reduce((sum, n) => sum + n, 0)
+        const minHeightPx = parseFloat(styles.minHeight)
+        const maxHeightPx = parseFloat(styles.maxHeight)
+        const cap = Number.isFinite(maxHeightPx) ? maxHeightPx : lineHeight * 5 + chrome
+        const contentHeight = lineHeight * ${lineCount} + chrome
+        const expected = Math.min(
+          Math.max(contentHeight, Number.isFinite(minHeightPx) ? minHeightPx : 0),
+          cap,
+        )
+        return Math.abs(el.getBoundingClientRect().height - expected) <= 1.5
+      })()`,
       label,
+      `(() => {
+        const el = document.querySelector('[data-composer-autosize="true"]')
+        return {
+          exists: Boolean(el),
+          value: el?.value ?? null,
+          disabled: el?.disabled ?? null,
+          readOnly: el?.readOnly ?? null,
+          activeElementIsComposer: document.activeElement === el,
+          dataStatus: document.querySelector('[data-app-status]')?.getAttribute('data-app-status') ?? null,
+        }
+      })()`,
     )
   }
 
@@ -275,6 +322,9 @@ try {
         const chrome = ['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth']
           .map((key) => parseFloat(styles[key]) || 0)
           .reduce((sum, value) => sum + value, 0)
+        // The composer uses the CSS max-height contract in src/app/app.css
+        // (.zc-composer textarea, ~180px), so accept heights within that bound.
+        const maxHeightPx = parseFloat(styles.maxHeight)
         return {
           value: textarea.value,
           height: rect.height,
@@ -284,6 +334,9 @@ try {
           lineHeight,
           chrome,
           maxFiveRowHeight: Math.ceil(lineHeight * 5 + chrome),
+          capHeight: Number.isFinite(maxHeightPx)
+            ? Math.max(Math.ceil(lineHeight * 5 + chrome), Math.ceil(maxHeightPx))
+            : Math.ceil(lineHeight * 5 + chrome),
         }
       })()`,
     )
@@ -371,13 +424,23 @@ try {
     threeLine.height > singleLine.height + threeLine.lineHeight * 1.4,
     `composer should grow from one to three rows: ${JSON.stringify({ singleLine, threeLine })}`,
   )
+  assert.equal(
+    singleLine.overflowY,
+    'hidden',
+    `single-line composer should not expose an internal scrollbar: ${JSON.stringify(singleLine)}`,
+  )
+  assert.equal(
+    threeLine.overflowY,
+    'hidden',
+    `composer should not expose an internal scrollbar before the row cap: ${JSON.stringify(threeLine)}`,
+  )
   assert.ok(
     longLine.height <= longLine.maxFiveRowHeight + 2,
     `composer should cap at five rows: ${JSON.stringify(longLine)}`,
   )
   assert.ok(
     longLine.scrollHeight > longLine.clientHeight + 1 && longLine.overflowY === 'auto',
-    `composer should scroll internally after five rows: ${JSON.stringify(longLine)}`,
+    `composer should scroll internally past the row cap: ${JSON.stringify(longLine)}`,
   )
 
   for (const event of cdp.events) {
@@ -410,9 +473,21 @@ try {
   )
 } finally {
   cdp?.close()
-  await stopChildProcessTree(chrome)
-  await devServer?.close()
-  if (!(await removeBrowserProfileWithRetry(profileDir))) {
-    throw new Error(`Unable to remove temporary browser profile: ${profileDir}`)
+  const profileCleanup = {
+    removeProfile: async () => await removeBrowserProfileWithRetry(profileDir),
   }
+  await settleBrowserRuntimeCleanup({
+    child: chrome,
+    profilePath: profileDir,
+    stopProcessTree: async () => await stopChildProcessTree(chrome),
+    removeProfile: async () => {
+      const profileRemoved = await profileCleanup.removeProfile()
+      return {
+        profileRemoved,
+        exactProfileProcessesGone: profileRemoved,
+        profilePath: profileDir,
+      }
+    },
+    additionalCleanup: [() => previewServer?.close()],
+  })
 }

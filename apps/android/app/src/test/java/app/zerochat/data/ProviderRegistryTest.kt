@@ -142,6 +142,75 @@ class ProviderRegistryTest {
     }
 
     @Test
+    fun opaqueCatalogModelsRemainSelectableForDeclaredCapabilities() {
+        val catalog = listOf(
+            "vendor-chat-v4",
+            "vendor-vector-v7",
+            "vendor-vision-v2",
+            "vendor-voice-v1",
+            "vendor-listen-v1",
+            "vendor-filter-v1",
+            "vendor-session-v1",
+        )
+        val configured = provider(
+            models = catalog,
+            capabilities = listOf(
+                "chat",
+                "audio",
+                "embeddings",
+                "image-generation",
+                "image-editing",
+                "moderation",
+                "realtime",
+                "model-list",
+            ),
+        ).copy(
+            imageModel = "vendor-vision-v2",
+            audioSpeechModel = "vendor-voice-v1",
+            audioTranscriptionModel = "vendor-listen-v1",
+            embeddingModel = "vendor-vector-v7",
+            moderationModel = "vendor-filter-v1",
+            realtimeModel = "vendor-session-v1",
+        )
+
+        assertEquals(catalog, modelsForProviderCapability(configured, ProviderModelCapability.Embeddings))
+        assertEquals(
+            "vendor-vector-v7",
+            modelForProviderCapability(configured, ProviderModelCapability.Embeddings),
+        )
+        assertEquals(catalog, imageModelsForProvider(configured))
+        assertEquals(
+            "vendor-vision-v2",
+            modelForProviderCapability(configured, ProviderModelCapability.ImageGeneration),
+        )
+        assertEquals("vendor-voice-v1", modelForProviderAudioSpeech(configured))
+        assertEquals("vendor-listen-v1", modelForProviderAudioTranscription(configured))
+        assertEquals(
+            "vendor-filter-v1",
+            modelForProviderCapability(configured, ProviderModelCapability.Moderation),
+        )
+        assertEquals(
+            "vendor-session-v1",
+            modelForProviderCapability(configured, ProviderModelCapability.Realtime),
+        )
+
+        val unconfigured = configured.copy(
+            imageModel = null,
+            audioSpeechModel = null,
+            audioTranscriptionModel = null,
+            embeddingModel = null,
+            moderationModel = null,
+            realtimeModel = null,
+        )
+        assertEquals("", modelForProviderCapability(unconfigured, ProviderModelCapability.Embeddings))
+        assertEquals("", modelForProviderCapability(unconfigured, ProviderModelCapability.ImageGeneration))
+        assertEquals("", modelForProviderAudioSpeech(unconfigured))
+        assertEquals("", modelForProviderAudioTranscription(unconfigured))
+        assertEquals("", modelForProviderCapability(unconfigured, ProviderModelCapability.Moderation))
+        assertEquals("", modelForProviderCapability(unconfigured, ProviderModelCapability.Realtime))
+    }
+
+    @Test
     fun preferredChatModelPrefersAdvancedFetchedModelsOverCompactVariants() {
         val models = listOf(
             "gpt-5.5-openai-compact",
@@ -191,6 +260,7 @@ class ProviderRegistryTest {
         assertTrue(chatModelPreferenceScore("gpt-5.5-pro") > chatModelPreferenceScore("gpt-5.5-reasoning"))
         assertTrue(chatModelPreferenceScore("gpt-5.5-reasoning") > chatModelPreferenceScore("gpt-5.5"))
         assertTrue(chatModelPreferenceScore("gpt-4.2") > chatModelPreferenceScore("gpt-4.1-2025-04-14"))
+        assertEquals("gpt-5.5", preferredChatModel(listOf("gpt-5.5", "gpt-5-2025-08-07")))
     }
 
     @Test

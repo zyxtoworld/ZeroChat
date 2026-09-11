@@ -24,7 +24,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
@@ -36,130 +36,127 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import app.zerochat.ZeroChatApplication
 import app.zerochat.client.R
 import app.zerochat.runCatchingPreservingCancellation
 import app.zerochat.data.AppSnapshot
-import app.zerochat.data.LocalSnapshotRecoveryGate
 import app.zerochat.data.LocalSnapshotRecoveryIssue
 import app.zerochat.data.LocalSnapshotTooLargeException
 import app.zerochat.data.LocalResetIntentMetadata
 import app.zerochat.data.ProviderKeyImportIntentMetadata
 import app.zerochat.data.SnapshotCommit
-import app.zerochat.data.ZeroChatRepository
+import app.zerochat.data.SyncPassphraseIntentMetadata
 import app.zerochat.data.defaultChatModelForProvider
 import app.zerochat.data.defaultProviderConfigs
 import app.zerochat.data.defaultProviderIds
 import app.zerochat.data.localResetSnapshotFingerprint
 import app.zerochat.data.normalizeOfficialProviderContracts
 import app.zerochat.security.SecretStore
-import app.zerochat.sync.AndroidSyncStatusNotifier
-import app.zerochat.sync.AutoSyncCoordinator
+import app.zerochat.security.restorePendingSecretTransactionsAfterSnapshotLoadFailure
 import app.zerochat.sync.FirstSyncStrategy
-import app.zerochat.sync.SharedPreferencesGistCursorStorage
-import app.zerochat.sync.SyncClient
+import app.zerochat.ui.chat.GenerationTaskOwner
 import app.zerochat.ui.settings.commitProviderDeletionTransaction
 import app.zerochat.ui.settings.commitProviderKeyImportRecoveryTransaction
 import app.zerochat.ui.settings.commitProviderKeyImportTransaction
-import app.zerochat.ui.settings.commitProviderKeySaveTransaction
+import app.zerochat.ui.settings.commitProviderKeySnapshotSaveTransaction
 import app.zerochat.ui.settings.commitLocalResetRecoveryTransaction
 import app.zerochat.ui.settings.commitLocalResetTransaction
-import app.zerochat.ui.settings.commitSyncPassphraseSaveTransaction
+import app.zerochat.ui.settings.commitSyncPassphraseSnapshotTransaction
+import app.zerochat.ui.settings.BackupTaskViewModel
+import app.zerochat.ui.settings.SettingsTab
 import app.zerochat.ui.settings.providerSettingsDeleteProvider
 import app.zerochat.ui.settings.providerSettingsReplaceProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-private val BrandPrimaryLight = Color(0xFF6366F1)
-private val BrandPrimaryDark = Color(0xFF818CF8)
-private val BrandSoftLight = Color(0xFFEEF2FF)
-private val BrandSoftDark = Color(0xFF1E1B4B)
-private val BrandBorderLight = Color(0xFFA5B4FC)
-private val BrandBorderDark = Color(0xFF4338CA)
+// ZeroChat current design tokens (mirrors src/app/app.css).
+private val BrandPrimaryLight = Color(0xFF0A7CFF)
+private val BrandPrimaryDark = Color(0xFF3B93FF)
+private val BrandSoftLight = Color(0x1A0A7CFF)
+private val BrandSoftDark = Color(0x293B93FF)
+private val BrandBorderLight = Color(0xFFCDD2DA)
+private val BrandBorderDark = Color(0xFF384050)
 
 private val ZeroChatLightColorScheme = lightColorScheme(
     primary = BrandPrimaryLight,
     onPrimary = Color.White,
     primaryContainer = BrandSoftLight,
-    onPrimaryContainer = Color(0xFF1E1B4B),
-    secondary = Color(0xFF4F46E5),
+    onPrimaryContainer = Color(0xFF0A3C7A),
+    secondary = Color(0xFF0069E0),
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFE0E7FF),
-    onSecondaryContainer = Color(0xFF312E81),
-    tertiary = Color(0xFF3B82F6),
+    secondaryContainer = Color(0x1A0A7CFF),
+    onSecondaryContainer = Color(0xFF0A3C7A),
+    tertiary = Color(0xFF17803D),
     onTertiary = Color.White,
-    tertiaryContainer = Color(0xFFDBEAFE),
-    onTertiaryContainer = Color(0xFF1E3A8A),
-    background = Color(0xFFFAFBFC),
-    onBackground = Color(0xFF111827),
-    surface = Color(0xFFFAFBFC),
-    onSurface = Color(0xFF111827),
-    surfaceVariant = Color(0xFFF4F6F8),
-    onSurfaceVariant = Color(0xFF4B5563),
-    outline = Color(0xFFE5E7EB),
-    outlineVariant = Color(0xFFF3F4F6),
-    error = Color(0xFFB3261E),
-    errorContainer = Color(0xFFFFDAD6),
-    onErrorContainer = Color(0xFF410002),
+    tertiaryContainer = Color(0xFFDCFCE7),
+    onTertiaryContainer = Color(0xFF14532D),
+    background = Color(0xFFF7F8FA),
+    onBackground = Color(0xFF16181D),
+    surface = Color(0xFFF7F8FA),
+    onSurface = Color(0xFF16181D),
+    surfaceVariant = Color(0xFFEEF0F3),
+    onSurfaceVariant = Color(0xFF5B6472),
+    outline = Color(0xFFE3E6EB),
+    outlineVariant = Color(0xFFF0F2F5),
+    error = Color(0xFFD93025),
+    errorContainer = Color(0x14D93025),
+    onErrorContainer = Color(0xFF7A1A12),
 )
 
 private val ZeroChatDarkColorScheme = darkColorScheme(
     primary = BrandPrimaryDark,
-    onPrimary = Color(0xFF111827),
+    onPrimary = Color(0xFF0B1220),
     primaryContainer = BrandSoftDark,
-    onPrimaryContainer = Color(0xFFE0E7FF),
-    secondary = Color(0xFFA5B4FC),
-    onSecondary = Color(0xFF111827),
-    secondaryContainer = Color(0xFF312E81),
-    onSecondaryContainer = Color(0xFFE0E7FF),
-    tertiary = Color(0xFF93C5FD),
-    onTertiary = Color(0xFF111827),
-    tertiaryContainer = Color(0xFF1E3A8A),
-    onTertiaryContainer = Color(0xFFDBEAFE),
-    background = Color(0xFF0F1117),
-    onBackground = Color(0xFFF9FAFB),
-    surface = Color(0xFF0F1117),
-    onSurface = Color(0xFFF9FAFB),
-    surfaceVariant = Color(0xFF1E2230),
-    onSurfaceVariant = Color(0xFF9CA3AF),
-    outline = Color(0xFF2D3348),
-    outlineVariant = Color(0xFF1F2437),
-    error = Color(0xFFFFB4AB),
-    errorContainer = Color(0xFF93000A),
+    onPrimaryContainer = Color(0xFFCFE3FF),
+    secondary = Color(0xFF63AAFF),
+    onSecondary = Color(0xFF0B1220),
+    secondaryContainer = Color(0x293B93FF),
+    onSecondaryContainer = Color(0xFFCFE3FF),
+    tertiary = Color(0xFF4CC38A),
+    onTertiary = Color(0xFF0B1220),
+    tertiaryContainer = Color(0xFF14532D),
+    onTertiaryContainer = Color(0xFFDCFCE7),
+    background = Color(0xFF0F1115),
+    onBackground = Color(0xFFE8EAF0),
+    surface = Color(0xFF0F1115),
+    onSurface = Color(0xFFE8EAF0),
+    surfaceVariant = Color(0xFF1C2029),
+    onSurfaceVariant = Color(0xFFA4ADBC),
+    outline = Color(0xFF262B36),
+    outlineVariant = Color(0xFF1A1E26),
+    error = Color(0xFFF0665C),
+    errorContainer = Color(0x24F0665C),
     onErrorContainer = Color(0xFFFFDAD6),
 )
 
 @Composable
-fun ZeroChatApp(quickAskRequestId: Long = 0L) {
+fun ZeroChatApp(
+    quickAskDeliveryCount: Long = 0L,
+    backupTaskViewModel: BackupTaskViewModel,
+) {
     val context = LocalContext.current
-    val repository = remember { ZeroChatRepository(context) }
-    val localSnapshotRecoveryGate = remember { LocalSnapshotRecoveryGate() }
-    val secretStore = remember { SecretStore(context) }
-    val committedSnapshots = remember { CommittedSnapshotBaseline() }
+    val runtime = remember(context.applicationContext) {
+        (context.applicationContext as ZeroChatApplication).runtime
+    }
+    val repository = runtime.repository
+    val localSnapshotRecoveryGate = runtime.localSnapshotRecoveryGate
+    val secretStore = runtime.secretStore
+    val committedSnapshots = runtime.committedSnapshots
+    val syncStatusNotifier = runtime.syncStatusNotifier
+    val autoSync = runtime.autoSync
+    val persistence = runtime.persistence
     var snapshot by remember { mutableStateOf<AppSnapshot?>(null) }
     var snapshotRevision by remember { mutableLongStateOf(0L) }
     var startupNotice by remember { mutableStateOf<String?>(null) }
     var localSaveNotice by remember { mutableStateOf<String?>(null) }
-    var localSnapshotIssue by remember { mutableStateOf<LocalSnapshotRecoveryIssue?>(null) }
-    val syncStatusNotifier = remember {
-        AndroidSyncStatusNotifier(
-            context,
-            NativeI18n.forMode("system").syncNotificationLabels(),
-        )
+    var localSnapshotIssue by remember {
+        mutableStateOf<LocalSnapshotRecoveryIssue?>(localSnapshotRecoveryGate.issue)
     }
-    val autoSync = remember {
-        AutoSyncCoordinator(
-            repository,
-            secretStore,
-            SyncClient(gistCursorStorage = SharedPreferencesGistCursorStorage(context)),
-            statusNotifier = syncStatusNotifier,
-            statusLabel = { statusSnapshot, status ->
-                NativeI18n.forMode(statusSnapshot.preferences.language).syncStatusMessage(status)
-            },
-        )
-    }
-    val scope = rememberCoroutineScope()
+    var settingsOpen by rememberSaveable { mutableStateOf(false) }
+    var settingsInitialTabName by rememberSaveable { mutableStateOf(SettingsTab.Appearance.name) }
+    val generationTasks = remember { GenerationTaskOwner() }
     val notificationLanguageMode = snapshot?.preferences?.language ?: "system"
 
     fun publishSnapshot(next: AppSnapshot?) {
@@ -173,14 +170,9 @@ fun ZeroChatApp(quickAskRequestId: Long = 0L) {
         candidate: AppSnapshot,
         recovery: Boolean = false,
     ): Result<SnapshotCommit> {
-        var commit: SnapshotCommit? = null
-        val result = localSnapshotRecoveryGate.persist(recovery) {
-            commit = repository.save(candidate)
-        }
+        val result = runtime.persistLocalSnapshot(candidate, recovery)
         localSnapshotIssue = localSnapshotRecoveryGate.issue
-        return result.map {
-            checkNotNull(commit).also(committedSnapshots::advance)
-        }
+        return result
     }
 
     fun localSaveFailureMessage(error: Throwable, languageMode: String): String {
@@ -188,8 +180,40 @@ fun ZeroChatApp(quickAskRequestId: Long = 0L) {
         return "${i18n.t("message.localDataSaveFailedPrefix")}: ${i18n.errorMessage(error.message)}"
     }
 
-    fun acceptSyncedSnapshot(source: AppSnapshot, commit: SnapshotCommit) {
-        publishSnapshot(committedSnapshots.acceptSynced(snapshot, source, commit))
+    LaunchedEffect(persistence) {
+        persistence.events.collect { events ->
+            events.forEach { event ->
+                try {
+                    when (event) {
+                        is SnapshotPersistenceEvent.Persisted -> {
+                            localSaveNotice = null
+                            localSnapshotIssue = localSnapshotRecoveryGate.issue
+                        }
+                        is SnapshotPersistenceEvent.Failed -> {
+                            publishSnapshot(
+                                committedSnapshots.rollbackFailed(snapshot, event.source),
+                            )
+                            localSnapshotIssue = localSnapshotRecoveryGate.issue
+                            localSaveNotice = localSaveFailureMessage(
+                                event.error,
+                                event.source.preferences.language,
+                            )
+                        }
+                        is SnapshotPersistenceEvent.Synced -> {
+                            publishSnapshot(
+                                committedSnapshots.acceptSynced(
+                                    current = snapshot,
+                                    source = event.source,
+                                    commit = event.commit,
+                                ),
+                            )
+                        }
+                    }
+                } finally {
+                    persistence.acknowledge(event.sequence)
+                }
+            }
+        }
     }
 
     LaunchedEffect(notificationLanguageMode) {
@@ -201,19 +225,19 @@ fun ZeroChatApp(quickAskRequestId: Long = 0L) {
     LaunchedEffect(repository) {
         syncStatusNotifier.ensureChannel()
         val loadedSnapshotResult = runCatchingPreservingCancellation {
-            SnapshotPersistence.queue.runSerially { repository.load() }
+            persistence.runSnapshotMutation { repository.load() }
         }
-        val pendingImportRestoreFailure = if (loadedSnapshotResult.isFailure) {
+        val pendingRestoreFailure = if (loadedSnapshotResult.isFailure) {
             runCatchingPreservingCancellation {
                 withContext(Dispatchers.IO) {
-                    secretStore.restorePendingProviderKeyImportAfterSnapshotLoadFailure()
+                    restorePendingSecretTransactionsAfterSnapshotLoadFailure(secretStore)
                 }
             }.exceptionOrNull()
         } else {
             null
         }
         val loadedSnapshot = loadedSnapshotResult.getOrElse { error ->
-            pendingImportRestoreFailure?.let(error::addSuppressed)
+            pendingRestoreFailure?.let(error::addSuppressed)
             localSnapshotRecoveryGate.markLoadFailed()
             localSnapshotIssue = localSnapshotRecoveryGate.issue
             val i18n = NativeI18n.forMode("system")
@@ -235,6 +259,7 @@ fun ZeroChatApp(quickAskRequestId: Long = 0L) {
                     val fingerprint = localResetSnapshotFingerprint(loadedSnapshot)
                     secretStore.reconcilePendingLocalReset(fingerprint)
                     secretStore.reconcilePendingProviderKeyImport(fingerprint)
+                    secretStore.reconcilePendingSyncPassphrase(fingerprint)
                 }
             }.onFailure { error ->
                 credentialTransactionsReconciled = false
@@ -274,16 +299,7 @@ fun ZeroChatApp(quickAskRequestId: Long = 0L) {
         committedSnapshots.initialize(loaded)
 
         if (normalized != loaded && localSnapshotIssue == null) {
-            SnapshotPersistence.queue.runSerially {
-                persistLocalSnapshot(normalized)
-            }.fold(
-                onSuccess = {
-                    autoSync.enqueue(normalized, onSynced = ::acceptSyncedSnapshot)
-                },
-                onFailure = { error ->
-                    localSaveNotice = localSaveFailureMessage(error, normalized.preferences.language)
-                },
-            )
+            persistence.enqueueSnapshot(normalized, shouldSync = true)
         }
     }
 
@@ -293,8 +309,9 @@ fun ZeroChatApp(quickAskRequestId: Long = 0L) {
     ): Result<Unit> {
         var committed: SnapshotCommit? = null
         val result = runCatchingPreservingCancellation {
-            autoSync.runExclusiveSnapshotReplacement {
-                SnapshotPersistence.queue.runSerially {
+            persistence.runSnapshotReplacement {
+                generationTasks.withDrain {
+                    autoSync.runExclusiveSnapshotReplacement {
                     val source = snapshot ?: error("Local snapshot is not loaded.")
                     val recovery = localSnapshotIssue != null
                     val pending = if (recovery) {
@@ -387,11 +404,12 @@ fun ZeroChatApp(quickAskRequestId: Long = 0L) {
                     localSaveNotice = null
                 }
             }
+            }
         }
         result.onSuccess {
             committed?.let { commit ->
-                SnapshotPersistence.launch {
-                    autoSync.enqueue(commit.snapshot, onSynced = ::acceptSyncedSnapshot)
+                persistence.launch {
+                    autoSync.enqueue(commit.snapshot)
                 }
             }
         }.onFailure { error ->
@@ -404,11 +422,27 @@ fun ZeroChatApp(quickAskRequestId: Long = 0L) {
         return result.map { Unit }
     }
 
+    LaunchedEffect(backupTaskViewModel) {
+        backupTaskViewModel.tasks.importRequests.collect { requests ->
+            requests.forEach { request ->
+                request.executionMutex.withLock {
+                    if (backupTaskViewModel.tasks.isImportPending(request.id)) {
+                        backupTaskViewModel.tasks.completeImport(
+                            request.id,
+                            importSnapshot(request.snapshot, request.providerKeys),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     suspend fun resetLocalData(requested: AppSnapshot): Result<Unit> {
         var committed: SnapshotCommit? = null
         val result = runCatchingPreservingCancellation {
-            autoSync.runExclusiveLocalReset {
-                SnapshotPersistence.queue.runSerially {
+            persistence.runSnapshotReplacement {
+                generationTasks.withDrain {
+                    autoSync.runExclusiveLocalReset {
                     val source = snapshot ?: error("Local snapshot is not loaded.")
                     val recovery = localSnapshotIssue != null
                     val pending = if (recovery) {
@@ -492,6 +526,7 @@ fun ZeroChatApp(quickAskRequestId: Long = 0L) {
                     localSaveNotice = null
                 }
             }
+            }
         }
         result.onFailure { error ->
             localSnapshotIssue = localSnapshotRecoveryGate.issue
@@ -519,32 +554,20 @@ fun ZeroChatApp(quickAskRequestId: Long = 0L) {
                 System.currentTimeMillis(),
             ),
         )
-        publishSnapshot(committed)
-        SnapshotPersistence.queue.enqueue {
-            persistLocalSnapshot(committed).fold(
-                onSuccess = {
-                    localSaveNotice = null
-                    if (shouldSync) {
-                        SnapshotPersistence.launch {
-                            autoSync.enqueue(committed, onSynced = ::acceptSyncedSnapshot)
-                        }
-                    }
-                },
-                onFailure = { error ->
-                    publishSnapshot(committedSnapshots.rollbackFailed(snapshot, committed))
-                    localSaveNotice = localSaveFailureMessage(
-                        error,
-                        committed.preferences.language,
-                    )
-                },
-            )
-        }
+        persistence.tryEnqueueSnapshot(
+            candidate = committed,
+            shouldSync = shouldSync,
+            beforeEnqueue = { publishSnapshot(committed) },
+            onDropped = {
+                publishSnapshot(committedSnapshots.rollbackFailed(snapshot, committed))
+            },
+        )
     }
 
     suspend fun saveProviderKey(providerId: String, value: String): Result<Unit> {
         var committed: SnapshotCommit? = null
         val result = runCatchingPreservingCancellation {
-            SnapshotPersistence.queue.runSerially {
+            persistence.runSnapshotMutation {
                 val source = snapshot ?: error("Local snapshot is not loaded.")
                 check(localSnapshotIssue == null) { "Local snapshot recovery is required." }
                 val provider = source.providers.firstOrNull { it.id == providerId }
@@ -558,14 +581,29 @@ fun ZeroChatApp(quickAskRequestId: Long = 0L) {
                     updatedAt = maxOf(source.updatedAt + 1, now),
                 )
                 val sourceRevision = snapshotRevision
-                val commit = commitProviderKeySaveTransaction(
+                val intent = ProviderKeyImportIntentMetadata(
+                    sourceFingerprint = localResetSnapshotFingerprint(source),
+                    replacementFingerprint = localResetSnapshotFingerprint(candidate),
+                    replacementUpdatedAt = candidate.updatedAt,
+                )
+                val commit = commitProviderKeySnapshotSaveTransaction(
                     source = source,
                     candidate = candidate,
                     sourceRevision = sourceRevision,
                     currentRevision = { snapshotRevision },
-                    writeProviderKey = {
+                    stageProviderKey = {
                         withContext(NonCancellable + Dispatchers.IO) {
-                            secretStore.setProviderKey(providerId, value)
+                            secretStore.stageProviderKeyImport(intent, mapOf(providerId to value))
+                        }
+                    },
+                    finishProviderKey = {
+                        withContext(NonCancellable + Dispatchers.IO) {
+                            secretStore.finishProviderKeyImport(intent)
+                        }
+                    },
+                    restoreProviderKey = {
+                        withContext(NonCancellable + Dispatchers.IO) {
+                            secretStore.restoreProviderKeyImport(intent)
                         }
                     },
                     compareAndSetSnapshot = repository::compareAndSet,
@@ -578,8 +616,8 @@ fun ZeroChatApp(quickAskRequestId: Long = 0L) {
         }
         result.onSuccess {
             committed?.let { commit ->
-                SnapshotPersistence.launch {
-                    autoSync.enqueue(commit.snapshot, onSynced = ::acceptSyncedSnapshot)
+                persistence.launch {
+                    autoSync.enqueue(commit.snapshot)
                 }
             }
         }.onFailure { error ->
@@ -593,7 +631,7 @@ fun ZeroChatApp(quickAskRequestId: Long = 0L) {
 
     suspend fun saveGithubToken(value: String): Result<Unit> =
         runCatchingPreservingCancellation {
-            SnapshotPersistence.queue.runSerially {
+            persistence.runSnapshotMutation {
                 check(snapshot != null) { "Local snapshot is not loaded." }
                 check(localSnapshotIssue == null) { "Local snapshot recovery is required." }
                 withContext(NonCancellable + Dispatchers.IO) {
@@ -605,27 +643,42 @@ fun ZeroChatApp(quickAskRequestId: Long = 0L) {
     suspend fun saveSyncPassphrase(value: String): Result<Unit> {
         var committed: SnapshotCommit? = null
         val result = runCatchingPreservingCancellation {
-            SnapshotPersistence.queue.runSerially {
+            persistence.runSnapshotMutation {
                 val source = snapshot ?: error("Local snapshot is not loaded.")
                 check(localSnapshotIssue == null) { "Local snapshot recovery is required." }
                 if (source.sync.mode == "local") {
                     withContext(NonCancellable + Dispatchers.IO) {
                         secretStore.setSyncPassphrase(value)
                     }
-                    return@runSerially
+                    return@runSnapshotMutation
                 }
 
                 val now = System.currentTimeMillis()
                 val candidate = source.copy(updatedAt = maxOf(source.updatedAt + 1, now))
                 val sourceRevision = snapshotRevision
-                val commit = commitSyncPassphraseSaveTransaction(
+                val intent = SyncPassphraseIntentMetadata(
+                    sourceFingerprint = localResetSnapshotFingerprint(source),
+                    replacementFingerprint = localResetSnapshotFingerprint(candidate),
+                    replacementUpdatedAt = candidate.updatedAt,
+                )
+                val commit = commitSyncPassphraseSnapshotTransaction(
                     source = source,
                     candidate = candidate,
                     sourceRevision = sourceRevision,
                     currentRevision = { snapshotRevision },
-                    writeSyncPassphrase = {
+                    stageSyncPassphrase = {
                         withContext(NonCancellable + Dispatchers.IO) {
-                            secretStore.setSyncPassphrase(value)
+                            secretStore.stageSyncPassphrase(intent, value)
+                        }
+                    },
+                    finishSyncPassphrase = {
+                        withContext(NonCancellable + Dispatchers.IO) {
+                            secretStore.finishSyncPassphrase(intent)
+                        }
+                    },
+                    restoreSyncPassphrase = {
+                        withContext(NonCancellable + Dispatchers.IO) {
+                            secretStore.restoreSyncPassphrase(intent)
                         }
                     },
                     compareAndSetSnapshot = repository::compareAndSet,
@@ -638,8 +691,8 @@ fun ZeroChatApp(quickAskRequestId: Long = 0L) {
         }
         result.onSuccess {
             committed?.let { commit ->
-                SnapshotPersistence.launch {
-                    autoSync.enqueue(commit.snapshot, onSynced = ::acceptSyncedSnapshot)
+                persistence.launch {
+                    autoSync.enqueue(commit.snapshot)
                 }
             }
         }.onFailure { error ->
@@ -654,7 +707,7 @@ fun ZeroChatApp(quickAskRequestId: Long = 0L) {
     suspend fun deleteProvider(providerId: String): Result<Unit> {
         var committed: SnapshotCommit? = null
         val result = runCatchingPreservingCancellation {
-            SnapshotPersistence.queue.runSerially {
+            persistence.runSnapshotMutation {
                 val source = snapshot ?: error("Local snapshot is not loaded.")
                 check(localSnapshotIssue == null) { "Local snapshot recovery is required." }
                 val reduced = providerSettingsDeleteProvider(
@@ -703,8 +756,8 @@ fun ZeroChatApp(quickAskRequestId: Long = 0L) {
         }
         result.onSuccess {
             committed?.let { commit ->
-                SnapshotPersistence.launch {
-                    autoSync.enqueue(commit.snapshot, onSynced = ::acceptSyncedSnapshot)
+                persistence.launch {
+                    autoSync.enqueue(commit.snapshot)
                 }
             }
         }.onFailure { error ->
@@ -727,22 +780,30 @@ fun ZeroChatApp(quickAskRequestId: Long = 0L) {
                     snapshot = current,
                     initialNotice = localSaveNotice ?: startupNotice,
                     localSnapshotIssue = localSnapshotIssue,
-                    quickAskRequestId = quickAskRequestId,
+                    quickAskDeliveryCount = quickAskDeliveryCount,
+                    backupTaskViewModel = backupTaskViewModel,
+                    generationTasks = generationTasks,
+                    settingsOpen = settingsOpen,
+                    settingsInitialTabName = settingsInitialTabName,
+                    onSettingsOpen = { tab ->
+                        settingsInitialTabName = tab.name
+                        settingsOpen = true
+                    },
+                    onSettingsClose = { settingsOpen = false },
                     secretStore = secretStore,
                     onFirstSyncStrategy = { strategy: FirstSyncStrategy ->
                         if (localSnapshotIssue == null) {
-                            scope.launch {
-                                autoSync.enqueue(current, strategy, ::acceptSyncedSnapshot)
+                            persistence.launch {
+                                autoSync.enqueue(current, strategy)
                             }
                         }
                     },
                     onManualSync = { source ->
-                        SnapshotPersistence.queue.runSerially {
+                        persistence.runSnapshotMutation {
                             persistLocalSnapshot(source)
                         }.getOrThrow()
-                        autoSync.syncNow(source, onSynced = ::acceptSyncedSnapshot)
+                        autoSync.syncNow(source)
                     },
-                    onSnapshotImport = ::importSnapshot,
                     onResetLocalData = ::resetLocalData,
                     onSaveProviderKey = ::saveProviderKey,
                     onDeleteProvider = ::deleteProvider,
@@ -788,9 +849,9 @@ private fun ColorScheme.withZeroChatBrand(dark: Boolean): ColorScheme =
     if (dark) {
         copy(
             primary = BrandPrimaryDark,
-            onPrimary = Color(0xFF111827),
+            onPrimary = Color(0xFF0B1220),
             primaryContainer = BrandSoftDark,
-            onPrimaryContainer = Color(0xFFE0E7FF),
+            onPrimaryContainer = Color(0xFFCFE3FF),
             outline = BrandBorderDark,
         )
     } else {
@@ -798,7 +859,7 @@ private fun ColorScheme.withZeroChatBrand(dark: Boolean): ColorScheme =
             primary = BrandPrimaryLight,
             onPrimary = Color.White,
             primaryContainer = BrandSoftLight,
-            onPrimaryContainer = Color(0xFF1E1B4B),
+            onPrimaryContainer = Color(0xFF0A3C7A),
             outline = BrandBorderLight,
         )
     }

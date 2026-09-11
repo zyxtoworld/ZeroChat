@@ -1,10 +1,12 @@
 package app.zerochat.ui.settings
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import app.zerochat.data.AppSnapshot
 import app.zerochat.data.defaultProviderConfigs
@@ -18,7 +20,7 @@ import kotlinx.coroutines.launch
 internal fun DataSettings(
     snapshot: AppSnapshot,
     onSaveSyncPassphrase: suspend (String) -> Result<Unit>,
-    onSnapshotImport: suspend (AppSnapshot, Map<String, String>) -> Result<Unit>,
+    backupTaskViewModel: BackupTaskViewModel,
     onResetLocalData: suspend (AppSnapshot) -> Result<Unit>,
     secretStore: SecretStore,
     syncClient: SyncClient,
@@ -26,13 +28,22 @@ internal fun DataSettings(
     i18n: NativeI18n,
 ) {
     val scope = rememberCoroutineScope()
+    val backupTasks = backupTaskViewModel.tasks
+    val currentOnNotice by rememberUpdatedState(onNotice)
     val backupController = rememberDataSettingsBackupController(
         snapshot = snapshot,
-        onSnapshotImport = onSnapshotImport,
+        backupTasks = backupTasks,
         secretStore = secretStore,
-        onNotice = onNotice,
         i18n = i18n,
     )
+    LaunchedEffect(backupTasks) {
+        backupTasks.notices.collect { notices ->
+            notices.forEach { notice ->
+                currentOnNotice(notice.message, notice.kind)
+                backupTasks.acknowledgeNotice(notice.id)
+            }
+        }
+    }
     var committedPassphrase by remember { mutableStateOf(secretStore.syncPassphrase()) }
     var passphrase by remember { mutableStateOf(committedPassphrase) }
     var pendingPassphrase by remember { mutableStateOf<String?>(null) }

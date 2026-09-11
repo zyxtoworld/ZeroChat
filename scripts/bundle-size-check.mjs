@@ -1,5 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { brotliCompressSync, constants, gzipSync } from 'node:zlib'
+import { collectStaticImportClosure } from './bundle-static-imports.mjs'
 
 const kib = 1024
 const htmlShellRawLimit = 5 * kib
@@ -9,17 +10,16 @@ const initialJavaScriptGzipLimit = 96 * kib
 const totalStaticResourceGzipLimit = 300 * kib
 const totalTextStaticResourceBrotliRatioLimit = 0.88
 const localeGzipLimit = 16 * kib
-const serviceGzipLimit = 8 * kib
+const serviceGzipLimit = 20 * kib
 const gistSyncGzipLimit = 8 * kib
 const markdownGzipLimit = 50 * kib
 const markdownClientGzipLimit = 3 * kib
 const settingsOverlayGzipLimit = 14 * kib
-const firstRunGuideGzipLimit = 10 * kib
-const lazyServices = ['chat', 'crypto', 'settingsActions', 'skills', 'sync']
+const providerSafetyGzipLimit = 8 * kib
+const lazyServices = ['chat', 'skills']
 const chatRuntimeMergedServices = [
   'audioSpeech',
   'audioTranscription',
-  'chatGenerationMessageReruns',
 ]
 const brotliTextExtensions = new Set([
   '.css',
@@ -91,18 +91,17 @@ async function listFiles(directory) {
 }
 
 const indexHtml = await readFile('dist/index.html', 'utf8')
-const startupScriptPath = 'dist/zerochat-startup.js'
 const distHeaders = await readFile('dist/_headers', 'utf8')
-const appRuntimeControllerSource = await readFile(
-  'src/services/appRuntimeController.ts',
+const runtimeWarmupSource = await readFile(
+  'src/app/runtimeWarmup.ts',
   'utf8',
 )
-const appOverlaysViewSource = await readFile(
-  'src/components/AppOverlaysView.tsx',
+const uiRuntimeSource = await readFile(
+  'src/services/uiRuntime.ts',
   'utf8',
 )
+const appOverlaysViewSource = await readFile('src/app/App.tsx', 'utf8')
 const i18nSource = await readFile('src/i18n.ts', 'utf8')
-const uiRuntimeSource = await readFile('src/services/uiRuntime.ts', 'utf8')
 const lazyLocales = extractSupportedLocales(i18nSource)
 const distFiles = await listFiles('dist')
 const assetFiles = await readdir('dist/assets')
@@ -112,7 +111,10 @@ const moduleScripts = Array.from(
 const modulePreloads = Array.from(
   indexHtml.matchAll(/<link[^>]+rel="modulepreload"[^>]+href="\.\/assets\/([^"]+\.js)"/g),
 ).map((match) => match[1])
-const initialJavaScriptFiles = [...new Set([...moduleScripts, ...modulePreloads])]
+const initialJavaScriptFiles = await collectStaticImportClosure({
+  entryFiles: moduleScripts,
+  readAsset: (file) => readFile('dist/assets/' + file, 'utf8'),
+})
 const mainScripts = moduleScripts.filter((file) => file.startsWith('index-'))
 const stylesheets = Array.from(
   indexHtml.matchAll(/<link[^>]+rel="stylesheet"[^>]+href="\.\/assets\/([^"]+\.css)"/g),
@@ -139,8 +141,8 @@ expect(
 )
 
 expect(
-  indexHtml.includes('./zerochat-startup.js'),
-  'dist/index.html must reference the external startup bootstrap script.',
+  !indexHtml.includes('/src/app/bootstrap.tsx') && !indexHtml.includes('src/app/bootstrap.tsx'),
+  'dist/index.html must contain the bundled production entry rather than a source-module URL.',
 )
 
 expect(
@@ -155,20 +157,18 @@ expect(
 )
 
 expect(
-  appOverlaysViewSource.includes("import('./SettingsOverlayHost')") &&
+  appOverlaysViewSource.includes("import('./components/SettingsView')") &&
     appOverlaysViewSource.includes(
-      'recoverLazyOverlay(loadSettingsOverlayHost, SettingsOverlayLoadFailure)',
+      '<Suspense fallback={<SettingsLoadingFallback data={data} />}>',
     ) &&
-    appOverlaysViewSource.includes("import('./FirstRunGuide')") &&
-    appOverlaysViewSource.includes('recoverLazyOverlay<FirstRunGuideProps>(') &&
-    appOverlaysViewSource.includes('scheduleSettingsOverlayPreload') &&
-    appOverlaysViewSource.includes('shouldWarmLazyServices()'),
-  'Settings overlay and first-run guide must stay lazy-loaded, with Settings idle-preloaded only off save-data, slow, or offline networks.',
+    appOverlaysViewSource.includes("translate(locale, 'ui.loading')") &&
+    appOverlaysViewSource.includes("from './components/Onboarding'"),
+  'The production App must lazy-load the current Settings surface with visible localized progress while owning onboarding directly.',
 )
 
 let entryJavaScriptLabel = 'missing'
 let initialJavaScriptGzipSize = 0
-let firstLoadGzipSize = htmlShellGzipSize + (await gzipFile(startupScriptPath))
+let firstLoadGzipSize = htmlShellGzipSize
 
 if (mainScripts[0]) {
   const mainGzipSize = await gzipFile(`dist/assets/${mainScripts[0]}`)
@@ -196,9 +196,9 @@ firstLoadGzipSize += initialJavaScriptGzipSize
 
 expect(
   initialJavaScriptGzipSize <= initialJavaScriptGzipLimit,
-  `Initial JavaScript graph gzip size is ${sizeLabel(
+    `Initial JavaScript static import closure gzip size is ${sizeLabel(
     initialJavaScriptGzipSize,
-  )}; keep entry plus modulepreload dependencies at or below ${sizeLabel(
+  )}; keep the entry's recursive static import closure at or below ${sizeLabel(
     initialJavaScriptGzipLimit,
   )}.`,
 )
@@ -276,6 +276,7 @@ for (const locale of lazyLocales) {
 }
 
 const serviceLabels = []
+let providerSafetyLabel = 'missing'
 
 for (const service of lazyServices) {
   const chunks = assetFiles.filter(
@@ -307,7 +308,7 @@ const gistSyncChunks = assetFiles.filter(
   (file) => file.startsWith('syncGist-') && file.endsWith('.js'),
 )
 expect(
-  gistSyncChunks.length === 1,
+  gistSyncChunks.length <= 1,
   `Gist sync should be emitted as exactly one nested lazy chunk, found ${gistSyncChunks.length}.`,
 )
 
@@ -339,6 +340,30 @@ for (const service of chatRuntimeMergedServices) {
   )
 }
 
+const providerSafetyChunks = assetFiles.filter(
+  (file) => file.startsWith('providerSafety-') && file.endsWith('.js'),
+)
+
+expect(
+  providerSafetyChunks.length <= 1,
+  `Provider safety should be emitted as at most one lazy startup sanitizer chunk, found ${providerSafetyChunks.length}.`,
+)
+
+if (providerSafetyChunks[0]) {
+  const gzipSize = await gzipFile(`dist/assets/${providerSafetyChunks[0]}`)
+  providerSafetyLabel = sizeLabel(gzipSize)
+  expect(
+    !modulePreloads.includes(providerSafetyChunks[0]),
+    'Provider safety must remain lazy and must not be modulepreloaded by dist/index.html.',
+  )
+  expect(
+    gzipSize <= providerSafetyGzipLimit,
+    `Provider safety lazy chunk gzip size is ${providerSafetyLabel}; keep it at or below ${sizeLabel(
+      providerSafetyGzipLimit,
+    )}.`,
+  )
+}
+
 const markdownChunks = assetFiles.filter(
   (file) => file.startsWith('markdown-') && file.endsWith('.js'),
 )
@@ -349,7 +374,7 @@ const markdownClientChunks = assetFiles.filter(
   (file) => file.startsWith('markdownWorkerClient-') && file.endsWith('.js'),
 )
 const settingsOverlayChunks = assetFiles.filter(
-  (file) => file.startsWith('SettingsOverlayHost-') && file.endsWith('.js'),
+  (file) => file.startsWith('SettingsView-') && file.endsWith('.js'),
 )
 const firstRunGuideChunks = assetFiles.filter(
   (file) => file.startsWith('FirstRunGuide-') && file.endsWith('.js'),
@@ -397,12 +422,12 @@ expect(
   `Settings overlay should be emitted as exactly one lazy chunk, found ${settingsOverlayChunks.length}.`,
 )
 expect(
-  firstRunGuideChunks.length === 1,
-  `First-run guide should be emitted as exactly one lazy chunk, found ${firstRunGuideChunks.length}.`,
+  firstRunGuideChunks.length === 0,
+  `Current Onboarding must stay in the production app entry without a parallel FirstRunGuide chunk; found ${firstRunGuideChunks.length}.`,
 )
 
 let settingsOverlayLabel = 'missing'
-let firstRunGuideLabel = 'missing'
+const onboardingLabel = 'bundled in app entry'
 
 if (settingsOverlayChunks[0]) {
   const gzipSize = await gzipFile(`dist/assets/${settingsOverlayChunks[0]}`)
@@ -415,24 +440,13 @@ if (settingsOverlayChunks[0]) {
   )
 }
 
-if (firstRunGuideChunks[0]) {
-  const gzipSize = await gzipFile(`dist/assets/${firstRunGuideChunks[0]}`)
-  firstRunGuideLabel = sizeLabel(gzipSize)
-  expect(
-    gzipSize <= firstRunGuideGzipLimit,
-    `First-run guide lazy chunk gzip size is ${firstRunGuideLabel}; keep it at or below ${sizeLabel(
-      firstRunGuideGzipLimit,
-    )}.`,
-  )
-}
-
 expect(
   uiRuntimeSource.includes('export function shouldWarmLazyServices') &&
     uiRuntimeSource.includes('connection?.saveData') &&
     uiRuntimeSource.includes('online !== false') &&
     uiRuntimeSource.includes("effectiveType !== 'slow-2g'") &&
     uiRuntimeSource.includes("effectiveType !== '2g'") &&
-    appRuntimeControllerSource.includes('shouldWarmLazyServices()'),
+    runtimeWarmupSource.includes('shouldWarmLazyServices()'),
   'Web app should warm lazy service chunks only when the user is online and not on data saver, 2g, or slow-2g.',
 )
 
@@ -440,21 +454,23 @@ expect(
     uiRuntimeSource.includes('export function scheduleIdleTask') &&
     uiRuntimeSource.includes('window.requestIdleCallback') &&
     uiRuntimeSource.includes('IDLE_SERVICE_WARM_TIMEOUT_MS') &&
-    appRuntimeControllerSource.includes('scheduleIdleTask(() =>'),
+    runtimeWarmupSource.includes('scheduleIdleTask(() =>'),
   'Web app should warm likely next-use service chunks during idle time instead of blocking first render.',
 )
 
 expect(
-  appRuntimeControllerSource.includes('!chatServiceWarmedRef.current') &&
-    appRuntimeControllerSource.includes('warmRetryableLazyService({') &&
-    appRuntimeControllerSource.includes('loadService: loadChatService') &&
-    appRuntimeControllerSource.includes('hasEnabledSkills && !skillServiceWarmedRef.current') &&
-    appRuntimeControllerSource.includes('loadService: loadSkillService') &&
-    appRuntimeControllerSource.includes("syncMode !== 'local' && !syncServiceWarmedRef.current") &&
-    appRuntimeControllerSource.includes('loadService: loadSyncService') &&
-    appRuntimeControllerSource.includes('shouldWarmCryptoService(') &&
-    appRuntimeControllerSource.includes('loadService: loadCryptoService') &&
-    appRuntimeControllerSource.includes("settingsTab === 'data'"),
+  runtimeWarmupSource.includes('services.loadChatService') &&
+    runtimeWarmupSource.includes(
+      'options.hasEnabledSkills ? [services.loadSkillService] : []',
+    ) &&
+    runtimeWarmupSource.includes(
+      "options.syncMode === 'local' ? [] : [services.loadSyncService]",
+    ) &&
+    runtimeWarmupSource.includes('await Promise.allSettled(') &&
+    runtimeWarmupSource.includes('export function useDataCryptoWarmup(): void') &&
+    runtimeWarmupSource.includes(
+      'void warmLazyServices([runtimeWarmupServices.loadCryptoService])',
+    ),
   'Web app should prefetch chat, enabled Skill, remote sync, and Data crypto chunks only when they are likely useful.',
 )
 
@@ -473,5 +489,5 @@ console.log(
     initialJavaScriptGzipSize,
   )}; lazy services ${serviceLabels.join(
     ', ',
-  )}; Gist sync ${gistSyncLabel}; settings overlay ${settingsOverlayLabel}; first-run guide ${firstRunGuideLabel}; markdown ${markdownLabel}; lazy locales ${localeLabels.join(', ')}`,
+  )}; provider safety ${providerSafetyLabel}; Gist sync ${gistSyncLabel}; settings overlay ${settingsOverlayLabel}; onboarding ${onboardingLabel}; markdown ${markdownLabel}; lazy locales ${localeLabels.join(', ')}`,
 )

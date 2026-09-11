@@ -22,11 +22,12 @@ func appleEncryptedBackupData(
     snapshot: AppSnapshot,
     passphrase: String,
     crypto: CryptoEngine,
-    providerKey: (String) -> String
+    providerKey: (String) throws -> String
 ) async throws -> Data {
+    let providerKeys = try appleProviderKeys(for: snapshot, providerKey: providerKey)
     let vault = SyncVault(
         data: snapshot,
-        secrets: ProviderSecrets(providerKeys: appleProviderKeys(for: snapshot, providerKey: providerKey))
+        secrets: ProviderSecrets(providerKeys: providerKeys)
     )
     let envelope = try await crypto.encryptVault(vault, passphrase: passphrase)
     let encoder = JSONEncoder()
@@ -55,14 +56,16 @@ func appleImportedBackup(
 @MainActor
 func appleProviderKeys(
     for snapshot: AppSnapshot,
-    providerKey: (String) -> String
-) -> [String: String] {
-    Dictionary(
-        uniqueKeysWithValues: snapshot.providers.compactMap { provider in
-            let value = providerKey(provider.id)
-            return value.isEmpty ? nil : (provider.id, value)
+    providerKey: (String) throws -> String
+) throws -> [String: String] {
+    var providerKeys: [String: String] = [:]
+    for provider in snapshot.providers {
+        let value = try providerKey(provider.id)
+        if !value.isEmpty {
+            providerKeys[provider.id] = value
         }
-    )
+    }
+    return providerKeys
 }
 
 @MainActor

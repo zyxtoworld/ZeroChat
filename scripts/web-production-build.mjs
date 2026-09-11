@@ -8,7 +8,12 @@ const node = process.execPath
 export const webProductionBuildSteps = Object.freeze([
   ['Service Worker source build', [resolve(root, 'scripts/build-service-worker.mjs')]],
   ['TypeScript', [resolve(root, 'node_modules/typescript/bin/tsc'), '-b']],
+  ['Web production reachability', [resolve(root, 'scripts/web-production-reachability.mjs')]],
   ['Vite production build', [resolve(root, 'node_modules/vite/bin/vite.js'), 'build']],
+  [
+    'Frontend production artifact gate',
+    [resolve(root, 'scripts/frontend-single-implementation-check.mjs'), '--production-artifacts'],
+  ],
 ])
 
 async function runWebBuildStep(label, args) {

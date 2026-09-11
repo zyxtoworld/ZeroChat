@@ -2,7 +2,9 @@
 #include "SecretStore.h"
 
 #include <map>
+#include <memory>
 #include <mutex>
+#include <sddl.h>
 #include <winrt/Windows.Security.Credentials.h>
 
 using namespace winrt;
@@ -18,7 +20,20 @@ namespace ZeroChat
         constexpr wchar_t CommitAccountPrefix[] = L"meta:commit:";
         constexpr wchar_t TransactionAccountPrefix[] = L"txn:";
         constexpr wchar_t CommitValue[] = L"complete-v2";
-        constexpr wchar_t SecretStoreMutexName[] = L"Local\\ZeroChat.SecretStore.v2";
+        constexpr wchar_t SecretStoreMutexPrefix[] = L"Global\\ZeroChat.SecretStore.v2.";
+
+        struct LocalFreeDeleter final
+        {
+            void operator()(void* value) const noexcept
+            {
+                if (value)
+                {
+                    static_cast<void>(LocalFree(value));
+                }
+            }
+        };
+
+        using LocalAllocation = std::unique_ptr<void, LocalFreeDeleter>;
 
         struct StoredSnapshot
         {
@@ -34,12 +49,72 @@ namespace ZeroChat
             return gate;
         }
 
+        std::wstring CurrentUserSid()
+        {
+            HANDLE rawToken{};
+            check_bool(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &rawToken));
+            winrt::handle token{ rawToken };
+
+            DWORD tokenInformationBytes{};
+            if (GetTokenInformation(token.get(), TokenUser, nullptr, 0, &tokenInformationBytes))
+            {
+                throw hresult_error(E_UNEXPECTED);
+            }
+
+            auto const sizeError = GetLastError();
+            if (sizeError != ERROR_INSUFFICIENT_BUFFER)
+            {
+                throw hresult_error(HRESULT_FROM_WIN32(sizeError));
+            }
+            if (tokenInformationBytes < sizeof(TOKEN_USER))
+            {
+                throw hresult_error(E_UNEXPECTED);
+            }
+
+            std::vector<std::byte> tokenInformation(tokenInformationBytes);
+            check_bool(GetTokenInformation(
+                token.get(),
+                TokenUser,
+                tokenInformation.data(),
+                tokenInformationBytes,
+                &tokenInformationBytes));
+
+            auto const tokenUser = reinterpret_cast<TOKEN_USER const*>(tokenInformation.data());
+            if (!IsValidSid(tokenUser->User.Sid))
+            {
+                throw hresult_error(E_UNEXPECTED);
+            }
+
+            PWSTR rawSid{};
+            check_bool(ConvertSidToStringSidW(tokenUser->User.Sid, &rawSid));
+            LocalAllocation sid{ rawSid };
+            return std::wstring{ rawSid };
+        }
+
         class CrossProcessSecretStoreLock final
         {
         public:
             CrossProcessSecretStoreLock()
             {
-                m_mutex = CreateMutexW(nullptr, FALSE, SecretStoreMutexName);
+                auto const sid = CurrentUserSid();
+                auto const mutexName = std::wstring{ SecretStoreMutexPrefix } + sid;
+                auto const securityDescriptorText =
+                    std::wstring{ L"D:P(A;;GA;;;" } + sid + L")(A;;GA;;;SY)";
+
+                PSECURITY_DESCRIPTOR rawSecurityDescriptor{};
+                check_bool(ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    securityDescriptorText.c_str(),
+                    SDDL_REVISION_1,
+                    &rawSecurityDescriptor,
+                    nullptr));
+                LocalAllocation securityDescriptor{ rawSecurityDescriptor };
+                SECURITY_ATTRIBUTES securityAttributes{
+                    sizeof(SECURITY_ATTRIBUTES),
+                    securityDescriptor.get(),
+                    FALSE,
+                };
+
+                m_mutex = CreateMutexW(&securityAttributes, FALSE, mutexName.c_str());
                 if (!m_mutex)
                 {
                     throw hresult_error(HRESULT_FROM_WIN32(GetLastError()));
@@ -406,10 +481,11 @@ namespace ZeroChat
             return StartsWith(account, valuePrefix) && account.size() > valuePrefix.size();
         }
 
-        void CleanupResidualCredentials(
-            PasswordVault const& vault,
-            std::optional<std::wstring> const& activeTransaction)
+        void CleanupResidualCredentials(PasswordVault const& vault)
         {
+            auto activeTransaction = ParseVersionedRevision(
+                vault,
+                ReadCredential(vault, RevisionAccount));
             auto activeCommitAccount = activeTransaction.has_value()
                 ? CommitAccount(*activeTransaction)
                 : std::wstring{};
@@ -449,13 +525,11 @@ namespace ZeroChat
             }
         }
 
-        void CleanupResidualCredentialsAfterCommit(
-            PasswordVault const& vault,
-            std::wstring const& activeTransaction) noexcept
+        void CleanupResidualCredentialsAfterCommit(PasswordVault const& vault) noexcept
         {
             try
             {
-                CleanupResidualCredentials(vault, activeTransaction);
+                CleanupResidualCredentials(vault);
             }
             catch (hresult_error const&)
             {
@@ -506,7 +580,7 @@ namespace ZeroChat
         CrossProcessSecretStoreLock processLock;
         PasswordVault vault;
         auto snapshot = LoadCommittedSnapshot(vault);
-        CleanupResidualCredentials(vault, snapshot.transaction);
+        CleanupResidualCredentials(vault);
 
         if (ReadCredential(vault, RevisionAccount) != snapshot.revision)
         {
@@ -526,7 +600,7 @@ namespace ZeroChat
         CrossProcessSecretStoreLock processLock;
         PasswordVault vault;
         auto snapshot = LoadCommittedSnapshot(vault);
-        CleanupResidualCredentials(vault, snapshot.transaction);
+        CleanupResidualCredentials(vault);
         std::vector<SecretEntry> entries;
         entries.reserve(names.size());
 
@@ -560,7 +634,7 @@ namespace ZeroChat
         CrossProcessSecretStoreLock processLock;
         PasswordVault vault;
         auto previous = LoadCommittedSnapshot(vault);
-        CleanupResidualCredentials(vault, previous.transaction);
+        CleanupResidualCredentials(vault);
         if (ReadCredential(vault, RevisionAccount) != previous.revision ||
             previous.revision != expectedRevision)
         {
@@ -601,7 +675,7 @@ namespace ZeroChat
             nextRevision,
             nextMigration,
             nextEntries);
-        CleanupResidualCredentialsAfterCommit(vault, transaction);
+        CleanupResidualCredentialsAfterCommit(vault);
 
         return {
             .revision = std::move(nextRevision),

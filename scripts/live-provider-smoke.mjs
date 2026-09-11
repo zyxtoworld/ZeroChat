@@ -7,6 +7,8 @@ import {
   selectLiveProviderMirrorReportPath,
   selectLiveProviderReportPath,
 } from './live-provider-report-path.mjs'
+import { readOpenAIChatCompletionText } from './live-provider-chat-response.mjs'
+import { runWithLiveProviderEmptyChatRetry } from './live-provider-empty-chat-retry.mjs'
 import { liveProviderApiSourceFingerprint } from './live-provider-source-fingerprint.mjs'
 
 const cliArgs = process.argv.slice(2)
@@ -549,7 +551,13 @@ function isLikelyRealtimeModel(model) {
 }
 
 function modelVersionScore(model, family) {
-  const match = model.match(new RegExp(`${family}[-_ ]?(\\d+(?:[._-]\\d+)*)`, 'iu'))
+  const versionSource = model.replace(
+    /[-_]\d{4}[-_]\d\d[-_]\d\d/,
+    '',
+  )
+  const match = versionSource.match(
+    new RegExp(`${family}[-_ ]?(\\d+(?:[._-]\\d+)*)`, 'iu'),
+  )
 
   if (!match?.[1]) {
     return 0
@@ -1502,7 +1510,7 @@ function liveProviderReportRemediationHints(reportFailure) {
   ]
 }
 
-async function runStreamingChatWithModel({ authHeaders, baseUrl, model }) {
+async function runStreamingChatAttempt({ authHeaders, baseUrl, model }) {
   try {
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
@@ -1528,10 +1536,15 @@ async function runStreamingChatWithModel({ authHeaders, baseUrl, model }) {
       }
     }
 
-    const reply = (await readStreamingText(response)).trim()
+    if (!response.body) {
+      fail('chat response did not include a body.')
+    }
+
+    const reply = (await readOpenAIChatCompletionText(response)).trim()
 
     if (reply !== 'ZeroChat OK') {
       return {
+        ...(reply === '' ? { emptySuccessfulResponse: true } : {}),
         model,
         ok: false,
         status: response.status,
@@ -1554,6 +1567,12 @@ async function runStreamingChatWithModel({ authHeaders, baseUrl, model }) {
   }
 }
 
+async function runStreamingChatWithModel({ authHeaders, baseUrl, model }) {
+  return runWithLiveProviderEmptyChatRetry({
+    runAttempt: () => runStreamingChatAttempt({ authHeaders, baseUrl, model }),
+  })
+}
+
 async function resolveUsableChatModel({ authHeaders, baseUrl, modelIds }) {
   const candidates = chatCandidateModels(modelIds)
 
@@ -1562,17 +1581,29 @@ async function resolveUsableChatModel({ authHeaders, baseUrl, modelIds }) {
   }
 
   const failures = []
+  const chatModelAttempts = []
 
   for (const model of candidates) {
     const result = await runStreamingChatWithModel({ authHeaders, baseUrl, model })
+    chatModelAttempts.push({ model, attempts: result.attempts })
 
     if (result.ok) {
+      const attemptedChatModels = candidates.slice(0, failures.length + 1)
+      Object.assign(providerDiagnostics, {
+        attemptedChatModels,
+        chatModelAttempts,
+      })
+      if (failures.length) {
+        providerDiagnostics.chatCandidateFailures = failures
+      }
+
       return {
         chatStatus: result.status,
         model,
         reply: result.reply,
-        attemptedChatModels: candidates.slice(0, failures.length + 1),
+        attemptedChatModels,
         chatCandidateFailures: failures,
+        chatModelAttempts,
       }
     }
 
@@ -1587,6 +1618,7 @@ async function resolveUsableChatModel({ authHeaders, baseUrl, modelIds }) {
   Object.assign(providerDiagnostics, {
     attemptedChatModels: candidates.slice(0, failures.length),
     chatCandidateFailures: failures,
+    chatModelAttempts,
   })
 
   fail(
@@ -1713,7 +1745,11 @@ function capabilityModelCandidates({
   const requested = String(requestedModel ?? '').trim()
 
   if (requested) {
-    return [requested]
+    return uniqueModelCandidates([
+      requested,
+      ...orderedPreferredModelCandidates(catalogCandidates, preferredModel),
+      ...orderedPreferredModelCandidates(standardFallbacks, preferredModel),
+    ])
   }
 
   return uniqueModelCandidates([
@@ -2486,58 +2522,6 @@ async function assertOk(response, label) {
   }
 
   fail(`${label} returned ${response.status}: ${await readResponseText(response)}`)
-}
-
-async function readStreamingText(response) {
-  if (!response.body) {
-    fail('chat response did not include a body.')
-  }
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let text = ''
-
-  while (true) {
-    const { done, value } = await reader.read()
-
-    if (done) {
-      break
-    }
-
-    buffer += decoder.decode(value, { stream: true })
-    const parts = buffer.split('\n\n')
-    buffer = parts.pop() ?? ''
-
-    for (const part of parts) {
-      for (const line of part.split('\n')) {
-        const trimmed = line.trim()
-
-        if (!trimmed.startsWith('data:')) {
-          continue
-        }
-
-        const payload = trimmed.slice(5).trim()
-
-        if (payload === '[DONE]') {
-          return text
-        }
-
-        try {
-          const json = JSON.parse(payload)
-          const token = json?.choices?.[0]?.delta?.content
-
-          if (typeof token === 'string') {
-            text += token
-          }
-        } catch {
-          // Compatible relays sometimes send keep-alive frames.
-        }
-      }
-    }
-  }
-
-  return text
 }
 
 function crc32(buffer) {
@@ -4983,6 +4967,23 @@ async function runCapabilityModelFallbackSelfTest() {
       `embeddings returned 404: {"error":{"message":"Model \\"${model}\\" is not supported by any configured account in this group","type":"model_not_found"}}`,
     )
 
+  const requestedEmbeddingCandidates = capabilityModelCandidates({
+    requestedModel: 'text-embedding-3-large',
+    catalogCandidates: [],
+    standardFallbacks: standardEmbeddingModelFallbacks,
+    preferredModel: preferredEmbeddingModel,
+  })
+
+  if (
+    requestedEmbeddingCandidates[0] !== 'text-embedding-3-large' ||
+    requestedEmbeddingCandidates[1] !== 'text-embedding-3-small' ||
+    requestedEmbeddingCandidates.length !== 2
+  ) {
+    fail(
+      `capability model fallback self-test failed: explicit embedding override did not retain standard fallback candidates: ${JSON.stringify(requestedEmbeddingCandidates)}`,
+    )
+  }
+
   const fallback = await runCapabilitySmokeWithModelFallback({
     capability: 'embeddings',
     models: ['missing-embedding-model', 'text-embedding-3-small'],
@@ -5803,6 +5804,7 @@ async function runProviderSmoke() {
       chatStatus: chatSmoke.chatStatus,
       reply: chatSmoke.reply,
       attemptedChatModels: chatSmoke.attemptedChatModels,
+      chatModelAttempts: chatSmoke.chatModelAttempts,
       ...(chatSmoke.chatCandidateFailures.length
         ? { chatCandidateFailures: chatSmoke.chatCandidateFailures }
         : {}),
@@ -5859,6 +5861,7 @@ async function runProviderSmoke() {
     chatStatus: chatSmoke.chatStatus,
     reply: chatSmoke.reply,
     attemptedChatModels: chatSmoke.attemptedChatModels,
+    chatModelAttempts: chatSmoke.chatModelAttempts,
     requestedCapabilities: {
       ...requestedCapabilities,
       image: Boolean(imageSmoke),

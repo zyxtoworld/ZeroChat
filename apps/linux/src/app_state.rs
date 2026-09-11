@@ -1,7 +1,7 @@
 use crate::{
     auto_sync::AutoSyncCoordinator,
     defaults::{default_snapshot, normalize_official_provider_contracts},
-    local_data_transition::recover_local_data_transition,
+    local_data_transition::recover_pending_local_data_transition_during_local_data_commit,
     media::{LinuxSpeechPlayback, play_speech_audio_bytes},
     models::AppSnapshot,
     secret_store::LinuxSecretStore,
@@ -24,6 +24,8 @@ mod reset_state;
 mod skill_state;
 mod sync_state;
 
+pub(crate) use preference_state::LINUX_PROVIDER_MODEL_FEATURE_HINT_ID;
+
 #[derive(Clone)]
 pub(crate) struct LinuxAppState {
     snapshot: Rc<RefCell<AppSnapshot>>,
@@ -33,6 +35,7 @@ pub(crate) struct LinuxAppState {
     secrets: Arc<LinuxSecretStore>,
     auto_sync: Option<Arc<AutoSyncCoordinator<LinuxSecretStore>>>,
     sync_runtime: Option<Arc<tokio::runtime::Runtime>>,
+    sync_initialization_issue: Option<&'static str>,
     speech: Rc<RefCell<LinuxSpeechPlayback>>,
 }
 
@@ -110,8 +113,9 @@ impl LinuxAppState {
             }
         };
 
-        let loaded_before_recovery = store.load();
-        let pending_transition = store.load_local_data_transition();
+        let guard = store.lock_local_data_commit();
+        let loaded_before_recovery = store.load_during_local_data_commit(&guard);
+        let pending_transition = store.load_local_data_transition_during_local_data_commit(&guard);
         let mut provider_ids = default_snapshot()
             .providers
             .into_iter()
@@ -130,17 +134,20 @@ impl LinuxAppState {
         }
         let secrets = Arc::new(LinuxSecretStore::load(provider_ids.into_iter().collect()));
         let loaded = match pending_transition {
-            Ok(Some(transition)) => {
-                recover_local_data_transition(&store, secrets.as_ref(), transition)
-                    .and_then(|_| store.load())
-                    .map_err(|_| LinuxLocalStorageIssue::SnapshotLoadFailed)
-            }
+            Ok(Some(_)) => recover_pending_local_data_transition_during_local_data_commit(
+                &store,
+                secrets.as_ref(),
+                &guard,
+            )
+            .and_then(|_| store.load_during_local_data_commit(&guard))
+            .map_err(|_| LinuxLocalStorageIssue::SnapshotLoadFailed),
             Ok(None) => {
                 loaded_before_recovery.map_err(|_| LinuxLocalStorageIssue::SnapshotLoadFailed)
             }
             Err(_) => Err(LinuxLocalStorageIssue::SnapshotLoadFailed),
         };
         let (snapshot, normalized, local_storage_issue) = resolve_initial_snapshot(loaded);
+        drop(guard);
 
         LinuxAppResources {
             snapshot,
@@ -159,17 +166,24 @@ impl LinuxAppState {
             secrets,
             normalized,
         } = resources;
-        let auto_sync = store
-            .as_ref()
-            .map(|store| Arc::new(AutoSyncCoordinator::new(store.clone(), secrets.clone())));
-        let sync_runtime = auto_sync.as_ref().and_then(|_| {
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .thread_name("zerochat-linux-sync")
-                .build()
-                .ok()
-                .map(Arc::new)
-        });
+        let (auto_sync, sync_runtime, sync_initialization_issue) = match store.as_ref() {
+            Some(store) => match AutoSyncCoordinator::new(store.clone(), secrets.clone()) {
+                Ok(auto_sync) => match tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .thread_name("zerochat-linux-sync")
+                    .build()
+                {
+                    Ok(sync_runtime) => (
+                        Some(Arc::new(auto_sync)),
+                        Some(Arc::new(sync_runtime)),
+                        None,
+                    ),
+                    Err(_) => (None, None, Some("Cloud sync is unavailable.")),
+                },
+                Err(_) => (None, None, Some("Cloud sync is unavailable.")),
+            },
+            None => (None, None, None),
+        };
 
         let state = Self {
             snapshot: Rc::new(RefCell::new(snapshot.clone())),
@@ -179,6 +193,7 @@ impl LinuxAppState {
             secrets,
             auto_sync,
             sync_runtime,
+            sync_initialization_issue,
             speech: Rc::new(RefCell::new(LinuxSpeechPlayback::default())),
         };
 
@@ -260,7 +275,15 @@ impl LinuxAppState {
 mod tests {
     use super::{LinuxLocalStorageIssue, persist_snapshot_candidate, resolve_initial_snapshot};
     use crate::defaults::default_snapshot;
+    use crate::models::AppSnapshot;
     use std::{cell::RefCell, rc::Rc};
+
+    fn assert_snapshot_eq(actual: &AppSnapshot, expected: &AppSnapshot) {
+        assert_eq!(
+            serde_json::to_value(actual).expect("actual snapshot should serialize"),
+            serde_json::to_value(expected).expect("expected snapshot should serialize")
+        );
+    }
 
     #[test]
     fn missing_snapshot_is_a_clean_first_run() {
@@ -291,9 +314,12 @@ mod tests {
         let result =
             persist_snapshot_candidate(&visible, &baseline, |_| anyhow::bail!("disk full"));
 
-        assert_eq!(result, Err(LinuxLocalStorageIssue::SnapshotSaveFailed));
-        assert_eq!(*visible.borrow(), committed);
-        assert_eq!(*baseline.borrow(), committed);
+        assert_eq!(
+            result.as_ref().err(),
+            Some(&LinuxLocalStorageIssue::SnapshotSaveFailed)
+        );
+        assert_snapshot_eq(&visible.borrow(), &committed);
+        assert_snapshot_eq(&baseline.borrow(), &committed);
     }
 
     #[test]
@@ -307,9 +333,12 @@ mod tests {
 
         let result = persist_snapshot_candidate(&visible, &baseline, |_| Ok(()));
 
-        assert_eq!(result, Ok(changed.clone()));
-        assert_eq!(*visible.borrow(), changed);
-        assert_eq!(*baseline.borrow(), changed);
+        assert_snapshot_eq(
+            &result.expect("successful persistence should return the candidate"),
+            &changed,
+        );
+        assert_snapshot_eq(&visible.borrow(), &changed);
+        assert_snapshot_eq(&baseline.borrow(), &changed);
     }
 }
 
@@ -328,7 +357,7 @@ fn persist_snapshot_candidate(
     Ok(candidate)
 }
 
-fn now_millis() -> i64 {
+pub(crate) fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)

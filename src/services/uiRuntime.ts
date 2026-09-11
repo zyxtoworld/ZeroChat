@@ -10,30 +10,9 @@ export interface PlatformShortcutEnvironment {
   userAgent?: string
 }
 
-export const GENERATION_RETRY_DELAYS_MS = [400, 900, 1600]
-export const REDACTED_SECRET = '[redacted]'
-export const REDACTED_URL = '[redacted-url]'
 export const IDLE_SERVICE_WARM_TIMEOUT_MS = 4500
 export const IDLE_SERVICE_WARM_FALLBACK_MS = 1800
 export const GUIDE_SUCCESS_CLOSE_DELAY_MS = 1000
-
-type WindowsSyncBridgeStatus = 'complete' | 'failed'
-
-interface WindowsSyncStatusPayload {
-  kind: 'zerochat.syncStatus'
-  status: WindowsSyncBridgeStatus
-  message: string
-}
-
-interface WindowsWebViewBridge {
-  postMessage(payload: WindowsSyncStatusPayload): void
-}
-
-type WindowsWebViewWindow = Window & {
-  chrome?: {
-    webview?: WindowsWebViewBridge
-  }
-}
 
 const dateTimeFormatters = new Map<string, Intl.DateTimeFormat>()
 const numberFormatters = new Map<string, Intl.NumberFormat>()
@@ -110,13 +89,6 @@ export function keyboardNewConversationShortcut(
       : 'Ctrl+N'
 }
 
-export function prefersReducedMotion(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  )
-}
-
 export function shouldWarmLazyServices(
   connection: NetworkInformationLite | undefined =
     typeof navigator === 'undefined'
@@ -137,56 +109,38 @@ export function shouldWarmLazyServices(
 }
 
 export function scheduleIdleTask(callback: () => void): () => void {
-  if (typeof window.requestIdleCallback === 'function') {
-    const id = window.requestIdleCallback(() => callback(), {
+  let active = true
+  const run = () => {
+    if (!active) return
+    active = false
+    callback()
+  }
+
+  if (
+    typeof window.requestIdleCallback === 'function' &&
+    typeof window.cancelIdleCallback === 'function'
+  ) {
+    const id = window.requestIdleCallback(run, {
       timeout: IDLE_SERVICE_WARM_TIMEOUT_MS,
     })
 
-    return () => window.cancelIdleCallback(id)
-  }
-
-  const id = window.setTimeout(callback, IDLE_SERVICE_WARM_FALLBACK_MS)
-  return () => window.clearTimeout(id)
-}
-
-export function waitForGenerationRetry(
-  signal: AbortSignal,
-  delayMs: number,
-): Promise<void> {
-  if (signal.aborted) {
-    return Promise.reject(new DOMException('Aborted', 'AbortError'))
-  }
-
-  return new Promise((resolve, reject) => {
-    let timeout = 0
-    const abort = () => {
-      window.clearTimeout(timeout)
-      reject(new DOMException('Aborted', 'AbortError'))
+    return () => {
+      active = false
+      window.cancelIdleCallback(id)
     }
-    timeout = window.setTimeout(() => {
-      signal.removeEventListener('abort', abort)
-      resolve()
-    }, delayMs)
+  }
 
-    signal.addEventListener('abort', abort, { once: true })
-  })
+  const id = window.setTimeout(run, IDLE_SERVICE_WARM_FALLBACK_MS)
+  return () => {
+    active = false
+    window.clearTimeout(id)
+  }
 }
 
 export function waitForGuideSuccessClose(
   delayMs = GUIDE_SUCCESS_CLOSE_DELAY_MS,
 ): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, delayMs))
-}
-
-export function postWindowsSyncStatus(
-  status: WindowsSyncBridgeStatus,
-  message: string,
-): void {
-  ;(window as WindowsWebViewWindow).chrome?.webview?.postMessage({
-    kind: 'zerochat.syncStatus',
-    status,
-    message,
-  })
 }
 
 export function systemDateTimeFormatter(locales: string[]): Intl.DateTimeFormat {
@@ -250,6 +204,89 @@ export function messageTimeLabel(value: number, locales: string[]): string {
   return formatSystemDateTime(value, locales)
 }
 
+export const GENERATION_RETRY_DELAYS_MS = [400, 900, 1600]
+
+export function waitForGenerationRetry(
+  signal: AbortSignal,
+  delayMs: number,
+): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(new DOMException('Aborted', 'AbortError'))
+  }
+
+  return new Promise((resolve, reject) => {
+    let timeout: ReturnType<typeof window.setTimeout> | undefined
+    let settled = false
+
+    const removeAbortListener = () => {
+      try {
+        signal.removeEventListener('abort', abort)
+      } catch {
+        // Teardown can race an embedded signal owner being destroyed.
+      }
+    }
+    const clearTimer = () => {
+      if (timeout === undefined) return
+      try {
+        window.clearTimeout(timeout)
+      } catch {
+        // A failed host cleanup must not prevent retry settlement.
+      }
+    }
+    const abort = () => {
+      if (settled) return
+      settled = true
+      clearTimer()
+      removeAbortListener()
+      reject(new DOMException('Aborted', 'AbortError'))
+    }
+
+    try {
+      timeout = window.setTimeout(() => {
+        if (settled) return
+        settled = true
+        removeAbortListener()
+        resolve()
+      }, delayMs)
+
+      // Some embedded timer shims invoke callbacks synchronously.
+      if (settled) return
+
+      signal.addEventListener('abort', abort, { once: true })
+      if (signal.aborted) abort()
+    } catch (error: unknown) {
+      if (settled) return
+      settled = true
+      clearTimer()
+      removeAbortListener()
+      reject(error)
+    }
+  })
+}
+
+export function postWindowsSyncStatus(
+  status: 'complete' | 'failed',
+  message: string,
+): void {
+  ;(
+    window as Window & {
+      chrome?: {
+        webview?: {
+          postMessage(payload: {
+            kind: 'zerochat.syncStatus'
+            status: 'complete' | 'failed'
+            message: string
+          }): void
+        }
+      }
+    }
+  ).chrome?.webview?.postMessage({
+    kind: 'zerochat.syncStatus',
+    status,
+    message,
+  })
+}
+
 export function isAbortError(error: unknown): boolean {
   return (
     (typeof DOMException !== 'undefined' &&
@@ -301,18 +338,29 @@ export function generationRetryDelayMs(retryIndex: number): number {
   )
 }
 
+export const REDACTED_SECRET = '[redacted]'
+export const REDACTED_URL = '[redacted-url]'
+export const REDACTED_PATH = '[redacted-path]'
+
 export function redactSensitiveText(value: string): string {
   return value
     .replace(/\bhttps?:\/\/[^\s"'<>]+/gi, REDACTED_URL)
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, REDACTED_SECRET)
-    .replace(/\bghp_[A-Za-z0-9_]{12,}\b/g, REDACTED_SECRET)
-    .replace(/\bgithub_pat_[A-Za-z0-9_]{12,}\b/g, REDACTED_SECRET)
-    .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, REDACTED_SECRET)
-    .replace(/\bAKIA[0-9A-Z]{16}\b/g, REDACTED_SECRET)
+    .replace(
+      /(?:sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,}|AIza[0-9A-Za-z_-]{20,}|AKIA[0-9A-Z]{16})/g,
+      REDACTED_SECRET,
+    )
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, `Bearer ${REDACTED_SECRET}`)
     .replace(
       /\b(authorization|x-api-key|api[_-]?key)\s*[:=]\s*["']?[^"',\s;}]+/gi,
-      (_match, name: string) => `${name}: ${REDACTED_SECRET}`,
+      '$1: ' + REDACTED_SECRET,
+    )
+    .replace(
+      /(\\\\[^\\/\s"']+[\\/]|[a-z]:[\\/]|\/(home|users|tmp)\/)[^\s"']+/gi,
+      REDACTED_PATH,
+    )
+    .replace(
+      /(["'])([^"']*)\[redacted-path\][^"']*\1/g,
+      '$2' + REDACTED_PATH,
     )
 }
 

@@ -1,14 +1,14 @@
 use crate::{
     LinuxAppState,
     ai_protocol::{provider_proxy_access_key, provider_request},
-    background::{poll_background_result, spawn_model_list_request},
+    background::{BACKGROUND_TASK_DISCONNECTED, poll_background_result, spawn_model_list_request},
     i18n::{localize_ai_error, replace_placeholders, tr},
     models::ProviderConfig,
     models::ProviderKind,
     providers::{
         ProviderModelCapability, model_for_provider_audio_speech,
         model_for_provider_audio_transcription, model_for_provider_capability,
-        provider_display_name, provider_key_missing,
+        provider_display_name, provider_key_missing, provider_request_is_current,
     },
     ui_helpers::{
         editable_entry, optional_text, row_spacing, settings_box, settings_card, settings_text,
@@ -524,34 +524,61 @@ fn run_provider_connectivity_check(
     let (sender, receiver) = mpsc::channel();
     let request_provider = provider_request(&provider, &state.sync_config());
     let access_key = provider_proxy_access_key(&request_provider, || state.cloudflare_access_key());
+    let api_key = state.provider_key(&provider.id);
     spawn_model_list_request(
-        request_provider,
-        state.provider_key(&provider.id),
-        access_key,
+        request_provider.clone(),
+        api_key.clone(),
+        access_key.clone(),
         sender,
     );
 
     let locale = locale.to_owned();
-    poll_background_result(receiver, move |result| {
-        button.set_sensitive(true);
-        button.set_label(tr(&locale, "button.checkConnectivity"));
-        match result {
-            Ok(models) => {
-                let count = models.len().to_string();
-                status.set_text(&replace_placeholders(
-                    tr(&locale, "notice.providerConnectivityPassed"),
-                    &[("{count}", &count)],
-                ));
+    let provider_id = provider_id.to_owned();
+    poll_background_result(
+        receiver,
+        move |result| {
+            button.set_sensitive(true);
+            button.set_label(tr(&locale, "button.checkConnectivity"));
+            let Some(current_provider) = state.provider(&provider_id) else {
+                status.set_text("");
+                return;
+            };
+            let current_request_provider =
+                provider_request(&current_provider, &state.sync_config());
+            let current_api_key = state.provider_key(&provider_id);
+            let current_access_key = provider_proxy_access_key(&current_request_provider, || {
+                state.cloudflare_access_key()
+            });
+            if !provider_request_is_current(
+                &request_provider,
+                &current_request_provider,
+                &api_key,
+                &current_api_key,
+                &access_key,
+                &current_access_key,
+            ) {
+                status.set_text("");
+                return;
             }
-            Err(message) => {
-                let message = localize_ai_error(&locale, &message);
-                status.set_text(&replace_placeholders(
-                    tr(&locale, "notice.providerConnectivityFailed"),
-                    &[("{message}", &message)],
-                ));
+            match result {
+                Ok(models) => {
+                    let count = models.len().to_string();
+                    status.set_text(&replace_placeholders(
+                        tr(&locale, "notice.providerConnectivityPassed"),
+                        &[("{count}", &count)],
+                    ));
+                }
+                Err(message) => {
+                    let message = localize_ai_error(&locale, &message);
+                    status.set_text(&replace_placeholders(
+                        tr(&locale, "notice.providerConnectivityFailed"),
+                        &[("{message}", &message)],
+                    ));
+                }
             }
-        }
-    });
+        },
+        || Err(BACKGROUND_TASK_DISCONNECTED.to_owned()),
+    );
 }
 
 #[cfg(test)]

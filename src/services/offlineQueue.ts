@@ -2,6 +2,7 @@ import type {
   AppData,
   ChatMessage,
   Conversation,
+  OfflineReplayClaim,
   ProviderConfig,
   QueuedTextRequest,
 } from '../types'
@@ -185,11 +186,31 @@ export function enabledProviderForQueuedText(
   )
 }
 
-function patchedQueuedTextAssistant(
+export function ownsOfflineReplayClaim(
+  snapshot: AppData | null,
+  conversationId: string,
+  assistantId: string,
+  claim: OfflineReplayClaim,
+): boolean {
+  const assistant = snapshot?.conversations
+    .find((conversation) => conversation.id === conversationId)
+    ?.messages.find((message) => message.id === assistantId)
+
+  return (
+    assistant?.status === 'streaming' &&
+    assistant.offlineReplayClaim?.claimId === claim.claimId &&
+    assistant.offlineReplayClaim.owner === claim.owner
+  )
+}
+
+export function patchQueuedTextAssistant(
   message: ChatMessage,
   patch: Partial<ChatMessage>,
 ): ChatMessage {
   const updated = { ...message, ...patch }
+  if (updated.offlineReplayClaim === undefined) {
+    delete updated.offlineReplayClaim
+  }
 
   if (updated.status === 'queued' || updated.status === 'streaming') {
     return updated
@@ -197,6 +218,7 @@ function patchedQueuedTextAssistant(
 
   const terminal = { ...updated }
   delete terminal.queuedTextRequest
+  delete terminal.offlineReplayClaim
   return terminal
 }
 
@@ -209,7 +231,7 @@ export function updateQueuedTextAssistant(
     ...conversation,
     messages: conversation.messages.map((message) =>
       message.id === assistantId
-        ? patchedQueuedTextAssistant(message, patch)
+        ? patchQueuedTextAssistant(message, patch)
         : message,
     ),
   }
@@ -218,11 +240,15 @@ export function updateQueuedTextAssistant(
 export function startQueuedTextAssistant(
   conversation: Conversation,
   assistantId: string,
+  claim?: OfflineReplayClaim,
+  generationId?: string,
 ): Conversation {
   return updateQueuedTextAssistant(conversation, assistantId, {
     content: '',
     status: 'streaming',
     error: undefined,
+    ...(claim ? { offlineReplayClaim: claim } : {}),
+    ...(generationId ? { generationId } : {}),
   })
 }
 

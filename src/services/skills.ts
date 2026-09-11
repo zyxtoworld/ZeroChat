@@ -99,12 +99,28 @@ const fallbackSkillHeadings = new Set([
 
 function yieldToBrowser(): Promise<void> {
   return new Promise((resolve) => {
-    if (typeof globalThis.requestIdleCallback === 'function') {
-      globalThis.requestIdleCallback(() => resolve(), { timeout: 32 })
-      return
+    let settled = false
+    const settle = () => {
+      if (settled) return
+      settled = true
+      resolve()
     }
 
-    globalThis.setTimeout(resolve, 0)
+    if (typeof globalThis.requestIdleCallback === 'function') {
+      try {
+        globalThis.requestIdleCallback(settle, { timeout: 32 })
+        return
+      } catch {
+        // Embedded runtimes can expose requestIdleCallback while rejecting it during teardown.
+      }
+    }
+
+    try {
+      globalThis.setTimeout(settle, 0)
+    } catch {
+      // A host that rejects both schedulers must still let the bounded build finish.
+      settle()
+    }
   })
 }
 
@@ -114,6 +130,20 @@ function stableId(prefix: string, index: number): string {
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\r\n?/g, '\n').replace(/[ \t]+\n/g, '\n').trim()
+}
+
+function safeSliceEnd(value: string, end: number): number {
+  if (end <= 0 || end >= value.length) return end
+
+  const previous = value.charCodeAt(end - 1)
+  const next = value.charCodeAt(end)
+  const splitsSurrogatePair =
+    previous >= 0xd800 &&
+    previous <= 0xdbff &&
+    next >= 0xdc00 &&
+    next <= 0xdfff
+
+  return splitsSurrogatePair ? end - 1 : end
 }
 
 export function estimateTokens(value: string): number {
@@ -234,6 +264,8 @@ function splitLongText(value: string): string[] {
       }
     }
 
+    end = safeSliceEnd(value, end)
+
     const chunk = normalizeWhitespace(value.slice(start, end))
 
     if (chunk) {
@@ -325,7 +357,7 @@ function descriptionFromContent(content: string): string {
       .map((item) => item.replace(/^#{1,6}\s+/, '').trim())
       .find((item) => item && !item.startsWith('```')) ?? ''
 
-  return line.length > 140 ? `${line.slice(0, 137)}...` : line
+  return line.length > 140 ? `${line.slice(0, safeSliceEnd(line, 137))}...` : line
 }
 
 export async function createUserSkillFromContent(
@@ -488,7 +520,7 @@ function trimToBudget(content: string, tokenBudget: number): string {
   }
 
   const charBudget = Math.max(120, Math.floor(tokenBudget * 3.8))
-  return `${content.slice(0, charBudget).trim()}...`
+  return `${content.slice(0, safeSliceEnd(content, charBudget)).trim()}...`
 }
 
 function pickedChunks(

@@ -32,4 +32,11 @@ class AndroidAdaptiveLayoutTest {
         assertFalse(androidChatTopBarUsesIconActions(480))
         assertFalse(androidChatTopBarUsesIconActions(840))
     }
+
+    @Test
+    fun compactHeightHidesOptionalProviderModelHintToKeepSetupActionVisible() {
+        assertTrue(androidChatShowsProviderModelFeatureHint(720, requested = true))
+        assertFalse(androidChatShowsProviderModelFeatureHint(719, requested = true))
+        assertFalse(androidChatShowsProviderModelFeatureHint(720, requested = false))
+    }
 }

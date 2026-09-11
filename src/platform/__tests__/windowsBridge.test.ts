@@ -153,6 +153,62 @@ describe('Windows secret bridge', () => {
       expect.any(Function),
       5000,
     )
+    expect(harness.runtime.clearTimeout).toHaveBeenCalledWith(1)
+    expect(harness.runtime.chrome.webview.removeEventListener)
+      .toHaveBeenCalledTimes(1)
+  })
+
+  it('maps a synchronously fired timer to a timeout without leaking a host error', async () => {
+    const harness = createHarness()
+    harness.runtime.setTimeout = vi.fn((handler: () => void) => {
+      handler()
+      return 7
+    })
+
+    await expect(
+      probeWindowsSecretBridge({ runtime: harness.runtime }),
+    ).rejects.toMatchObject({ code: 'timeout' })
+    expect(harness.postMessage).not.toHaveBeenCalled()
+    expect(harness.runtime.clearTimeout).toHaveBeenCalledWith(7)
+    expect(harness.runtime.chrome.webview.removeEventListener)
+      .not.toHaveBeenCalled()
+  })
+
+  it('maps a synchronous timer setup failure to bridge-unavailable', async () => {
+    const harness = createHarness()
+    harness.runtime.setTimeout = vi.fn(() => {
+      throw new Error('timer setup failed')
+    })
+
+    await expect(
+      probeWindowsSecretBridge({ runtime: harness.runtime }),
+    ).rejects.toMatchObject({ code: 'bridge-unavailable' })
+    expect(harness.postMessage).not.toHaveBeenCalled()
+    expect(harness.runtime.chrome.webview.addEventListener)
+      .not.toHaveBeenCalled()
+  })
+
+  it('settles the request when timeout cleanup throws after a response', async () => {
+    const harness = createHarness()
+    harness.runtime.clearTimeout = vi.fn(() => {
+      throw new Error('timer cleanup failed')
+    })
+    let resolved = false
+    const pending = probeWindowsSecretBridge({ runtime: harness.runtime }).then(
+      () => {
+        resolved = true
+      },
+    )
+
+    harness.emit(successMetadata(harness.request(), 'probe'))
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(resolved).toBe(true)
+    expect(harness.runtime.chrome.webview.removeEventListener)
+      .toHaveBeenCalledTimes(1)
+    await pending
   })
 
   it('rejects response extensions and exposes only fixed native error codes', async () => {
@@ -187,6 +243,58 @@ describe('Windows secret bridge', () => {
       message: 'Windows secret bridge failed.',
     })
     expect(JSON.stringify(failure)).not.toContain('credential-value')
+  })
+
+  it('maps a synchronous postMessage failure to bridge-unavailable', async () => {
+    const harness = createHarness()
+    harness.runtime.chrome.webview.postMessage = vi.fn(() => {
+      throw new Error('post failed')
+    })
+
+    await expect(
+      probeWindowsSecretBridge({ runtime: harness.runtime }),
+    ).rejects.toMatchObject({ code: 'bridge-unavailable' })
+    expect(harness.runtime.clearTimeout).toHaveBeenCalledWith(1)
+    expect(harness.runtime.chrome.webview.removeEventListener)
+      .toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores a response that arrives after timeout and settles once', async () => {
+    const harness = createHarness()
+    let settlementCount = 0
+    const pending = probeWindowsSecretBridge({ runtime: harness.runtime }).then(
+      () => {
+        settlementCount += 1
+      },
+      () => {
+        settlementCount += 1
+      },
+    )
+    const request = harness.request()
+
+    harness.timeout()
+    await pending
+    harness.emit(successMetadata(request, 'probe'))
+    await Promise.resolve()
+
+    expect(settlementCount).toBe(1)
+    expect(harness.runtime.chrome.webview.removeEventListener)
+      .toHaveBeenCalledTimes(1)
+  })
+
+  it('settles when listener cleanup throws', async () => {
+    const harness = createHarness()
+    harness.runtime.chrome.webview.removeEventListener = vi.fn(() => {
+      throw new Error('listener cleanup failed')
+    })
+
+    const pending = probeWindowsSecretBridge({ runtime: harness.runtime })
+    harness.emit(successMetadata(harness.request(), 'probe'))
+
+    await expect(pending).resolves.toMatchObject({
+      migrationState: 'complete',
+      revision: 'revision-1',
+    })
   })
 
   it('rejects invalid names, duplicates, and oversized values before postMessage', async () => {

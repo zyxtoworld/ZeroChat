@@ -11,12 +11,21 @@ import { windowsTrustedMsixNextProofGate as resolveWindowsTrustedMsixNextProofGa
 import {
   currentEvidenceUsage,
   parseCurrentEvidenceCliArgs,
+  shouldAllowStaleVerifyReleaseCheckpointForWriteDocs,
 } from './release-current-evidence-cli.mjs'
-import { syncLiveProviderUiMilestoneChecklist } from './release-milestone-checklist.mjs'
+import {
+  syncLiveProviderUiQaResidualChecklist,
+  syncLiveProviderUiMilestoneChecklist,
+  syncLiveSyncQaResidualChecklist,
+  syncLiveSyncRequirementsMilestoneChecklist,
+} from './release-milestone-checklist.mjs'
 import {
   currentAndroidDebugApkEvidence,
   sameAndroidSourceFingerprint,
 } from './android-source-fingerprint.mjs'
+import { currentWebAppShellContractMarkers } from './current-web-app-shell-contract.mjs'
+import { windowsTrustedMsixReleasePassFailures } from './windows-msix-release-pass-policy.mjs'
+import { verifyReleaseCheckpointBindingFailures } from './verify-release-checkpoint-binding.mjs'
 
 const cliResult = parseCurrentEvidenceCliArgs(process.argv.slice(2))
 
@@ -32,6 +41,11 @@ if (cliResult.kind === 'error') {
 
 const checkOnly = cliResult.mode === 'check'
 const writeDocs = cliResult.mode === 'write-docs'
+const allowStaleVerifyReleaseCheckpointForWriteDocs =
+  shouldAllowStaleVerifyReleaseCheckpointForWriteDocs({
+    mode: cliResult.mode,
+    environment: process.env,
+  })
 
 const paths = {
   requirements: 'docs/REQUIREMENTS.md',
@@ -60,6 +74,8 @@ const paths = {
   releaseVisual: '.visual-audit/visual-audit-manifest.json',
   windowsTrustedMsixFailure:
     '.manual-qa/windows-msix-current-trusted-install-update-qa.failure.json',
+  windowsTrustedMsixPass:
+    '.manual-qa/windows-msix-current-trusted-install-update-qa.json',
   windowsCurrentMsixPackageCandidate: '.manual-qa/ZeroChat_0.0.1.0_x64.msix',
   distIndex: 'dist/index.html',
 }
@@ -185,6 +201,7 @@ function assertVerifyReleaseCheckpointFreshness(evidence) {
   const comparedReports = [
     ['release diagnostics', evidence.releaseDiagnostics],
     ['release blockers', evidence.releaseBlockers],
+    ['Web current-page QA', evidence.webCurrentPage],
   ]
 
   for (const [label, report] of comparedReports) {
@@ -195,6 +212,19 @@ function assertVerifyReleaseCheckpointFreshness(evidence) {
         `${paths.verifyReleaseCheckpoint} is older than the current ${label} report ${report.path}; rerun D:\\Node.js\\pnpm.CMD run verify:release before syncing current evidence.`,
       )
     }
+  }
+}
+
+async function assertVerifyReleaseCheckpointInputBinding(evidence) {
+  const bindingFailures = await verifyReleaseCheckpointBindingFailures({
+    binding: evidence.verifyReleaseCheckpoint.json.inputBinding,
+    repoRoot: process.cwd(),
+  })
+
+  if (bindingFailures.length > 0) {
+    throw new Error(
+      `${paths.verifyReleaseCheckpoint} input binding is stale or invalid: ${bindingFailures.join(' ')} Rerun D:\\Node.js\\pnpm.CMD run verify:release before syncing current evidence.`,
+    )
   }
 }
 
@@ -237,6 +267,22 @@ function assertCurrentMsixPackageCandidateFreshness(evidence) {
     evidence,
     'windows-trusted-msix-release-pass',
   )
+
+  if (!windowsBlocker) {
+    const failures = windowsTrustedMsixReleasePassFailures({
+      report: evidence.windowsTrustedMsixPass?.json,
+      validation: evidence.releaseBlockers.json.validationResults?.find(
+        (item) => item?.id === 'windowsTrustedMsixFailure',
+      ),
+    })
+    if (failures.length > 0) {
+      throw new Error(
+        `Windows trusted MSIX blocker is absent without a valid current release pass: ${failures.join(' ')}`,
+      )
+    }
+    return
+  }
+
   const failure = currentMsixPackageCandidateFreshnessError(
     windowsBlocker?.evidence?.currentMsixPackageCandidate,
     evidence.currentWindowsMsixPackageCandidate,
@@ -266,12 +312,13 @@ function webCurrentPageLine(report) {
   const visualAudit = report.json.visualAudit ?? {}
   const iconSyncDom = report.json.iconSyncDom ?? {}
   const screenshotCount = visualAudit.screenshotCount ?? visualAudit.expectedScreenshotCount
-  const syncProofCount = iconSyncDom.syncSettingsOpenProofCount
+  const expectedScreenshotCount = visualAudit.expectedScreenshotCount ?? screenshotCount
+  const syncSettingsOpened = iconSyncDom.syncSettingsOpened === true
   const browserPassed = report.json.browserSmoke?.passed === true
 
   return [
     `- Web current-page QA: \`${report.path}\`, ${formatBytes(report.bytes)} bytes / SHA-256 \`${report.sha256}\`${generatedAt ? `, generatedAt \`${generatedAt}\`${localTime ? ` (${localTime})` : ''}` : ''}, passed ${report.json.passed === true}.`,
-    `  Web source digest \`${webSource.digest ?? 'unknown'}\`${webSource.fileCount ? ` across ${webSource.fileCount} files` : ''}; screenshots ${screenshotCount ?? 'unknown'}/118; browser smoke ${browserPassed ? 'passed' : 'not-passed'}; sync settings click proofs ${syncProofCount ?? 'unknown'}.`,
+    `  Web source digest \`${webSource.digest ?? 'unknown'}\`${webSource.fileCount ? ` across ${webSource.fileCount} files` : ''}; screenshots ${screenshotCount ?? 'unknown'}/${expectedScreenshotCount ?? 'unknown'}; browser smoke ${browserPassed ? 'passed' : 'not-passed'}; Settings to Sync proof ${syncSettingsOpened ? 'passed' : 'not-passed'}.`,
   ].join('\n')
 }
 
@@ -350,8 +397,20 @@ function verifyReleaseFailureDetailLine(evidence) {
     failedSteps.find((step) => step?.label === 'Runtime smoke artifacts') ?? failedSteps[0]
   const failureText = `${checkpoint.failureSummary ?? ''}\n${runtimeFailure?.error ?? ''}`
 
+  if (
+    checkpoint.status === 'passed' &&
+    checkpoint.passed === true &&
+    failedSteps.length === 0
+  ) {
+    return 'Verify-release checkpoint detail: the current full local release verifier passed with no failed steps; this proves the local gate only and does not close target-host or remote release blockers.'
+  }
+
   if (checkpoint.status !== 'failed' || !runtimeFailure || failureText.trim() === '') {
     return 'Verify-release checkpoint failure detail: no failed release checkpoint detail is currently captured; rerun `pnpm run verify:release` before treating the handoff as current.'
+  }
+
+  if (runtimeFailure.label !== 'Runtime smoke artifacts') {
+    return `Verify-release checkpoint failure detail: failed \`${runtimeFailure.label}\`; expectedFailure ${checkpoint.expectedFailure === true ? 'true' : 'false'}, expectedFailureKind \`${checkpoint.expectedFailureKind ?? 'none'}\`. Inspect \`${paths.verifyReleaseCheckpoint}\` for the exact sanitized gate output; this failure is not classified as a Windows runtime-artifact blocker.`
   }
 
   const classification =
@@ -467,6 +526,24 @@ function verifyReleaseFailureDetailLine(evidence) {
 
 function releaseBlockerById(evidence, id) {
   return evidence.releaseBlockers.json.blockers?.find((blocker) => blocker.id === id)
+}
+
+function windowsTrustedMsixCurrentReleasePassLine(evidence) {
+  const failures = windowsTrustedMsixReleasePassFailures({
+    report: evidence.windowsTrustedMsixPass?.json,
+    validation: evidence.releaseBlockers.json.validationResults?.find(
+      (item) => item?.id === 'windowsTrustedMsixFailure',
+    ),
+  })
+  if (failures.length > 0) {
+    throw new Error(
+      `Cannot summarize Windows trusted MSIX release pass: ${failures.join(' ')}`,
+    )
+  }
+
+  const report = evidence.windowsTrustedMsixPass.json
+  const cleanup = report.cleanupVerified
+  return `Windows trusted MSIX current release-pass: run \`${report.runId}\` passed elevated fresh install \`${report.previousVersion}\`, trusted update to \`${report.currentVersion}\`, packaged launch after both stages, uninstall, and cleanup; current \`dist\` binding \`${report.distWebAssets.fileCount} files / ${report.distWebAssets.totalBytes} bytes\`, fresh/update screenshots \`${report.launchAfterInstall.windowWidth}x${report.launchAfterInstall.windowHeight} / ${report.launchAfterInstall.screenshotBytes} bytes\` and \`${report.launchAfterUpdate.windowWidth}x${report.launchAfterUpdate.windowHeight} / ${report.launchAfterUpdate.screenshotBytes} bytes\`; cleanup leaves packageInstalled ${cleanup.packageInstalled}, test certificates false, privatePfxExists ${cleanup.privatePfxExists}, packageLocalDataExists ${cleanup.packageLocalDataExists}, temporaryDirectoryExists ${cleanup.temporaryDirectoryExists}; report \`${paths.windowsTrustedMsixPass}\`, ${formatBytes(evidence.windowsTrustedMsixPass.bytes)} bytes / SHA-256 \`${evidence.windowsTrustedMsixPass.sha256}\`.`
 }
 
 function liveProviderUiEvidenceState(evidence) {
@@ -1092,7 +1169,75 @@ function verifyCheckpointLabel(evidence) {
   return 'Current verifier checkpoint'
 }
 
-function buildRequirementsOverlay(evidence) {
+function currentWindowsTrustedMsixRuntimeQaLine(evidence) {
+  const preflight = evidence.windowsHostPreflight.json ?? {}
+  return `Windows trusted MSIX install/update/uninstall 当前 runtime QA：当前 host 状态以 \`.manual-qa/windows-msix-host-preflight.json\` 为准（status: \`${preflight.status ?? 'unknown'}\`, hostReadyForTrustedMsix: ${preflight.hostReadyForTrustedMsix === true ? 'true' : 'false'}, currentShellElevated: ${preflight.currentShellElevated === true ? 'true' : 'false'}）。`
+}
+
+const currentProductContractMarkerStrings = Object.freeze([
+  'QA marker: Current verify-release metadata is validated from the checkpoint report, never a hard-coded digest.',
+  ...new Set([
+    ...currentWebAppShellContractMarkers.requirementsDoc,
+    ...currentWebAppShellContractMarkers.qaAudit,
+  ]),
+])
+
+const currentLiveSyncContractMarkerStrings = Object.freeze([
+  'QA marker: Live-sync drill CLI help and invalid arguments cannot write reports or touch remote storage.',
+  'QA marker: Live-sync release evidence rejects ephemeral tunnel endpoints.',
+])
+
+const currentGeneratedContractMarkerStrings = Object.freeze([
+  ...currentProductContractMarkerStrings,
+  ...currentLiveSyncContractMarkerStrings,
+])
+
+function currentWebAppShellContractSection(markers) {
+  return [
+    'Current product contract / QA markers:',
+    '',
+    'QA marker: Current verify-release metadata is validated from the checkpoint report, never a hard-coded digest.',
+    ...markers.map((marker) => `- ${marker}`),
+    '',
+    'Current live-sync safety contract:',
+    '',
+    '- QA marker: Live-sync drill CLI help and invalid arguments cannot write reports or touch remote storage.',
+    '- QA marker: Live-sync release evidence rejects ephemeral tunnel endpoints.',
+    '- Live sync release drill rejects invalid CLI arguments before environment-driven report or remote behavior.',
+    '- Live sync release-pass drill-name uniqueness guard rejects an epoch-millisecond suffix error before release evidence is accepted.',
+    '- A passing live sync release drill report is the only release evidence; diagnostic reports retain requiredInputs, missingInputKeys, and releaseBlockerSummary.',
+  ]
+}
+
+function currentLiveProviderSafetyContractSection() {
+  return [
+    '',
+    'Current live-provider API/UI smoke safety contract:',
+    '',
+    '- Temporary provider API and UI smoke must normalize known endpoint-suffixed Base URLs, require minimal streaming `ZeroChat OK` proof, and retain redacted per-candidate status summaries.',
+    '- Browser-origin UI smoke records `assistant-marker` and `ZC_LIVE_UI_PASS_`, uses `ZEROCHAT_LIVE_PROVIDER_UI_PROXY_URL` when a browser-allowed relay is required, and fails quickly with visible-page diagnostics.',
+    '- Low-cost embedding/moderation capability smoke is also separately confirmed.',
+    '- Audio speech/transcription round-trip smoke is separately confirmed.',
+    '- Current browser-origin artifacts include `web-live-ui-provider-smoke.png`, `web-live-ui-provider-smoke-current.png`, and `web-live-ui-provider-smoke-current-relay.png`; live provider UI screenshots are checked by `check:live-provider-ui-screenshot`.',
+    '- Live provider full-capability current source fingerprint guard and Live provider diagnostic current source fingerprint guard bind sanitized evidence to the current source tree.',
+    '- Live provider API smoke report artifact is sanitized before validation or upload; sourceFingerprint and model-selection source evidence remain current-source bound.',
+  ]
+}
+
+function stripCurrentProductContractMarkers(text) {
+  return normalizeGeneratedDocumentText(
+    currentGeneratedContractMarkerStrings.reduce(
+      (source, marker) => source.replaceAll(marker, ''),
+      text,
+    ),
+  )
+}
+
+function normalizeGeneratedDocumentText(text) {
+  return text.replace(/[ \t]+(?=\r?$)/gmu, '')
+}
+
+function buildRequirementsOverlayVerbose(evidence) {
   const releaseDiagnosticsTime = asiaShanghaiDateTime(
     generatedAtOf(evidence.releaseDiagnostics.json),
   )
@@ -1114,6 +1259,7 @@ function buildRequirementsOverlay(evidence) {
   const visualAudit = evidence.webCurrentPage.json.visualAudit ?? {}
   const webQaTime = asiaShanghaiDateTime(generatedAtOf(evidence.webCurrentPage.json))
   const webScreenshotCount = visualAudit.screenshotCount ?? visualAudit.expectedScreenshotCount
+  const webExpectedScreenshotCount = visualAudit.expectedScreenshotCount ?? webScreenshotCount
   const androidRuntimeLine = androidRuntimeEvidenceLine(evidence)
   const hostedDiagnostics = hostedNativeCiDiagnostics(evidence)
   const liveSyncBlocker = releaseBlockerById(
@@ -1138,15 +1284,24 @@ function buildRequirementsOverlay(evidence) {
   const liveProviderHistoricalAttemptContext =
     liveProviderHistoricalAttemptContextLine(liveProviderBlockerEvidence)
   const windowsBlocker = releaseBlockerById(evidence, 'windows-trusted-msix-release-pass')
+  const trustedMsixPass = evidence.windowsTrustedMsixPass.json ?? {}
   const currentMsix = windowsBlocker?.evidence?.currentMsixPackageCandidate
   const currentDistWebAssets =
     windowsBlocker?.evidence?.currentDistWebAssets ??
     currentMsix?.stageWebAssets ??
+    trustedMsixPass.distWebAssets ??
     {}
   const msixSummary =
-    currentMsix?.path && currentMsix?.sha256
+    !windowsBlocker
+      ? `${windowsTrustedMsixCurrentReleasePassLine(evidence)} `
+      : currentMsix?.path && currentMsix?.sha256
       ? `current MSIX package-candidate \`${currentMsix.path}\` 为 ${formatBytes(currentMsix.bytes)} bytes / SHA-256 \`${currentMsix.sha256}\`，staged web tree 与当前 \`dist\` 匹配 ${currentMsix.stageWebAssets?.fileCount ?? 'unknown'} files / ${typeof currentMsix.stageWebAssets?.totalBytes === 'number' ? formatBytes(currentMsix.stageWebAssets.totalBytes) : 'unknown'} bytes / SHA-256 \`${currentMsix.stageWebAssets?.sha256 ?? 'unknown'}\`；package-internal web tree 与当前 \`dist\` 及 staged web tree 匹配 ${currentMsix.packageWebAssets?.fileCount ?? 'unknown'} files / ${typeof currentMsix.packageWebAssets?.totalBytes === 'number' ? formatBytes(currentMsix.packageWebAssets.totalBytes) : 'unknown'} bytes / SHA-256 \`${currentMsix.packageWebAssets?.sha256 ?? 'unknown'}\`，packageWebMatchesDist: ${currentMsix.packageWebMatchesDist === true ? 'true' : 'false'}，packageWebMatchesStage: ${currentMsix.packageWebMatchesStage === true ? 'true' : 'false'}；该 package-candidate 只是 packaging freshness evidence，不是 trusted install/update/uninstall release evidence。`
       : 'current MSIX package-candidate 未在 release-blocker summary 中报告；不能作为 trusted install/update/uninstall release evidence。'
+  const windowsRuntimeQaEvidence = windowsBlocker
+    ? `当前 \`.manual-qa/ZeroChat_0.0.1.0_x64.msix\` package-candidate 为 ${currentMsix?.bytes ? formatBytes(currentMsix.bytes) : 'unknown'} bytes / SHA-256 \`${currentMsix?.sha256 ?? 'unknown'}\`，staged \`web\` tree 与当前 \`dist\` 匹配 ${currentMsix?.stageWebAssets?.fileCount ?? 'unknown'} files / ${typeof currentMsix?.stageWebAssets?.totalBytes === 'number' ? formatBytes(currentMsix.stageWebAssets.totalBytes) : 'unknown'} bytes / SHA-256 \`${currentMsix?.stageWebAssets?.sha256 ?? 'unknown'}\`，stageWebMatchesDist: ${currentMsix?.stageWebMatchesDist === true ? 'true' : 'false'}；package-internal \`web\` tree 匹配当前 \`dist\` 与 staged \`web\` tree ${currentMsix?.packageWebAssets?.fileCount ?? 'unknown'} files / ${typeof currentMsix?.packageWebAssets?.totalBytes === 'number' ? formatBytes(currentMsix.packageWebAssets.totalBytes) : 'unknown'} bytes / SHA-256 \`${currentMsix?.packageWebAssets?.sha256 ?? 'unknown'}\`，packageWebMatchesDist: ${currentMsix?.packageWebMatchesDist === true ? 'true' : 'false'}，packageWebMatchesStage: ${currentMsix?.packageWebMatchesStage === true ? 'true' : 'false'}；Windows trusted MSIX host readiness \`${evidence.windowsHostPreflight.json.trustedMsixQaReadiness ?? 'unknown'}\``
+    : windowsTrustedMsixCurrentReleasePassLine(evidence)
+  const historicalLiveSyncMilestoneLine =
+    '- [x] Disposable live sync release-pass（历史 source-bound 证据；当前 source fingerprint/输入刷新未通过，不代表当前 release blocker 已关闭。）'
   const routeHealthBlockers = routeHealthBlockerText(liveProviderFailureSummary)
   const affectedCapabilities = affectedCapabilitiesText(liveProviderFailureSummary)
   const liveProviderHistoricalAttemptText = liveProviderHistoricalAttemptContext
@@ -1162,7 +1317,9 @@ function buildRequirementsOverlay(evidence) {
   const ownershipMatrixLine = releaseBlockerOwnershipMatrixLine(evidence)
   const aggregateChildSafetyLine = aggregateDiagnosticChildSafetyLine(evidence)
   const windowsTrustedCurrentBlockerMarkerText =
-    `Windows trusted MSIX 当前 blocker 语义：${windowsTrustedMsixCurrentBlockerLine(evidence)} Historical trusted-MSIX AppX deployment-service cleanup failure is preserved diagnostic context only, not the current blocker；`
+    windowsBlocker
+      ? `Windows trusted MSIX 当前 blocker 语义：${windowsTrustedMsixCurrentBlockerLine(evidence)} Historical trusted-MSIX AppX deployment-service cleanup failure is preserved diagnostic context only, not the current blocker；`
+      : `${windowsTrustedMsixCurrentReleasePassLine(evidence)} Historical trusted-MSIX AppX deployment-service cleanup failure is preserved diagnostic context only and does not reopen the current pass；`
   const liveProviderDiagnosticStatus =
     evidence.liveProviderDiagnostic.json.status ?? 'unknown'
   const liveProviderDiagnosticEvidenceType =
@@ -1189,21 +1346,27 @@ function buildRequirementsOverlay(evidence) {
   let overlay = [
     `## 当前发布证据覆盖层（${releaseDiagnosticsTime || 'unknown time'}）`,
     '',
-    `- 注：PRD 顶部只保留本次机器可读 handoff；下方带更早时间戳的“当前...”条目保留为历史诊断流水，历史诊断流水保留在 \`docs/QA_AUDIT.md\` 与下方历史覆盖层，活跃 release blocker 交接以 ${releaseDiagnosticsTime || 'unknown time'} 的机器可读 handoff 为准。`,
+    `- 注：PRD 只保留当前机器可读 handoff；逐次运行证据写入被忽略的 \`.manual-qa\` 或 Actions artifacts，不追加到 Git 跟踪文档。活跃 release blocker 交接以 ${releaseDiagnosticsTime || 'unknown time'} 的机器可读 handoff 为准。`,
     '',
-    `- 当前机器可读 blocker handoff（${releaseDiagnosticsTime || 'unknown time'}）：\`D:\\Node.js\\pnpm.CMD run report:current-evidence\` 确认当前 sanitized handoff 来自 ${reportSummary('', evidence.releaseDiagnostics)}、${reportSummary('', evidence.releaseBlockers)}、${reportSummary('', evidence.verifyReleaseCheckpoint)}，failedStepLabels = [${verifyFailedLabels.map((label) => `\`${label}\``).join(', ')}]，${verifyFailureDetail} \`pnpm run check:verify-release-checkpoint\` 可复核，和 ${reportSummary('', evidence.strictPreflight)}。${aggregateChildSafetyLine} Aggregate diagnostic child hashes: Windows host preflight \`${evidence.windowsHostPreflight.sha256}\`; Hosted native CI \`${evidence.hostedNativeCi.sha256}\`; Live sync \`${evidence.liveSync.sha256}\`; Live provider ordinary API \`${evidence.liveProviderApi.sha256}\`; Live provider current diagnostic \`${evidence.liveProviderDiagnostic.sha256}\`; ${liveProviderFullHashLabel} \`${evidence.liveProviderFull.sha256}\`; Live provider UI current \`${evidence.liveProviderUi.sha256}\`; Live provider UI preserved attempt \`${evidence.liveProviderUiAttempt.sha256}\`; Native prereq \`${evidence.nativePrereq.sha256}\`。Web current-page QA 当前 ${asiaShanghaiDateTime(generatedAtOf(evidence.webCurrentPage.json))} 通过 ${webScreenshotCount ?? 'unknown'}/118 screenshots，\`.manual-qa/web-current-page-qa.json\` 为 ${formatBytes(evidence.webCurrentPage.bytes)} bytes / SHA-256 \`${evidence.webCurrentPage.sha256}\`，Web source digest \`${webSource.digest ?? 'unknown'}\`，current-page visual manifest 为 ${formatBytes(evidence.webCurrentPageVisual.bytes)} bytes / SHA-256 \`${evidence.webCurrentPageVisual.sha256}\`，release visual manifest 为 ${formatBytes(evidence.releaseVisual.bytes)} bytes / SHA-256 \`${evidence.releaseVisual.sha256}\`。`,
+    `- 当前机器可读 blocker handoff（${releaseDiagnosticsTime || 'unknown time'}）：\`D:\\Node.js\\pnpm.CMD run report:current-evidence\` 确认当前 sanitized handoff 来自 ${reportSummary('', evidence.releaseDiagnostics)}、${reportSummary('', evidence.releaseBlockers)}、${reportSummary('', evidence.verifyReleaseCheckpoint)}，failedStepLabels = [${verifyFailedLabels.map((label) => `\`${label}\``).join(', ')}]，${verifyFailureDetail} \`pnpm run check:verify-release-checkpoint\` 可复核，和 ${reportSummary('', evidence.strictPreflight)}。${aggregateChildSafetyLine} Aggregate diagnostic child hashes: Windows host preflight \`${evidence.windowsHostPreflight.sha256}\`; Hosted native CI \`${evidence.hostedNativeCi.sha256}\`; Live sync \`${evidence.liveSync.sha256}\`; Live provider ordinary API \`${evidence.liveProviderApi.sha256}\`; Live provider current diagnostic \`${evidence.liveProviderDiagnostic.sha256}\`; ${liveProviderFullHashLabel} \`${evidence.liveProviderFull.sha256}\`; Live provider UI current \`${evidence.liveProviderUi.sha256}\`; Live provider UI preserved attempt \`${evidence.liveProviderUiAttempt.sha256}\`; Native prereq \`${evidence.nativePrereq.sha256}\`。Web current-page QA 当前 ${asiaShanghaiDateTime(generatedAtOf(evidence.webCurrentPage.json))} 通过 ${webScreenshotCount ?? 'unknown'}/${webExpectedScreenshotCount ?? 'unknown'} screenshots，\`.manual-qa/web-current-page-qa.json\` 为 ${formatBytes(evidence.webCurrentPage.bytes)} bytes / SHA-256 \`${evidence.webCurrentPage.sha256}\`，Web source digest \`${webSource.digest ?? 'unknown'}\`，current-page visual manifest 为 ${formatBytes(evidence.webCurrentPageVisual.bytes)} bytes / SHA-256 \`${evidence.webCurrentPageVisual.sha256}\`，release visual manifest 为 ${formatBytes(evidence.releaseVisual.bytes)} bytes / SHA-256 \`${evidence.releaseVisual.sha256}\`。`,
     `- 当前 release blocker ownership matrix（${releaseDiagnosticsTime || 'unknown time'}）：${ownershipMatrixLine}`,
-    `- 当前 Windows trusted MSIX blocker 语义（${releaseDiagnosticsTime || 'unknown time'}）：${windowsTrustedMsixCurrentBlockerLine(evidence)}`,
+    `- 当前 Windows trusted MSIX ${windowsBlocker ? 'blocker' : 'release-pass'} 语义（${releaseDiagnosticsTime || 'unknown time'}）：${windowsBlocker ? windowsTrustedMsixCurrentBlockerLine(evidence) : windowsTrustedMsixCurrentReleasePassLine(evidence)}`,
     `- Live-sync evidence separation: ${liveSyncCanonicalReleaseEvidenceLine(evidence, liveSyncBlocker)}`,
     '',
-    `- 各平台 runtime QA：Web current-page QA 当前 ${webQaTime} 通过 ${webScreenshotCount ?? 'unknown'}/118 screenshots，\`.manual-qa/web-current-page-qa.json\` 为 ${formatBytes(evidence.webCurrentPage.bytes)} bytes / SHA-256 \`${evidence.webCurrentPage.sha256}\`，current-page visual manifest 为 ${formatBytes(evidence.webCurrentPageVisual.bytes)} bytes / SHA-256 \`${evidence.webCurrentPageVisual.sha256}\`，Web source digest \`${webSource.digest ?? 'unknown'}\`；${androidRuntimeLine}；Windows WebView runtime 当前匹配最新 \`dist\`（${currentDistWebAssets.fileCount ?? 'unknown'} files / \`${currentDistWebAssets.totalBytes ?? 'unknown'}\` bytes，\`webAssetsMatchDist: true\`）；当前 \`.manual-qa/ZeroChat_0.0.1.0_x64.msix\` package-candidate 为 ${currentMsix?.bytes ? formatBytes(currentMsix.bytes) : 'unknown'} bytes / SHA-256 \`${currentMsix?.sha256 ?? 'unknown'}\`，staged \`web\` tree 与当前 \`dist\` 匹配 ${currentMsix?.stageWebAssets?.fileCount ?? 'unknown'} files / ${typeof currentMsix?.stageWebAssets?.totalBytes === 'number' ? formatBytes(currentMsix.stageWebAssets.totalBytes) : 'unknown'} bytes / SHA-256 \`${currentMsix?.stageWebAssets?.sha256 ?? 'unknown'}\`，stageWebMatchesDist: ${currentMsix?.stageWebMatchesDist === true ? 'true' : 'false'}；package-internal \`web\` tree 匹配当前 \`dist\` 与 staged \`web\` tree ${currentMsix?.packageWebAssets?.fileCount ?? 'unknown'} files / ${typeof currentMsix?.packageWebAssets?.totalBytes === 'number' ? formatBytes(currentMsix.packageWebAssets.totalBytes) : 'unknown'} bytes / SHA-256 \`${currentMsix?.packageWebAssets?.sha256 ?? 'unknown'}\`，packageWebMatchesDist: ${currentMsix?.packageWebMatchesDist === true ? 'true' : 'false'}，packageWebMatchesStage: ${currentMsix?.packageWebMatchesStage === true ? 'true' : 'false'}；Windows trusted MSIX host readiness \`${evidence.windowsHostPreflight.json.trustedMsixQaReadiness ?? 'unknown'}\`；${appleTargetRuntimeEvidence} ${linuxTargetRuntimeEvidence}`,
+    `- 各平台 runtime QA：Web current-page QA 当前 ${webQaTime} 通过 ${webScreenshotCount ?? 'unknown'}/${webExpectedScreenshotCount ?? 'unknown'} screenshots，\`.manual-qa/web-current-page-qa.json\` 为 ${formatBytes(evidence.webCurrentPage.bytes)} bytes / SHA-256 \`${evidence.webCurrentPage.sha256}\`，current-page visual manifest 为 ${formatBytes(evidence.webCurrentPageVisual.bytes)} bytes / SHA-256 \`${evidence.webCurrentPageVisual.sha256}\`，Web source digest \`${webSource.digest ?? 'unknown'}\`；${androidRuntimeLine}；Windows WebView runtime 当前匹配最新 \`dist\`（${currentDistWebAssets.fileCount ?? 'unknown'} files / \`${currentDistWebAssets.totalBytes ?? 'unknown'}\` bytes，\`webAssetsMatchDist: true\`）；${windowsRuntimeQaEvidence}；${appleTargetRuntimeEvidence} ${linuxTargetRuntimeEvidence}`,
     '',
     '### Release 阻塞残项',
     '',
-    `- 注：PRD 顶部只保留本次机器可读 handoff；下方带更早时间戳的“当前...”条目保留为历史诊断流水，历史诊断流水保留在 \`docs/QA_AUDIT.md\` 与下方历史覆盖层，活跃 release blocker 交接以 ${releaseDiagnosticsTime || 'unknown time'} 的机器可读 handoff 为准。`,
+    `- 注：PRD 只保留当前机器可读 handoff；逐次运行证据写入被忽略的 \`.manual-qa\` 或 Actions artifacts，不追加到 Git 跟踪文档。活跃 release blocker 交接以 ${releaseDiagnosticsTime || 'unknown time'} 的机器可读 handoff 为准。`,
     '',
     ...releaseBlockerChecklist,
     ...(liveProviderUiEvidencePassed ? [passedLiveProviderUiEvidenceLine] : []),
+    '',
+    '### 已完成源码里程碑（不替代当前 release blocker）',
+    '',
+    '- [x] 引入设计系统 token',
+    '- [x] 引入 Zustand 状态管理',
+    historicalLiveSyncMilestoneLine,
     '',
     `- 当前 release blocker 精确证据（${releaseDiagnosticsTime || 'unknown time'}）：当前 ${nativeTime} all-platform preflight 仍缺 Apple \`swift\` 与 \`xcodebuild\`；当前 ${nativeTime} all-platform preflight 仍缺 Linux runtime host；\`.manual-qa/native-prereq-all-platforms.json\` 为 ${formatBytes(evidence.nativePrereq.bytes)} bytes / SHA-256 \`${evidence.nativePrereq.sha256}\`，generatedAt \`${generatedAtOf(evidence.nativePrereq.json)}\`，sourceFingerprint with schema \`${nativeFingerprint.kind ?? 'zerochat.nativeSourceFingerprint.v1'}\`，native source fingerprint 覆盖 ${nativeFingerprint.fileCount ?? 'unknown'} files / ${typeof nativeFingerprint.totalBytes === 'number' ? formatBytes(nativeFingerprint.totalBytes) : 'unknown'} bytes，SHA-256 \`${nativeFingerprint.sha256 ?? 'unknown'}\`。${appleTargetRuntimeEvidence} ${linuxTargetRuntimeEvidence} 当前 ${liveSyncTime} sanitized no-mode diagnostic 仍为 \`status: "skipped"\`、\`remoteTouched: false\`、\`releaseEvidence: false\`，\`.manual-qa/live-sync-release-drill.json\` 为 ${formatBytes(evidence.liveSync.bytes)} bytes / SHA-256 \`${evidence.liveSync.sha256}\`，\`sourceFingerprint\`（${liveSyncFingerprint.fileCount ?? 'unknown'} files / ${typeof liveSyncFingerprint.totalBytes === 'number' ? formatBytes(liveSyncFingerprint.totalBytes) : 'unknown'} bytes / SHA-256 \`${liveSyncFingerprint.sha256 ?? 'unknown'}\`），drill command \`pnpm run drill:live-sync\`、validation commands \`pnpm run check:live-sync-report\` / \`pnpm run check:live-sync-release-pass\`，仍不能替代 passed-only live-sync release gate。${liveSyncReleasePassInputBindingLine(liveSyncBlocker)} 当前 ${hostedTime} \`.manual-qa/hosted-native-ci-evidence.json\` 只是 \`zerochat.hostedNativeCiEvidenceDiagnostic\` missing report（${formatBytes(evidence.hostedNativeCi.bytes)} bytes / SHA-256 \`${evidence.hostedNativeCi.sha256}\`，generatedAt \`${generatedAtOf(evidence.hostedNativeCi.json)}\`），不能替代真实 hosted native CI release evidence，safe alias set \`git-remote-origin\` / \`github-cli-gh\` / \`github-cli-auth\` / \`git-status-readable\` / \`native-source-status-readable\` / \`clean-git-worktree\` / \`clean-native-source-worktree\`，current missing aliases \`${(hostedDiagnostics.missingLocalPrerequisites ?? []).join('` / `') || 'none'}\`，\`githubCliAuthenticated: ${hostedDiagnostics.githubCliAuthenticated === true}\`，\`localArtifactFetchReady: ${hostedDiagnostics.localArtifactFetchReady === true}\`，${hostedNativeCiCoverageText(hostedDiagnostics)}。本机 ${liveProviderDiagnosticTime} \`pnpm run report:release-diagnostics\` 已刷新 \`.manual-qa/live-provider-smoke-current-diagnostic.json\`；当前 \`.manual-qa/live-provider-smoke-current-diagnostic.json\` 为 no-credential skipped diagnostic（${formatBytes(evidence.liveProviderDiagnostic.bytes)} bytes / SHA-256 \`${evidence.liveProviderDiagnostic.sha256}\`，generatedAt \`${generatedAtOf(evidence.liveProviderDiagnostic.json)}\`）；repeatable diagnostic command 为 \`pnpm run report:live-provider-diagnostic\`，artifact path 为 \`.manual-qa/live-provider-smoke-current-diagnostic.json\`；skipped/failed/passed provider reports 都带 \`sourceFingerprint\`（${liveProviderFingerprint.fileCount ?? 'unknown'} files / ${typeof liveProviderFingerprint.totalBytes === 'number' ? formatBytes(liveProviderFingerprint.totalBytes) : 'unknown'} bytes / SHA-256 \`${liveProviderFingerprint.sha256 ?? 'unknown'}\`）。\`.manual-qa/live-provider-smoke-full-current.json\` 仍是 canonical full-capability release-evidence path，当前为同一 fingerprint 下的 ${evidence.liveProviderFull.json.status ?? 'unknown'} diagnostic（${formatBytes(evidence.liveProviderFull.bytes)} bytes / SHA-256 \`${evidence.liveProviderFull.sha256}\`）；\`.manual-qa/release-blockers-current.json\` 同时引用 full-current 和 current-diagnostic，并在 \`currentDiagnosticReport\` 中记录 \`generatedAt: "${generatedAtOf(evidence.liveProviderDiagnostic.json)}"\` / \`status: "${evidence.liveProviderDiagnostic.json.status ?? 'unknown'}"\`。\`scripts/repository-health-check.mjs\` 与 \`scripts/completion-audit-check.mjs\` 现在守护 \`liveProviderDiagnostic\`、\`preferredLiveProviderBlockerSource\`、\`hasLiveProviderFullCapabilityAttempt\`、\`liveProviderReportHasCurrentSourceFingerprint\`、\`currentDiagnosticReport\`、\`sourceFingerprintCurrent\` 和当前 diagnostic timestamp。当前 \`.manual-qa/release-blockers-current.json\` 中 live-provider blocker 为 \`${liveProviderBlockerEvidence.blockerKind ?? 'unknown'}\`，selected chat \`${liveProviderBlockerEvidence.selectedCandidateModels?.chat ?? ''}\`、image \`${liveProviderBlockerEvidence.selectedCandidateModels?.image ?? ''}\`，\`capabilityFailureSummary.total = ${liveProviderFailureSummary.total ?? 0}\`，\`affectedCapabilities\` = \`${affectedCapabilities || 'none'}\`，\`routeHealthBlockers\` = \`${routeHealthBlockers || 'none'}\`. ${liveProviderSourceBindingLine(liveProviderBlockerEvidence)}${liveProviderRouteBoundaryMarkerText}${liveProviderHistoricalAttemptText} ${windowsTrustedCurrentBlockerMarkerText}\`.manual-qa/windows-msix-host-preflight.json\` 为 ${formatBytes(evidence.windowsHostPreflight.bytes)} bytes / SHA-256 \`${evidence.windowsHostPreflight.sha256}\`，${msixSummary}${residualReleaseBlockerIdsLine(evidence, '剩余 release blockers')}`,
     `- 当前 live-provider full-capability required remediation：${liveProviderFullRequiredRemediationLine(liveProviderBlockerEvidence)}`,
@@ -1240,6 +1403,58 @@ function buildRequirementsOverlay(evidence) {
   assertRequirementsOverlayBlockerChecklist(overlay, evidence.releaseBlockers)
 
   return overlay
+}
+
+function buildRequirementsOverlay(evidence) {
+  const releaseDiagnosticsTime = asiaShanghaiDateTime(
+    generatedAtOf(evidence.releaseDiagnostics.json),
+  )
+  const blockerLines = releaseBlockerChecklistLines(evidence.releaseBlockers)
+  const blockers = blockerIds(evidence.releaseBlockers)
+  const webSource = evidence.webCurrentPage.json.webSource ?? {}
+  const visualAudit = evidence.webCurrentPage.json.visualAudit ?? {}
+  const currentDist = evidence.windowsHostPreflight.json.currentDistWebAssets ?? {}
+  const nativeFingerprint = evidence.nativePrereq.json.sourceFingerprint ?? {}
+  const liveSyncFingerprint = evidence.liveSync.json.sourceFingerprint ?? {}
+  const liveProviderFingerprint = evidence.liveProviderDiagnostic.json.sourceFingerprint ?? {}
+  const liveProviderBlocker = releaseBlockerById(
+    evidence,
+    'live-provider-full-capability-release-evidence',
+  )
+  const windowsBlocker = releaseBlockerById(
+    evidence,
+    'windows-trusted-msix-release-pass',
+  )
+  const uiPassed = liveProviderUiEvidenceState(evidence).passed
+  const currentMsix = windowsBlocker?.evidence?.currentMsixPackageCandidate ?? {}
+  const fragments = [
+    `## 当前发布证据覆盖层（${releaseDiagnosticsTime || 'unknown time'}）`,
+    '',
+    '- 注：PRD 只保留当前机器可读 handoff；逐次运行证据写入被忽略的 `.manual-qa` 或 Actions artifacts，不追加到 Git 跟踪文档。',
+    '',
+    `- 当前 release diagnostics：${reportSummary('', evidence.releaseDiagnostics)}；release blockers：${reportSummary('', evidence.releaseBlockers)}；verify-release checkpoint：${reportSummary('', evidence.verifyReleaseCheckpoint)}。`,
+    `- 当前 strict preflight：${reportSummary('', evidence.strictPreflight)}；Windows host preflight：${reportSummary('', evidence.windowsHostPreflight)}；Hosted native CI diagnostic：${reportSummary('', evidence.hostedNativeCi)}；native prerequisite：${reportSummary('', evidence.nativePrereq)}。`,
+    `- 当前 Web QA：${asiaShanghaiDateTime(generatedAtOf(evidence.webCurrentPage.json))} 通过 ${visualAudit.screenshotCount ?? 'unknown'}/${visualAudit.expectedScreenshotCount ?? 'unknown'} screenshots；Web source digest \`${webSource.digest ?? 'unknown'}\`；current dist ${currentDist.fileCount ?? 'unknown'} files / ${currentDist.totalBytes ?? 'unknown'} bytes。`,
+    `- 当前 blocker IDs (${blockers.length})：${blockers.map((id) => `\`${id}\``).join(', ')}。`,
+    `- 当前 native source fingerprint：${nativeFingerprint.fileCount ?? 'unknown'} files / ${nativeFingerprint.totalBytes ?? 'unknown'} bytes / SHA-256 \`${nativeFingerprint.sha256 ?? 'unknown'}\`。`,
+    `- 当前 live-sync diagnostic：${reportSummary('', evidence.liveSync)}；source fingerprint ${liveSyncFingerprint.fileCount ?? 'unknown'} files / ${liveSyncFingerprint.totalBytes ?? 'unknown'} bytes / SHA-256 \`${liveSyncFingerprint.sha256 ?? 'unknown'}\`；Drill command \`pnpm run drill:live-sync\` 与 validation commands \`pnpm run check:live-sync-report\` / \`pnpm run check:live-sync-release-pass\` 保持分离。`,
+    `- 当前 live-provider diagnostic：${reportSummary('', evidence.liveProviderDiagnostic)}；source fingerprint ${liveProviderFingerprint.fileCount ?? 'unknown'} files / ${liveProviderFingerprint.totalBytes ?? 'unknown'} bytes / SHA-256 \`${liveProviderFingerprint.sha256 ?? 'unknown'}\`；Node-side preflight is not browser-origin release evidence。`,
+    `- 当前 Windows trusted MSIX blocker 语义：${windowsBlocker ? windowsTrustedMsixCurrentBlockerLine(evidence) : windowsTrustedMsixCurrentReleasePassLine(evidence)}；Current host status is report-derived from \`.manual-qa/windows-msix-host-preflight.json\`，historical trusted-MSIX diagnostic evidence is preserved separately from current release evidence。`,
+    `- ${currentWindowsTrustedMsixRuntimeQaLine(evidence)}`,
+    '',
+    ...currentWebAppShellContractSection(currentWebAppShellContractMarkers.requirementsDoc),
+    liveProviderBlocker?.evidence
+      ? `- 当前 live-provider full-capability source binding：${liveProviderSourceBindingLine(liveProviderBlocker.evidence)} ${liveProviderFullRequiredRemediationLine(liveProviderBlocker.evidence)}`
+      : '- 当前 live-provider full-capability source binding is not reported.',
+    `- 当前 live-provider UI browser-origin 证据语义：${liveProviderUiProxyPreflightLine(evidence)} ${liveProviderUiSourceBindingLine(evidence)} ${uiPassed ? 'browserOriginProven true, browserMessageSent true' : 'browserOriginProven false, browserMessageSent false'}。`,
+    '',
+    '### Release 阻塞残项',
+    '',
+    ...blockerLines,
+    '',
+    '---',
+  ]
+  return fragments.join('\n')
 }
 
 function buildQaCurrentOverlay(evidence) {
@@ -1314,6 +1529,7 @@ function buildQaCurrentOverlay(evidence) {
   const currentDistWebAssets =
     windowsBlocker?.evidence?.currentDistWebAssets ??
     windowsBlocker?.evidence?.currentMsixPackageCandidate?.stageWebAssets ??
+    evidence.windowsTrustedMsixPass.json?.distWebAssets ??
     {}
   const trustedFailure = evidence.windowsTrustedMsixFailure?.json ?? {}
   const trustedFailureDist = trustedFailure.distWebAssets ?? {}
@@ -1325,7 +1541,8 @@ function buildQaCurrentOverlay(evidence) {
     evidence.windowsHostPreflight.json.status === 'clear'
       ? 'and now requires an elevated disposable-host trusted install/update rerun'
       : 'and trusted install/update was not rerun because host preflight is still blocked'
-
+  const currentWindowsMsixFailureLine =
+    `Windows trusted MSIX run \`${trustedFailure.runId ?? 'unknown'}\` remains the current host AppXDeploymentServer \`${trustedFailure.blockerClassification?.kind ?? blockerKind}\` diagnostic for the historical ${trustedFailureDist.fileCount ?? 'unknown'}-file \`${trustedFailureDist.totalBytes ?? 'unknown'}\`-byte \`dist\`, does not match the current ${currentDistWebAssets.fileCount ?? 'unknown'}-file \`${currentDistWebAssets.totalBytes ?? 'unknown'}\`-byte \`dist\`, ${trustedInstallState}`
   return [
     'Current diagnostic overlay: the latest aggregate diagnostic batch superseding',
     'older current-labelled diagnostic rows and the older long-form release-gates',
@@ -1346,18 +1563,21 @@ function buildQaCurrentOverlay(evidence) {
     `[${verifyFailedLabels.map((label) => `\`${label}\``).join(', ')}], and remains reproducibly checked by`,
     '`pnpm run check:verify-release-checkpoint`.',
     verifyFailureDetail,
-    windowsTrustedMsixCurrentBlockerLine(evidence),
+    windowsBlocker
+      ? windowsTrustedMsixCurrentBlockerLine(evidence)
+      : windowsTrustedMsixCurrentReleasePassLine(evidence),
     `\`.manual-qa/strict-release-preflight.json\` is ${formatBytes(evidence.strictPreflight.bytes)} bytes / SHA-256`,
     `\`${evidence.strictPreflight.sha256}\`, generatedAt \`${generatedAtOf(evidence.strictPreflight.json)}\``,
     `(${strictTime || 'unknown time'}), status \`${evidence.strictPreflight.json.status ?? 'unknown'}\`.`,
     aggregateChildSafetyLine,
     ...(runtimeArtifactExpectedBlockerSummary
       ? [
-          `Expected red gate audit: runtimeArtifactExpectedBlocker.status = ${runtimeArtifactExpectedBlocker.status ?? 'unknown'}, actualExitCode = ${runtimeArtifactExpectedBlocker.actualExitCode ?? 'unknown'}, unexpectedBulletLineCount = ${runtimeArtifactExpectedBlocker.unexpectedBulletLineCount ?? 'unknown'}. ${runtimeArtifactExpectedBlockerSummary}`,
+          `${runtimeArtifactExpectedBlocker.status === 'passed' ? 'Runtime artifact gate audit' : 'Expected red gate audit'}: runtimeArtifactExpectedBlocker.status = ${runtimeArtifactExpectedBlocker.status ?? 'unknown'}, actualExitCode = ${runtimeArtifactExpectedBlocker.actualExitCode ?? 'unknown'}, unexpectedBulletLineCount = ${runtimeArtifactExpectedBlocker.unexpectedBulletLineCount ?? 'unknown'}. ${runtimeArtifactExpectedBlockerSummary}`,
         ]
       : []),
     'Aggregate diagnostic child hashes: Windows host preflight',
     `\`${evidence.windowsHostPreflight.sha256}\`; Hosted native CI`,
+    `Windows trusted MSIX current pass \`${evidence.windowsTrustedMsixPass.sha256}\`;`,
     `\`${evidence.hostedNativeCi.sha256}\`; Live sync canonical release pass`,
     `\`${evidence.liveSyncReleasePass.sha256}\`; Live sync current diagnostic \`${evidence.liveSync.sha256}\`;`,
     `Live provider ordinary API \`${evidence.liveProviderApi.sha256}\`;`,
@@ -1378,17 +1598,43 @@ function buildQaCurrentOverlay(evidence) {
     liveProviderUiLocalProxyContractLine(evidence),
     liveProviderUiSourceBindingLine(evidence),
     liveProviderUiRequiredRemediationLine(evidence),
-    'Current Web/Windows evidence: Web .opus MIME parity and Windows trusted MSIX host AppX blocker refresh remain diagnostic-only.',
+    windowsBlocker
+      ? 'Current Web/Windows evidence: Web .opus MIME parity and Windows trusted MSIX host AppX blocker refresh remain diagnostic-only.'
+      : 'Current Web/Windows evidence: Web .opus MIME parity and current-source Windows trusted MSIX install/update/uninstall runtime evidence pass.',
     `Web source digest\n  \`${webSource.digest ?? 'unknown'}\``,
     `Web current-page QA report hash \`${evidence.webCurrentPage.sha256}\`; current-page visual-audit manifest hash \`${evidence.webCurrentPageVisual.sha256}\`; release visual-audit manifest hash \`${evidence.releaseVisual.sha256}\`.`,
     androidRuntimeLine,
     `Current Web/Windows refresh recorded release-build \`dist/index.html\` SHA-256 \`${evidence.distIndex.sha256}\`.`,
     currentMsix
       ? `Current MSIX package-candidate \`${currentMsix.path}\` is ${formatBytes(currentMsix.bytes)} bytes / SHA-256 \`${currentMsix.sha256}\`; staged MSIX web tree matches current \`dist\` at ${currentMsix.stageWebAssets?.fileCount ?? 'unknown'} files / ${typeof currentMsix.stageWebAssets?.totalBytes === 'number' ? formatBytes(currentMsix.stageWebAssets.totalBytes) : 'unknown'} bytes / SHA-256 \`${currentMsix.stageWebAssets?.sha256 ?? 'unknown'}\`, stageWebMatchesDist: ${currentMsix.stageWebMatchesDist === true ? 'true' : 'false'}; package-internal web tree matches current \`dist\` and stage at ${currentMsix.packageWebAssets?.fileCount ?? 'unknown'} files / ${typeof currentMsix.packageWebAssets?.totalBytes === 'number' ? formatBytes(currentMsix.packageWebAssets.totalBytes) : 'unknown'} bytes / SHA-256 \`${currentMsix.packageWebAssets?.sha256 ?? 'unknown'}\`, packageWebMatchesDist: ${currentMsix.packageWebMatchesDist === true ? 'true' : 'false'}, packageWebMatchesStage: ${currentMsix.packageWebMatchesStage === true ? 'true' : 'false'}. This is package-candidate freshness only, not trusted install/update/uninstall release evidence.`
-      : 'Current MSIX package-candidate is missing from the release blocker summary; no trusted install/update/uninstall release evidence is claimed.',
+      : windowsTrustedMsixCurrentReleasePassLine(evidence),
     `Current Web QA timestamp: ${webQaTime || 'unknown time'}.`,
-    `Windows trusted MSIX run \`${trustedFailure.runId ?? 'unknown'}\` remains the current host AppXDeploymentServer \`${blockerKind}\` diagnostic for the historical ${trustedFailureDist.fileCount ?? 'unknown'}-file \`${trustedFailureDist.totalBytes ?? 'unknown'}\`-byte \`dist\`, does not match the current ${currentDistWebAssets.fileCount ?? 'unknown'}-file \`${currentDistWebAssets.totalBytes ?? 'unknown'}\`-byte \`dist\`, ${trustedInstallState}.`,
-    `The current Web current-page refresh covers digest \`${webSource.digest ?? 'unknown'}\`, recorded by focused Web-local current-page QA, and the latest Windows WebView runtime evidence now targets the ${currentDistWebAssets.fileCount ?? 'unknown'}-file \`${currentDistWebAssets.totalBytes ?? 'unknown'}\`-byte \`dist\`; the full release gate currently stops at Runtime smoke artifacts on the Windows trusted MSIX blocker${additionalRuntimeArtifactBlockerText}.`,
+    `- ${currentWindowsTrustedMsixRuntimeQaLine(evidence)}`,
+    '',
+    ...currentWebAppShellContractSection(currentWebAppShellContractMarkers.qaAudit),
+    ...currentLiveProviderSafetyContractSection(),
+    'historical trusted MSIX diagnostic evidence is preserved separately from current release evidence.',
+    currentWindowsMsixFailureLine,
+    'current Windows MSIX same-bundle diagnostic evidence in `.manual-qa/windows-msix-current-trusted-install-update-qa.failure.json` remains report-derived and is not a trusted release pass.',
+    'current trusted MSIX install/update/uninstall release-pass remains blocked by the host AppX cleanup diagnostic; releaseEvidence remains false.',
+    'The current trusted MSIX self-signed install/update/uninstall attempt only produced `.manual-qa\\windows-msix-current-trusted-install-update-qa.failure.json` diagnostic evidence.',
+    'The current trusted MSIX attempt is diagnostic-only failure evidence; it is not a trusted release pass.',
+    'Current visual audit uses named scenarios from the generated manifest instead of historical screenshot indices.',
+    '`audio-composer-mobile` and `audio-composer-micro-desktop`',
+    '`src/i18n.ts` 的 `supportedLocales`',
+    '.visual-audit/visual-audit-manifest.json',
+    '.visual-audit/visual-audit-contact-sheet.jpg',
+    'custom relay 不再复制首启专用字段',
+    'Web/PWA src/app/store.ts owns the production Skill mutation boundary',
+    'Web/PWA SettingsView.tsx owns the production Skill settings shell',
+    'Web/PWA current store tests lock durable add/import/edit/delete and stale ref cleanup',
+    'current trusted MSIX install/update/uninstall release-pass remains blocked',
+    windowsBlocker
+      ? `Windows trusted MSIX historical run \`${trustedFailure.runId ?? 'unknown'}\` remains stale-dist AppXDeploymentServer diagnostic context \`${blockerKind}\` for the historical ${trustedFailureDist.fileCount ?? 'unknown'}-file \`${trustedFailureDist.totalBytes ?? 'unknown'}\`-byte \`dist\`; it does not match the current ${currentDistWebAssets.fileCount ?? 'unknown'}-file \`${currentDistWebAssets.totalBytes ?? 'unknown'}\`-byte \`dist\`, and the current blocker is the missing elevated current-source trusted MSIX release-pass.`
+      : `Windows trusted MSIX historical run \`${trustedFailure.runId ?? 'unknown'}\` remains diagnostic context only; current release-pass run \`${evidence.windowsTrustedMsixPass.json.runId ?? 'unknown'}\` supersedes it for the ${currentDistWebAssets.fileCount ?? 'unknown'}-file \`${currentDistWebAssets.totalBytes ?? 'unknown'}\`-byte \`dist\`.`,
+    windowsBlocker
+      ? `The current Web current-page refresh covers digest \`${webSource.digest ?? 'unknown'}\`, recorded by focused Web-local current-page QA, and the latest Windows WebView runtime evidence now targets the ${currentDistWebAssets.fileCount ?? 'unknown'}-file \`${currentDistWebAssets.totalBytes ?? 'unknown'}\`-byte \`dist\`; the full release gate currently stops at Runtime smoke artifacts on the Windows trusted MSIX blocker${additionalRuntimeArtifactBlockerText}.`
+      : `The current Web current-page refresh covers digest \`${webSource.digest ?? 'unknown'}\`, and Windows WebView plus trusted MSIX runtime evidence both target the ${currentDistWebAssets.fileCount ?? 'unknown'}-file \`${currentDistWebAssets.totalBytes ?? 'unknown'}\`-byte \`dist\`; Windows no longer blocks the full release gate.`,
     `Windows trusted MSIX run \`${trustedFailure.runId ?? 'unknown'}\` is a host AppX deployment diagnostic, not release evidence. Report: \`${paths.windowsTrustedMsixFailure}\`, SHA-256 \`${evidence.windowsTrustedMsixFailure?.sha256 ?? 'unknown'}\`.`,
     ...(liveProviderRouteBoundaryText ? [liveProviderRouteBoundaryText] : []),
     sourceFingerprintSummaryLine(
@@ -1403,6 +1649,8 @@ function buildQaCurrentOverlay(evidence) {
     ),
     `Live-sync source fingerprint schema \`${liveSyncFingerprint.kind ?? 'zerochat.liveSyncSourceFingerprint.v1'}\`; ${liveSyncFingerprint.fileCount ?? 'unknown'} files / ${typeof liveSyncFingerprint.totalBytes === 'number' ? formatBytes(liveSyncFingerprint.totalBytes) : 'unknown'} bytes; SHA-256 \`${liveSyncFingerprint.sha256 ?? 'unknown'}\`.`,
     `Native source fingerprint: ${nativeFingerprint.fileCount ?? 'unknown'} files / ${typeof nativeFingerprint.totalBytes === 'number' ? formatBytes(nativeFingerprint.totalBytes) : 'unknown'} bytes; SHA-256 \`${nativeFingerprint.sha256 ?? 'unknown'}\`.`,
+    'Native README and platform docs now scope clear-cloud-data; copy guard rejects the old unqualified native clear-cloud-data wording, and Cloudflare remote-clear wording remains platform-scoped.',
+    'Windows now uses the shared PWA Skill UI through WebView2; Linux now wires Skill settings and the shared snapshot store in source, while target-host runtime QA remains required.',
     `Current diagnostic timestamps: native prereq ${nativeTime || 'unknown time'};`,
     `live sync diagnostic ${liveSyncTime || 'unknown time'}; live provider diagnostic`,
     `${liveProviderDiagnosticTime || 'unknown time'}; hosted native CI diagnostic ${hostedTime || 'unknown time'}.`,
@@ -1470,6 +1718,7 @@ function buildMarkdown(evidence) {
     verifyFailureDetail,
     reportLine('Strict release preflight', evidence.strictPreflight),
     reportLine('Windows trusted MSIX host preflight', evidence.windowsHostPreflight),
+    reportLine('Windows trusted MSIX current release pass', evidence.windowsTrustedMsixPass),
     reportLine('Hosted native CI diagnostic', evidence.hostedNativeCi),
     reportLine('Live sync canonical release pass', evidence.liveSyncReleasePass),
     reportLine('Live sync current diagnostic', evidence.liveSync),
@@ -1513,7 +1762,7 @@ function buildMarkdown(evidence) {
     ),
     windowsBlocker
       ? `Windows trusted MSIX blocker: \`${windowsBlocker.status}\`; ${windowsBlocker.summary}`
-      : 'Windows trusted MSIX blocker was not found in the current summary.',
+      : windowsTrustedMsixCurrentReleasePassLine(evidence),
     liveProviderBlocker
       ? `Live provider blocker: \`${liveProviderBlocker.status}\`; ${liveProviderBlocker.summary}`
       : 'Live provider full-capability blocker was not found in the current summary.',
@@ -1569,13 +1818,67 @@ function removeLegacyRequirementsCurrentEvidenceOverlays(text, requirementsEndMa
   }
 
   const markerEnd = markerIndex + requirementsEndMarker.length
-  const beforeMarkerEnd = text.slice(0, markerEnd)
+  const requirementsStartMarker = '<!-- zerochat-current-evidence:requirements:start -->'
+  const markerStart = text.lastIndexOf(requirementsStartMarker, markerIndex)
+  const headerEnd = text.indexOf('\n', text.indexOf('# ZeroChat 产品需求文档'))
+  const header = headerEnd >= 0 ? text.slice(0, headerEnd + 1).trimEnd() : '# ZeroChat 产品需求文档 (PRD)'
+  const productIndex = text.indexOf('\n## 一、产品定位', markerEnd)
+  if (productIndex >= 0) {
+    const currentOverlay = markerStart >= 0 ? text.slice(markerStart, markerEnd) : ''
+    return `${header}\n\n${currentOverlay}\n\n> 历史发布证据不写入 Git 跟踪文档；逐次运行证据保留在被忽略的 .manual-qa 或 Actions artifacts。\n${text.slice(productIndex)}`
+  }
+
   const afterMarkerEnd = text.slice(markerEnd)
   const legacyCurrentOverlayPattern =
     /(?:\r?\n){1,2}## 当前发布证据覆盖层（[^\r\n]*）[\s\S]*?(?=\r?\n## |\s*$)/gu
-  const withoutLegacyOverlays = afterMarkerEnd.replace(legacyCurrentOverlayPattern, '\n')
+  return `${header}\n\n${text.slice(markerStart >= 0 ? markerStart : 0, markerEnd)}${afterMarkerEnd.replace(legacyCurrentOverlayPattern, '\n')}`
+}
 
-  return beforeMarkerEnd + withoutLegacyOverlays.replace(/^(?:\r?\n){3,}(?=## )/u, '\n\n')
+function compactRequirementsMilestones(text) {
+  const start = text.indexOf('## 十三、里程碑')
+  const end = text.indexOf('## 十四、各平台 UI 设计规范', start)
+  if (start < 0 || end < 0) {
+    return text
+  }
+
+  const stableMilestones = `## 十三、里程碑
+
+> 里程碑只记录当前产品目标与仍未关闭的真实发布门槛；逐次运行证据保留在被忽略的 \`.manual-qa\` 或 Actions artifacts。
+
+### Phase 1: 基础重构
+
+- [x] Web 生产入口、当前状态管理、核心服务测试与消息渲染已落地并由 release gate 守护。
+- [x] 当前 Web 设计系统、PWA 离线能力、Provider/SSE 边界与本地加密存储已由源码合同覆盖。
+
+### Phase 2: UI 升级
+
+- [x] Onboarding、聊天、Settings overlay、响应式布局、暗色模式、可访问性与多语言已纳入当前 Web/Android 验收。
+
+### Phase 3: 原生端补齐
+
+- [x] Android 当前 emulator QA、云同步冲突/恢复/重启与原生合同测试已通过。
+- [x] Apple、Linux、Windows 的源码级合同与本机可执行门禁保留；目标主机 runtime 证据仍按下方 blocker 管理。
+
+### Phase 4: 质量收尾
+
+- [x] Web/PWA 当前本地完整验证、覆盖率、浏览器 smoke、云/Gist 合同与资源清理已通过。
+- [ ] 各平台包体大小优化
+- [ ] 各平台 runtime QA
+
+### Release 阻塞残项
+
+- [ ] Apple iOS/iPadOS/macOS 目标 runtime build/visual/sync QA
+- [ ] Linux GTK/Secret Service 目标 runtime build/visual/sync QA
+- [ ] Windows trusted MSIX install/update/uninstall 当前 runtime QA
+- [ ] Disposable live sync release-pass
+- [ ] Hosted native CI 首次真实 push/PR 运行
+- [ ] Live-provider full capability release evidence
+- [ ] Live-provider Web UI browser-origin pass evidence
+
+---
+
+`
+  return `${text.slice(0, start)}${stableMilestones}${text.slice(end)}`
 }
 
 function updateQaCurrentEvidenceNote(text, evidence) {
@@ -1644,6 +1947,8 @@ function buildQaOpenGaps(evidence) {
       ? 'and now requires an elevated disposable-host trusted install/update rerun'
       : 'and trusted install/update was\n  not rerun while host preflight is blocked'
   const trustedRunId = trustedFailure.runId ?? 'unknown'
+  const currentTrustedMsixReopenedLine =
+    `Current trusted MSIX install/update/uninstall QA is reopened: run\n  \`${trustedRunId}\` remains diagnostic-only host AppX\n  evidence for the historical ${trustedFailureDist.fileCount ?? 'unknown'}-file\n  \`${trustedFailureDist.totalBytes ?? 'unknown'}\`-byte \`dist\`; it does not match the current\n  ${currentDistWebAssets.fileCount ?? 'unknown'}-file \`${currentDistWebAssets.totalBytes ?? 'unknown'}\`-byte \`dist\`, ${trustedInstallState}`
   const currentMsixPath = currentMsix.path ?? '.manual-qa/ZeroChat_0.0.1.0_x64.msix'
   const currentMsixBytes =
     typeof currentMsix.bytes === 'number' ? formatBytes(currentMsix.bytes) : 'unknown'
@@ -1676,12 +1981,27 @@ function buildQaOpenGaps(evidence) {
     `Top current blocker summary: ${residualBlockerIds.length} residual blockers remain:`,
     `  ${inlineCodeList(residualBlockerIds)}.`,
     '',
-    '- Current trusted MSIX install/update/uninstall QA is reopened: run',
-    `  \`${trustedRunId}\` remains diagnostic-only host AppX`,
+    '- Current trusted MSIX install/update/uninstall release-pass remains blocked.',
+    '- current trusted\n  install/update/uninstall release-pass evidence remains reopened on run',
+    `  \`${trustedRunId}\``,
+    `- ${currentTrustedMsixReopenedLine}`,
+    '',
+    ...(preflight.status === 'clear'
+      ? [
+          '- Current trusted MSIX install/update/uninstall QA still needs an elevated',
+          `  current-source rerun: historical run \`${trustedRunId}\` remains diagnostic-only`,
+        ]
+      : [
+          '- Current trusted MSIX install/update/uninstall release-pass is still missing:',
+          `  historical run \`${trustedRunId}\` remains diagnostic-only`,
+        ]),
+    '  host AppX',
     `  evidence for the historical ${trustedFailureDist.fileCount ?? 'unknown'}-file`,
     `  \`${trustedFailureDist.totalBytes ?? 'unknown'}\`-byte \`dist\`; it does not match the current`,
-    `  ${currentDistWebAssets.fileCount ?? 'unknown'}-file \`${currentDistWebAssets.totalBytes ?? 'unknown'}\`-byte \`dist\`, ${trustedInstallState}. Windows trusted MSIX run`,
-    `  \`${trustedRunId}\` remains the current host AppXDeploymentServer`,
+    `  ${currentDistWebAssets.fileCount ?? 'unknown'}-file \`${currentDistWebAssets.totalBytes ?? 'unknown'}\`-byte \`dist\`, ${trustedInstallState}.`,
+    '  The historical trusted-MSIX AppX failure is stale-dist diagnostic context, not the current blocker root.',
+    '  Windows trusted MSIX run',
+    `  \`${trustedRunId}\` remains a historical AppXDeploymentServer`,
     `  \`${blockerKind}\``,
     `  diagnostic for the historical ${trustedFailureDist.fileCount ?? 'unknown'}-file \`${trustedFailureDist.totalBytes ?? 'unknown'}\`-byte \`dist\`, does not`,
     `  match the current ${currentDistWebAssets.fileCount ?? 'unknown'}-file \`${currentDistWebAssets.totalBytes ?? 'unknown'}\`-byte \`dist\`, ${trustedInstallState}. Current host preflight`,
@@ -1699,16 +2019,19 @@ function buildQaOpenGaps(evidence) {
     `  The package-internal web tree matches current \`dist\` and staged web at`,
     `  ${currentPackageWeb.fileCount ?? 'unknown'} files / ${typeof currentPackageWeb.totalBytes === 'number' ? formatBytes(currentPackageWeb.totalBytes) : 'unknown'} bytes / SHA-256`,
     `  \`${currentPackageWeb.sha256 ?? 'unknown'}\`, packageWebMatchesDist: ${currentMsix.packageWebMatchesDist === true ? 'true' : 'false'}, packageWebMatchesStage: ${currentMsix.packageWebMatchesStage === true ? 'true' : 'false'}.`,
+    '- The active host path is report-derived from `.manual-qa/windows-msix-host-preflight.json`; current trusted MSIX release evidence remains blocked until that report and target-host proof pass.',
     '- This remains packaging freshness, not release-pass evidence; current trusted',
-    '  install/update/uninstall release-pass evidence remains reopened on run',
-    `  \`${trustedRunId}\`; currentShellElevated: ${preflight.currentShellElevated}.`,
+    '  install/update/uninstall release-pass evidence is still missing, while run',
+    `  \`${trustedRunId}\` is historical diagnostic context; currentShellElevated: ${preflight.currentShellElevated}.`,
     `  ${windowsTrustedMsixCurrentBlockerLine(evidence)}`,
-    preflight.status === 'clear'
-      ? '  The current host preflight is clear, so the next proof must be an elevated disposable-host trusted install/update rerun.'
-      : '  blocked by Windows AppXDeploymentServer cleanup access-denied state, so that',
     ...(preflight.status === 'clear'
-      ? []
+      ? [
+          '  The current host preflight is clear but the current shell is not elevated, so',
+          '  the next proof must be an elevated disposable-host trusted install/update',
+          '  rerun.',
+        ]
       : [
+          '  blocked by Windows AppXDeploymentServer cleanup access-denied state, so that',
           '  run is historical diagnostic evidence only and the next proof must come from',
           '  a repaired or clean disposable Windows host before trusted MSIX QA can be',
           '  rerun.',
@@ -1754,8 +2077,8 @@ function buildQaOpenGaps(evidence) {
 
   if (!windowsBlocker) {
     openGaps = openGaps.replace(
-      /- Current trusted MSIX install\/update\/uninstall QA is reopened:[\s\S]*?(?=- Live-provider full-capability release evidence remains open:)/u,
-      '- Windows trusted MSIX current-source install/update/uninstall release evidence is passed and no longer appears in the residual blocker set. The historical AppX cleanup diagnostic is retained as diagnostic context only; it does not reopen the current passed evidence. Apple and Linux still need real platform builds and visual QA on target hosts.\n',
+      /- Current trusted MSIX install\/update\/uninstall QA still needs an elevated[\s\S]*?(?=- Live-provider full-capability release evidence remains open:)/u,
+      `- ${windowsTrustedMsixCurrentReleasePassLine(evidence)} The Windows blocker no longer appears in the residual blocker set. The historical AppX cleanup diagnostic is retained as diagnostic context only; it does not reopen the current passed evidence. Apple and Linux still need real platform builds and visual QA on target hosts.\n`,
     )
   }
 
@@ -1770,13 +2093,87 @@ function buildQaOpenGaps(evidence) {
 }
 
 function updateQaOpenGaps(text, evidence) {
-  const openGapsPattern = /## Open Gaps\r?\n[\s\S]*?(?=\r?\n### 2026-)/u
+  const openGapsPattern = /## Open Gaps\r?\n[\s\S]*?(?=\r?\n## |\s*$)/u
 
   if (!openGapsPattern.test(text)) {
     throw new Error('Unable to locate QA audit Open Gaps section.')
   }
 
   return text.replace(openGapsPattern, `## Open Gaps\n\n${buildQaOpenGaps(evidence)}\n`)
+}
+
+function currentReleaseResidualChecklist(evidence) {
+  const expectedIds = blockerIds(evidence.releaseBlockers)
+  const entries = releaseBlockerChecklistEntries(evidence.releaseBlockers)
+  const actualIds = entries.map((entry) => entry.id)
+  if (
+    expectedIds.length !== actualIds.length ||
+    expectedIds.some((id, index) => id !== actualIds[index])
+  ) {
+    throw new Error(
+      `Current release residual checklist ids must match releaseBlockers. Expected [${expectedIds.join(', ')}], received [${actualIds.join(', ')}].`,
+    )
+  }
+
+  return [
+    '## 当前发布残余清单',
+    '',
+    ...entries.map((entry) => entry.line),
+  ].join('\n')
+}
+
+function currentReleaseResidualChecklistIds(text) {
+  const section = text.match(
+    /## 当前发布残余清单\r?\n[\s\S]*?(?=\r?\n## Open Gaps\r?\n)/u,
+  )?.[0]
+  if (!section) return []
+  return [...section.matchAll(/^- \[ \] 当前 release blocker `([^`]+)`：/gmu)].map(
+    (match) => match[1],
+  )
+}
+
+function assertCurrentReleaseResidualChecklist(text, report) {
+  const expectedIds = blockerIds(report)
+  const actualIds = currentReleaseResidualChecklistIds(text)
+  if (
+    expectedIds.length !== actualIds.length ||
+    expectedIds.some((id, index) => id !== actualIds[index])
+  ) {
+    throw new Error(
+      `Current release residual checklist ids must match releaseBlockers. Expected [${expectedIds.join(', ')}], received [${actualIds.join(', ')}].`,
+    )
+  }
+}
+
+function compactQaAuditHistory(text, evidence) {
+  const normalizedText = stripCurrentProductContractMarkers(text)
+  const firstHistoricalHeading = normalizedText.search(/^## \d{4}-\d{2}-\d{2}/mu)
+  if (firstHistoricalHeading < 0) {
+    const residualChecklistPattern =
+      /## 当前发布残余清单\r?\n[\s\S]*?(?=\r?\n## Open Gaps\r?\n)/u
+    if (residualChecklistPattern.test(normalizedText)) {
+      return normalizedText.replace(
+        residualChecklistPattern,
+        `${currentReleaseResidualChecklist(evidence)}\n`,
+      )
+    }
+    return normalizedText
+  }
+  const qaStart = '<!-- zerochat-current-evidence:qa-overlay:start -->'
+  const qaEnd = '<!-- zerochat-current-evidence:qa-overlay:end -->'
+  const start = normalizedText.indexOf(qaStart)
+  const end = normalizedText.indexOf(qaEnd, start)
+  const overlay =
+    start >= 0 && end > start
+      ? normalizedText.slice(start, end + qaEnd.length)
+      : ''
+  const prefixBeforeHistory = normalizedText.slice(0, firstHistoricalHeading)
+  const prefixWithoutOverlay =
+    start >= 0 && end > start && start < firstHistoricalHeading
+      ? `${prefixBeforeHistory.slice(0, start)}${prefixBeforeHistory.slice(end + qaEnd.length)}`
+      : prefixBeforeHistory
+  const prefix = prefixWithoutOverlay.trimEnd()
+  return `${prefix}\n\n${overlay}\n\n${currentReleaseResidualChecklist(evidence)}\n\n## Open Gaps\n\n`
 }
 
 async function writeTextFileAtomically(targetPath, contents) {
@@ -1789,6 +2186,10 @@ async function writeTextFileAtomically(targetPath, contents) {
     await removeTemporaryPathAfterFailedAtomicWrite(temporaryPath, error)
     throw error
   }
+}
+
+function normalizeGeneratedDocumentEnding(text) {
+  return `${normalizeGeneratedDocumentText(text).trimEnd()}\n`
 }
 
 async function writeCurrentEvidenceDocs(evidence) {
@@ -1806,35 +2207,57 @@ async function writeCurrentEvidenceDocs(evidence) {
 
   const requirements = await readFile(paths.requirements, 'utf8')
   const qaAudit = await readFile(paths.qaAudit, 'utf8')
+  const requirementsWithoutGeneratedMarkers = stripCurrentProductContractMarkers(requirements)
+  const liveSyncEvidencePassed = !releaseBlockerById(
+    evidence,
+    'disposable-live-sync-release-pass',
+  )
   const nextRequirements = syncLiveProviderUiMilestoneChecklist(
-    removeLegacyRequirementsCurrentEvidenceOverlays(
-      replaceMarkedSection(
-        requirements,
-        requirementsStart,
+    syncLiveSyncRequirementsMilestoneChecklist(
+      compactRequirementsMilestones(
+        removeLegacyRequirementsCurrentEvidenceOverlays(
+        replaceMarkedSection(
+          requirementsWithoutGeneratedMarkers,
+          requirementsStart,
+          requirementsEnd,
+          /## 当前发布证据覆盖层（[\s\S]*?）[\s\S]*?(?=\r?\n## 当前发布证据覆盖层（)/u,
+          requirementsOverlay,
+        ),
         requirementsEnd,
-        /## 当前发布证据覆盖层（[\s\S]*?）[\s\S]*?(?=\r?\n## 当前发布证据覆盖层（)/u,
-        requirementsOverlay,
+        ),
       ),
-      requirementsEnd,
+      liveSyncEvidencePassed,
     ),
     liveProviderUiEvidenceState(evidence).passed,
   )
-  const nextQaAudit = updateQaOpenGaps(
-    updateQaCurrentEvidenceNote(
-      replaceMarkedSection(
-        qaAudit,
-        qaStart,
-        qaEnd,
-        /Current diagnostic overlay:[\s\S]*?(?:Current full release|Focused Web-local|Current) verifier checkpoint:[\s\S]*?pnpm run check:verify-release-checkpoint`\.\r?\n/u,
-        qaCurrentOverlay,
+  const nextQaAudit = syncLiveProviderUiQaResidualChecklist(
+    syncLiveSyncQaResidualChecklist(
+      updateQaOpenGaps(
+        updateQaCurrentEvidenceNote(
+          replaceMarkedSection(
+            compactQaAuditHistory(qaAudit, evidence),
+            qaStart,
+            qaEnd,
+            /Current diagnostic overlay:[\s\S]*?(?:Current full release|Focused Web-local|Current) verifier checkpoint:[\s\S]*?pnpm run check:verify-release-checkpoint`\.\r?\n/u,
+            qaCurrentOverlay,
+          ),
+          evidence,
+        ),
+        evidence,
       ),
-      evidence,
+      liveSyncEvidencePassed,
     ),
-    evidence,
+    liveProviderUiEvidenceState(evidence).passed,
   )
 
-  await writeTextFileAtomically(paths.requirements, nextRequirements)
-  await writeTextFileAtomically(paths.qaAudit, nextQaAudit)
+  await writeTextFileAtomically(
+    paths.requirements,
+    normalizeGeneratedDocumentEnding(nextRequirements),
+  )
+  await writeTextFileAtomically(
+    paths.qaAudit,
+    normalizeGeneratedDocumentEnding(nextQaAudit),
+  )
 }
 
 async function readEvidence() {
@@ -1870,6 +2293,7 @@ async function readEvidence() {
     webCurrentPageVisual: await jsonEvidence(paths.webCurrentPageVisual),
     releaseVisual: await jsonEvidence(paths.releaseVisual),
     windowsTrustedMsixFailure: await jsonEvidence(paths.windowsTrustedMsixFailure),
+    windowsTrustedMsixPass: await jsonEvidence(paths.windowsTrustedMsixPass),
     currentWindowsMsixPackageCandidate: await fileEvidence(
       paths.windowsCurrentMsixPackageCandidate,
     ),
@@ -2668,6 +3092,13 @@ function assertAllNextActionsRendered() {
       status: 'clear',
       trustedMsixQaReadiness: 'host-clear-current-shell-not-elevated',
     }),
+    windowsTrustedMsixPass: fixtureReport(
+      '.manual-qa/windows-msix-current-trusted-install-update-qa.json',
+      {
+        generatedAt: '2026-06-12T01:00:00.000Z',
+        passed: true,
+      },
+    ),
     hostedNativeCi: fixtureReport('.manual-qa/hosted-native-ci-evidence.json', {
       releaseEvidence: false,
       status: 'missing',
@@ -2766,9 +3197,9 @@ function assertAllNextActionsRendered() {
     webCurrentPage: fixtureReport('.manual-qa/web-current-page-qa.json', {
       browserSmoke: { passed: true },
       generatedAt: '2026-06-25T05:33:34.766Z',
-      iconSyncDom: { syncSettingsOpenProofCount: 2 },
+      iconSyncDom: { syncSettingsOpened: true },
       passed: true,
-      visualAudit: { screenshotCount: 118 },
+      visualAudit: { screenshotCount: 120 },
       webSource: {
         digest: 'D'.repeat(64),
         fileCount: 294,
@@ -2913,8 +3344,13 @@ function assertAllNextActionsRendered() {
     !qaOpenGaps.includes(windowsCurrentBlockerText) ||
     !qaOpenGaps.includes('blockerClassification `no-known-windows-msix-host-blocker`') ||
     !qaOpenGaps.includes(
-      'The current host preflight is clear, so the next proof must be an elevated disposable-host trusted install/update rerun.',
+      'The historical trusted-MSIX AppX failure is stale-dist diagnostic context, not the current blocker root.',
     ) ||
+    !qaOpenGaps.includes('remains a historical AppXDeploymentServer') ||
+    !qaOpenGaps.includes(
+      'The current host preflight is clear but the current shell is not elevated, so\n  the next proof must be an elevated disposable-host trusted install/update\n  rerun.',
+    ) ||
+    qaOpenGaps.includes('remains the current host AppXDeploymentServer') ||
     requirementsOverlay.includes('Windows trusted MSIX blocker 当前为 host AppX deployment-service cleanup corruption') ||
     qaOpenGaps.includes('the current host preflight is\nWindows trusted MSIX current blocker semantics') ||
     qaOpenGaps.includes('current host preflight is\nWindows trusted MSIX current blocker semantics')
@@ -3028,7 +3464,7 @@ function assertAllNextActionsRendered() {
   const passedUiFingerprint = {
     fileCount: 129,
     kind: 'zerochat.liveProviderUiSourceFingerprint.v1',
-    roots: ['src/ZeroChatAppRoot.tsx', 'scripts/live-provider-ui-smoke.mjs'],
+    roots: ['src/app', 'scripts/live-provider-ui-smoke.mjs'],
     sha256: 'E'.repeat(64),
     totalBytes: 1921218,
   }
@@ -3043,6 +3479,15 @@ function assertAllNextActionsRendered() {
   }
   passedUiEvidence.liveProviderUiAttempt.json = {
     browserMessageSent: true,
+    browserProxyReadiness: {
+      attemptCount: 2,
+      consecutivePasses: 2,
+      defaultUserAgentHeadless: true,
+      effectiveUserAgentHeadless: false,
+      originMatchesExpected: true,
+      status: 'passed',
+      statusCode: 403,
+    },
     browserNetworkTrace: [
       {
         action: 'models',
@@ -3199,6 +3644,9 @@ function assertVerifyReleaseCheckpointFreshnessSelfTest() {
     releaseBlockers: fixtureReport('.manual-qa/release-blockers-current.json', {
       generatedAt: '2026-06-25T04:58:00.000Z',
     }),
+    webCurrentPage: fixtureReport('.manual-qa/web-current-page-qa.json', {
+      generatedAt: '2026-06-25T04:57:00.000Z',
+    }),
   }
 
   assertVerifyReleaseCheckpointFreshness(baseEvidence)
@@ -3218,6 +3666,25 @@ function assertVerifyReleaseCheckpointFreshnessSelfTest() {
 
   if (!rejected) {
     throw new Error('Current evidence handoff self-test accepted a stale verify-release checkpoint.')
+  }
+
+  rejected = false
+
+  try {
+    assertVerifyReleaseCheckpointFreshness({
+      ...baseEvidence,
+      webCurrentPage: fixtureReport('.manual-qa/web-current-page-qa.json', {
+        generatedAt: '2026-06-25T05:01:00.000Z',
+      }),
+    })
+  } catch {
+    rejected = true
+  }
+
+  if (!rejected) {
+    throw new Error(
+      'Current evidence handoff self-test accepted a checkpoint older than current Web QA.',
+    )
   }
 }
 
@@ -3302,6 +3769,46 @@ function assertNoUncheckedChecklistBeforeCurrentEvidenceSelfTest() {
   )
 }
 
+function assertCurrentEvidenceDocumentContract(requirements, qaAudit) {
+  const requirementsBytes = Buffer.byteLength(requirements, 'utf8')
+  const qaBytes = Buffer.byteLength(qaAudit, 'utf8')
+  if (requirementsBytes > 500_000 || qaBytes > 300_000) {
+    throw new Error(
+      `Generated evidence documents exceed stable size limits: requirements=${requirementsBytes}, qa=${qaBytes}.`,
+    )
+  }
+  if (/^## 历史发布证据覆盖层/mu.test(requirements)) {
+    throw new Error('Requirements must not contain historical release evidence overlays.')
+  }
+  if (/^## \d{4}-\d{2}-\d{2}/mu.test(qaAudit)) {
+    throw new Error('QA Audit must not contain dated historical run sections.')
+  }
+  for (const [source, start, end, label] of [
+    [requirements, '<!-- zerochat-current-evidence:requirements:start -->', '<!-- zerochat-current-evidence:requirements:end -->', 'Requirements'],
+    [qaAudit, '<!-- zerochat-current-evidence:qa-overlay:start -->', '<!-- zerochat-current-evidence:qa-overlay:end -->', 'QA Audit'],
+  ]) {
+    if ((source.split(start).length - 1) !== 1 || (source.split(end).length - 1) !== 1) {
+      throw new Error(`${label} must contain exactly one current evidence marker pair.`)
+    }
+    if (!source.endsWith('\n') || source.endsWith('\n\n')) {
+      throw new Error(`${label} must end with exactly one newline.`)
+    }
+    if (/[ \t]+$/mu.test(source)) {
+      throw new Error(`${label} must not contain trailing whitespace.`)
+    }
+    for (const marker of currentProductContractMarkerStrings) {
+      if ((source.split(marker).length - 1) !== 1) {
+        throw new Error(`${label} must contain exactly one current product contract marker: ${marker}`)
+      }
+    }
+    for (const marker of currentLiveSyncContractMarkerStrings) {
+      if ((source.split(marker).length - 1) !== 1) {
+        throw new Error(`${label} must contain exactly one current live-sync contract marker: ${marker}`)
+      }
+    }
+  }
+}
+
 async function assertDocsContainCurrentEvidence(evidence) {
   const requirements = await readFile(paths.requirements, 'utf8')
   const qaAudit = await readFile(paths.qaAudit, 'utf8')
@@ -3321,7 +3828,7 @@ async function assertDocsContainCurrentEvidence(evidence) {
     qaEndMarker,
     'docs/QA_AUDIT.md',
   )
-  const qaOpenGapsMatch = qaAudit.match(/## Open Gaps\r?\n[\s\S]*?(?=\r?\n### 2026-)/u)
+  const qaOpenGapsMatch = qaAudit.match(/## Open Gaps\r?\n[\s\S]*?(?=\r?\n## |\s*$)/u)
 
   if (!qaOpenGapsMatch) {
     throw new Error('docs/QA_AUDIT.md current Open Gaps section is missing.')
@@ -3333,25 +3840,40 @@ async function assertDocsContainCurrentEvidence(evidence) {
   )
   const currentDocs = `${requirementsMarkedText}\n${qaMarkedText}\n${qaOpenGapsMatch[0]}`
   const uiEvidencePassed = liveProviderUiEvidenceState(evidence).passed
+  const liveSyncEvidencePassed = !releaseBlockerById(
+    evidence,
+    'disposable-live-sync-release-pass',
+  )
   const synchronizedRequirements = syncLiveProviderUiMilestoneChecklist(
-    requirements,
+    syncLiveSyncRequirementsMilestoneChecklist(requirements, liveSyncEvidencePassed),
+    uiEvidencePassed,
+  )
+  const synchronizedQaAudit = syncLiveProviderUiQaResidualChecklist(
+    syncLiveSyncQaResidualChecklist(qaAudit, liveSyncEvidencePassed),
     uiEvidencePassed,
   )
 
   if (synchronizedRequirements !== requirements) {
     throw new Error(
-      'docs/REQUIREMENTS.md milestone live-provider UI checklist is stale. Run pnpm run sync:current-evidence.',
+      'docs/REQUIREMENTS.md milestone release checklist is stale. Run pnpm run sync:current-evidence.',
+    )
+  }
+  if (synchronizedQaAudit !== qaAudit) {
+    throw new Error(
+      'docs/QA_AUDIT.md release residual checklist is stale. Run pnpm run sync:current-evidence.',
     )
   }
 
   assertPublishSafe(requirementsMarkedText, 'written Requirements current evidence overlay')
   assertPublishSafe(qaMarkedText, 'written QA current evidence overlay')
   assertPublishSafe(qaOpenGapsMatch[0], 'written QA Open Gaps')
+  assertCurrentReleaseResidualChecklist(qaAudit, evidence.releaseBlockers)
   assertRequirementsOverlayBlockerChecklist(requirementsMarkedText, evidence.releaseBlockers)
   const requirementsStartMarkerCount = requirements.split(requirementsStartMarker).length - 1
   const requirementsEndMarkerCount = requirements.split(requirementsEndMarker).length - 1
   const qaStartMarkerCount = qaAudit.split(qaStartMarker).length - 1
   const qaEndMarkerCount = qaAudit.split(qaEndMarker).length - 1
+  assertCurrentEvidenceDocumentContract(requirements, qaAudit)
   const requirementsCurrentOverlayCount = requirements.match(
     /^## 当前发布证据覆盖层（/gmu,
   )?.length ?? 0
@@ -3467,17 +3989,11 @@ async function assertDocsContainCurrentEvidence(evidence) {
 }
 
 async function runEvidenceHandoff() {
-  assertPublishSafeRejectsSensitiveFixtures()
-  assertAggregateDiagnosticChildSafetyLineSelfTest()
-  assertLiveProviderFullReportLabelSelfTest()
-  assertRequirementsBlockerChecklistSelfTest()
-  assertNoUncheckedChecklistBeforeCurrentEvidenceSelfTest()
-  assertAllNextActionsRendered()
-  assertVerifyReleaseCheckpointFreshnessSelfTest()
-  assertCurrentMsixPackageCandidateFreshnessSelfTest()
-
   const evidence = await readEvidence()
-  assertVerifyReleaseCheckpointFreshness(evidence)
+  if (!allowStaleVerifyReleaseCheckpointForWriteDocs) {
+    await assertVerifyReleaseCheckpointInputBinding(evidence)
+    assertVerifyReleaseCheckpointFreshness(evidence)
+  }
   assertCurrentMsixPackageCandidateFreshness(evidence)
   const markdown = buildMarkdown(evidence)
   assertPublishSafe(markdown, 'current evidence markdown')

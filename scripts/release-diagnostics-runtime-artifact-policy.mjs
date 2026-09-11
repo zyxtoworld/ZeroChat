@@ -1,5 +1,10 @@
 const LIVE_SYNC_RELEASE_PASS_PATH = '.manual-qa/live-sync-release-drill.json'
 const RUNTIME_ARTIFACT_FAILURE_HEADER = 'Runtime smoke artifact checks failed:'
+const RUNTIME_ARTIFACT_PASS_HEADER = 'Runtime smoke artifact checks passed:'
+const CURRENT_TRUSTED_MSIX_REPORT_PATH =
+  '.manual-qa/windows-msix-current-trusted-install-update-qa.json'
+const WINDOWS_TRUSTED_MSIX_HOST_PREFLIGHT_PATH =
+  '.manual-qa/windows-msix-host-preflight.json'
 const WINDOWS_TRUSTED_MSIX_RUNTIME_ARTIFACT_PATHS = [
   '.manual-qa/windows-msix-current-trusted-install-update-qa.json',
   '.manual-qa/windows-msix-current-trusted-install-update-qa.failure.json',
@@ -22,6 +27,53 @@ const WEB_CURRENT_PAGE_SOURCE_STALE_BULLET_PREFIXES = [
 
 export const WINDOWS_TRUSTED_MSIX_ONLY_SCOPE_MARKER =
   'Runtime artifact blocker scope: windows-trusted-msix-only.'
+export const EXPECTED_RUNTIME_ARTIFACT_FAILURE_KIND =
+  'windows-trusted-msix-release-pass-missing'
+export const TRUSTED_MSIX_HOST_PREFLIGHT_BLOCKER_KINDS = Object.freeze([
+  'windows-appx-deployment-deleted-package-cleanup-access-denied',
+  'windows-appx-deployment-deleted-package-cleanup-failure',
+])
+
+export function isRuntimeArtifactGatePass(output) {
+  return (
+    typeof output === 'string' &&
+    output.includes(RUNTIME_ARTIFACT_PASS_HEADER) &&
+    !output.includes(RUNTIME_ARTIFACT_FAILURE_HEADER)
+  )
+}
+
+export function trustedMsixArtifactBlockerSource({
+  hostPreflightStatus,
+  failureGeneratedAt,
+  baselineGeneratedAt,
+} = {}) {
+  if (hostPreflightStatus === 'blocked') {
+    return 'host-preflight'
+  }
+  if (hostPreflightStatus === 'clear') {
+    return null
+  }
+
+  const failureTime = Date.parse(failureGeneratedAt ?? '')
+  const baselineTime = Date.parse(baselineGeneratedAt ?? '')
+  return Number.isFinite(failureTime) &&
+    (!Number.isFinite(baselineTime) || failureTime >= baselineTime)
+    ? 'failure-report'
+    : null
+}
+
+function runtimeArtifactFailureBulletLines(output) {
+  if (typeof output !== 'string' || !output.includes(RUNTIME_ARTIFACT_FAILURE_HEADER)) {
+    return null
+  }
+
+  const bulletLines = output
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('- '))
+
+  return bulletLines.length > 0 ? bulletLines : null
+}
 
 export function webCurrentPageRuntimeArtifactExpectation({ allowRefreshableStale = false } = {}) {
   return {
@@ -34,17 +86,12 @@ export function webCurrentPageRuntimeArtifactExpectation({ allowRefreshableStale
 }
 
 export function isWindowsTrustedMsixOnlyRuntimeArtifactFailure(output) {
-  if (typeof output !== 'string' || !output.includes(RUNTIME_ARTIFACT_FAILURE_HEADER)) {
+  const bulletLines = runtimeArtifactFailureBulletLines(output)
+  if (!bulletLines) {
     return false
   }
 
-  const bulletLines = output
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith('- '))
-
   return (
-    bulletLines.length > 0 &&
     bulletLines.every((line) =>
       WINDOWS_TRUSTED_MSIX_RUNTIME_ARTIFACT_PATHS.some((reportPath) => {
         const prefix = `- ${reportPath}`
@@ -52,6 +99,137 @@ export function isWindowsTrustedMsixOnlyRuntimeArtifactFailure(output) {
       }),
     )
   )
+}
+
+export function isAuditedDeferrableRuntimeArtifactFailure(output, audit) {
+  const bulletLines = runtimeArtifactFailureBulletLines(output)
+  const additionalBlockers = Array.isArray(audit?.additionalExpectedBlockers)
+    ? audit.additionalExpectedBlockers
+    : []
+  const requiredMarkers = Array.isArray(audit?.requiredMarkersPresent)
+    ? audit.requiredMarkersPresent
+    : []
+  const forbiddenMarkers = Array.isArray(audit?.forbiddenMarkersAbsent)
+    ? audit.forbiddenMarkersAbsent
+    : []
+  const androidStaleLines = Array.isArray(audit?.androidRuntimeArtifact?.staleBulletLines)
+    ? audit.androidRuntimeArtifact.staleBulletLines
+    : null
+  const webCurrentPageStaleLines = Array.isArray(
+    audit?.webCurrentPageArtifact?.staleBulletLines,
+  )
+    ? audit.webCurrentPageArtifact.staleBulletLines
+    : []
+  const webCurrentPageStaleExpected = webCurrentPageStaleLines.length > 0
+  const webCurrentPageStaleValid =
+    !webCurrentPageStaleExpected ||
+    (audit?.webCurrentPageArtifact?.allowRefreshableStale === true &&
+      webCurrentPageStaleLines.length <= WEB_CURRENT_PAGE_SOURCE_STALE_BULLET_PREFIXES.length &&
+      new Set(webCurrentPageStaleLines).size === webCurrentPageStaleLines.length &&
+      webCurrentPageStaleLines.every(
+        (line) =>
+          typeof line === 'string' &&
+          WEB_CURRENT_PAGE_SOURCE_STALE_BULLET_PREFIXES.some((prefix) =>
+            line.startsWith(prefix),
+          ),
+      ))
+  const expectedWindowsMarkers = [
+    `${CURRENT_TRUSTED_MSIX_REPORT_PATH} distWebAssets`,
+    `${CURRENT_TRUSTED_MSIX_REPORT_PATH} currentPackageEvidence`,
+  ]
+  const liveSyncMarkerPrefix = `${LIVE_SYNC_RELEASE_PASS_PATH} sourceFingerprint.`
+  const liveSyncBlocker = additionalBlockers[0]
+  const liveSyncBlockerExpected =
+    additionalBlockers.length === 1 &&
+    liveSyncBlocker?.id === 'disposable-live-sync-release-pass' &&
+    liveSyncBlocker?.classification === 'live-sync-current-source-release-pass-missing' &&
+    liveSyncBlocker?.owner === 'release-qa-operator' &&
+    liveSyncBlocker?.reportPath === LIVE_SYNC_RELEASE_PASS_PATH
+  const windowsBlockerExpected =
+    audit?.blockerReport === CURRENT_TRUSTED_MSIX_REPORT_PATH &&
+    audit?.blockerClassification ===
+      'windows-trusted-msix-needs-elevated-current-source-rerun'
+  const hostPreflightBlockerExpected =
+    audit?.blockerReport === WINDOWS_TRUSTED_MSIX_HOST_PREFLIGHT_PATH &&
+    TRUSTED_MSIX_HOST_PREFLIGHT_BLOCKER_KINDS.includes(
+      audit?.blockerClassification,
+    ) &&
+    audit?.owner === 'host-windows-appx-deployment-service' &&
+    audit?.currentTrustedQaState === 'host-preflight-blocked-or-unproven'
+  const trustedMsixReleasePassCurrent =
+    audit?.blockerReport === null &&
+    audit?.blockerClassification === null &&
+    audit?.currentTrustedQaState === 'current-trusted-msix-release-pass'
+  const noAdditionalBlockersExpected =
+    additionalBlockers.length === 0 &&
+    (windowsBlockerExpected || hostPreflightBlockerExpected)
+  const expectedBlockerSet = noAdditionalBlockersExpected || liveSyncBlockerExpected
+  const requiredWindowsMarkers = windowsBlockerExpected
+    ? expectedWindowsMarkers
+    : hostPreflightBlockerExpected
+      ? [`${WINDOWS_TRUSTED_MSIX_HOST_PREFLIGHT_PATH} current host preflight status=blocked`]
+      : []
+
+  if (
+    !bulletLines ||
+    audit?.kind !== 'zerochat.releaseDiagnosticsRuntimeArtifactExpectedBlocker.v1' ||
+    audit?.actualExitCode !== 1 ||
+    audit?.passed !== true ||
+    audit?.status !== 'expected-blocker' ||
+    !Array.isArray(audit?.additionalExpectedBlockers) ||
+    audit?.unexpectedBulletLineCount !== 0 ||
+    (!windowsBlockerExpected &&
+      !hostPreflightBlockerExpected &&
+      !trustedMsixReleasePassCurrent) ||
+    !expectedBlockerSet ||
+    !androidStaleLines ||
+    androidStaleLines.length !== 0 ||
+    !webCurrentPageStaleValid ||
+    audit?.bulletLineCount !== bulletLines.length ||
+    requiredMarkers.length + webCurrentPageStaleLines.length !== bulletLines.length ||
+    requiredMarkers.some((marker) => typeof marker !== 'string' || marker.length === 0) ||
+    forbiddenMarkers.some((marker) => typeof marker !== 'string' || marker.length === 0) ||
+    requiredWindowsMarkers.some((marker) => !requiredMarkers.includes(marker)) ||
+    (liveSyncBlockerExpected &&
+      !requiredMarkers.some((marker) => marker.startsWith(liveSyncMarkerPrefix))) ||
+    (!liveSyncBlockerExpected &&
+      requiredMarkers.some((marker) => marker.startsWith(liveSyncMarkerPrefix))) ||
+    requiredMarkers.some(
+      (marker) =>
+        !requiredWindowsMarkers.includes(marker) &&
+        (!liveSyncBlockerExpected || !marker.startsWith(liveSyncMarkerPrefix)),
+    ) ||
+    forbiddenMarkers.some((marker) => output.includes(marker))
+  ) {
+    return false
+  }
+
+  const nonWebBulletLines = bulletLines.filter(
+    (line) => !webCurrentPageStaleLines.includes(line),
+  )
+  return (
+    nonWebBulletLines.every(
+      (line) => requiredMarkers.filter((marker) => line.includes(marker)).length === 1,
+    ) &&
+    requiredMarkers.every(
+      (marker) => nonWebBulletLines.filter((line) => line.includes(marker)).length === 1,
+    ) &&
+    webCurrentPageStaleLines.every(
+      (expectedLine) => bulletLines.filter((line) => line === expectedLine).length === 1,
+    )
+  )
+}
+
+export function classifyAuditedRuntimeArtifactFailure(output, audit) {
+  if (!isAuditedDeferrableRuntimeArtifactFailure(output, audit)) {
+    return null
+  }
+
+  const hasTrustedMsixBlocker =
+    audit?.blockerReport === CURRENT_TRUSTED_MSIX_REPORT_PATH ||
+    audit?.blockerReport === WINDOWS_TRUSTED_MSIX_HOST_PREFLIGHT_PATH
+
+  return hasTrustedMsixBlocker ? EXPECTED_RUNTIME_ARTIFACT_FAILURE_KIND : null
 }
 
 export function isWindowsTrustedMsixOnlyExpectedFailureSummary(summary) {
@@ -74,6 +252,9 @@ export function isWindowsTrustedMsixOnlyExpectedFailureSummary(summary) {
 
   return (
     summary.includes('windows-trusted-msix-needs-elevated-current-source-rerun') ||
+    summary.includes(
+      `${WINDOWS_TRUSTED_MSIX_HOST_PREFLIGHT_PATH} current host preflight status=blocked`,
+    ) ||
     (summary.includes('windows-msix-current-trusted-install-update-qa.failure.json') &&
       summary.includes('releaseEvidence=false'))
   )

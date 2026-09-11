@@ -3,6 +3,8 @@ import { lstat, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import ts from 'typescript'
 
+import { isProjectLocalBoundaryPath } from './project-local-boundary.mjs'
+
 export const sourceFingerprintDefaultExcludedDirectoryNames = Object.freeze([
   'build',
   'dist',
@@ -44,9 +46,11 @@ function isInsideRepository(cwd, candidate) {
 }
 
 function hasExcludedDirectory(file, excludedDirectories) {
-  return normalizeRepoPath(file)
-    .split('/')
-    .some((part) => excludedDirectories.has(part))
+  const normalized = normalizeRepoPath(file)
+  return (
+    isProjectLocalBoundaryPath(normalized) ||
+    normalized.split('/').some((part) => excludedDirectories.has(part))
+  )
 }
 
 async function pathKind(candidate) {
@@ -130,7 +134,7 @@ function importCandidates(importer, specifier) {
   const extension = path.extname(base).toLowerCase()
   const candidates = [base]
 
-  if (!extension) {
+  if (!extension || !resolvableExtensions.includes(extension)) {
     for (const candidateExtension of resolvableExtensions) {
       candidates.push(`${base}${candidateExtension}`)
     }
@@ -151,6 +155,7 @@ export async function dependencyClosureSourceFiles({
   cwd = process.cwd(),
   roots,
   excludedDirectories = defaultExcludedDirectories,
+  excludedFiles = [],
 } = {}) {
   if (!Array.isArray(roots) || roots.length === 0) {
     throw new Error('Source fingerprint roots must be a non-empty array.')
@@ -158,8 +163,16 @@ export async function dependencyClosureSourceFiles({
 
   const repositoryRoot = path.resolve(cwd)
   const excluded = new Set(excludedDirectories)
+  const excludedFilePaths = new Set(excludedFiles.map((file) => normalizeRepoPath(String(file))))
   const files = new Set()
   const pathKinds = new Map()
+  const pendingFiles = new Map()
+
+  for (const file of excludedFilePaths) {
+    if (file === '..' || file.startsWith('../') || path.isAbsolute(file)) {
+      throw new Error(`Source fingerprint excluded file escapes the repository: ${file}`)
+    }
+  }
 
   function cachedPathKind(candidate) {
     const normalized = path.resolve(candidate)
@@ -200,18 +213,41 @@ export async function dependencyClosureSourceFiles({
   async function addFile(file) {
     assertInsideRepository(repositoryRoot, file, 'Source fingerprint file')
     const repoPath = normalizeRepoPath(path.relative(repositoryRoot, file))
-    if (!repoPath || hasExcludedDirectory(repoPath, excluded) || files.has(repoPath)) return
+    if (
+      !repoPath ||
+      excludedFilePaths.has(repoPath) ||
+      hasExcludedDirectory(repoPath, excluded) ||
+      files.has(repoPath)
+    ) return
 
-    if (!(await assertRegularSourceFile(file, 'Source fingerprint file'))) {
-      throw new Error(`Source fingerprint path is not a regular file: ${file}`)
+    const pending = pendingFiles.get(repoPath)
+    if (pending) {
+      await pending
+      return
     }
 
-    files.add(repoPath)
-    if (!importSourceExtensions.has(path.extname(file).toLowerCase())) return
+    const work = (async () => {
+      if (!(await assertRegularSourceFile(file, 'Source fingerprint file'))) {
+        throw new Error(`Source fingerprint path is not a regular file: ${file}`)
+      }
 
-    const source = await readFile(file, 'utf8')
-    for (const specifier of localModuleSpecifiers(repoPath, source)) {
-      await addFile(await resolveLocalImport(file, specifier))
+      files.add(repoPath)
+      if (!importSourceExtensions.has(path.extname(file).toLowerCase())) return
+
+      const source = await readFile(file, 'utf8')
+      const specifiers = localModuleSpecifiers(repoPath, source)
+      await Promise.all(
+        specifiers.map(async (specifier) => {
+          await addFile(await resolveLocalImport(file, specifier))
+        }),
+      )
+    })()
+
+    pendingFiles.set(repoPath, work)
+    try {
+      await work
+    } finally {
+      pendingFiles.delete(repoPath)
     }
   }
 
@@ -232,17 +268,19 @@ export async function dependencyClosureSourceFiles({
     }
   }
 
-  for (const root of roots) {
-    const resolvedRoot = path.resolve(repositoryRoot, root)
-    assertInsideRepository(repositoryRoot, resolvedRoot, `Source fingerprint root ${root}`)
-    const kind = await cachedPathKind(resolvedRoot)
-    if (kind === 'symlink') {
-      throw new Error(`Source fingerprint root must not be a symbolic link: ${root}`)
-    }
-    if (kind === 'file') await addFile(resolvedRoot)
-    else if (kind === 'directory') await walk(resolvedRoot)
-    else throw new Error(`Source fingerprint root does not exist: ${root}`)
-  }
+  await Promise.all(
+    roots.map(async (root) => {
+      const resolvedRoot = path.resolve(repositoryRoot, root)
+      assertInsideRepository(repositoryRoot, resolvedRoot, `Source fingerprint root ${root}`)
+      const kind = await cachedPathKind(resolvedRoot)
+      if (kind === 'symlink') {
+        throw new Error(`Source fingerprint root must not be a symbolic link: ${root}`)
+      }
+      if (kind === 'file') await addFile(resolvedRoot)
+      else if (kind === 'directory') await walk(resolvedRoot)
+      else throw new Error(`Source fingerprint root does not exist: ${root}`)
+    }),
+  )
 
   return [...files].sort()
 }
@@ -252,23 +290,30 @@ export async function dependencyClosureSourceFingerprint({
   roots,
   kind,
   excludedDirectories = defaultExcludedDirectories,
+  excludedFiles = [],
+  includeRecords = false,
 } = {}) {
   if (typeof kind !== 'string' || !kind) {
     throw new Error('Source fingerprint kind is required.')
   }
 
   const normalizedRoots = roots.map((root) => normalizeRepoPath(root))
-  const files = await dependencyClosureSourceFiles({ cwd, roots, excludedDirectories })
-  const records = []
-
-  for (const file of files) {
-    const bytes = await readFile(path.resolve(cwd, file))
-    records.push({
-      path: file,
-      bytes: bytes.length,
-      sha256: createHash('sha256').update(bytes).digest('hex').toUpperCase(),
-    })
-  }
+  const files = await dependencyClosureSourceFiles({
+    cwd,
+    roots,
+    excludedDirectories,
+    excludedFiles,
+  })
+  const records = await Promise.all(
+    files.map(async (file) => {
+      const bytes = await readFile(path.resolve(cwd, file))
+      return {
+        path: file,
+        bytes: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex').toUpperCase(),
+      }
+    }),
+  )
 
   const digest = createHash('sha256')
   for (const record of records) {
@@ -280,11 +325,13 @@ export async function dependencyClosureSourceFingerprint({
     digest.update('\n')
   }
 
-  return {
+  const fingerprint = {
     kind,
     roots: normalizedRoots,
     fileCount: records.length,
     totalBytes: records.reduce((sum, record) => sum + record.bytes, 0),
     sha256: digest.digest('hex').toUpperCase(),
   }
+
+  return includeRecords ? { ...fingerprint, records } : fingerprint
 }

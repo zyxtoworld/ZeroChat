@@ -128,3 +128,168 @@ import Testing
     #expect(try snapshotFingerprint(first) != snapshotFingerprint(second))
     #expect(try snapshotFingerprint(first) != snapshotFingerprint(nil))
 }
+
+@Test func snapshotStoreRejectsDuplicateRecordIdentifiersOnLoad() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("zerochat-snapshot-invalid-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let fileURL = directory.appendingPathComponent("snapshot.v1.json")
+    let provider = ProviderConfig(
+        id: "duplicate",
+        name: "Duplicate",
+        kind: .openAICompatible,
+        baseUrl: "https://provider.example.test/v1",
+        model: "model",
+        enabled: true,
+        needsApiKey: true,
+        createdAt: 1,
+        updatedAt: 1
+    )
+    let snapshot = AppSnapshot(providers: [provider, provider], updatedAt: 1)
+    try JSONEncoder().encode(snapshot).write(to: fileURL, options: [.atomic])
+    let store = SnapshotStore(fileURL: fileURL)
+
+    await #expect(throws: CocoaError.self) {
+        try await store.load()
+    }
+}
+
+@Test func snapshotStoreRejectsDuplicateRecordIdentifiersBeforeSave() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("zerochat-snapshot-save-invalid-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let provider = ProviderConfig(
+        id: "duplicate",
+        name: "Duplicate",
+        kind: .openAICompatible,
+        baseUrl: "https://provider.example.test/v1",
+        model: "model",
+        enabled: true,
+        needsApiKey: true,
+        createdAt: 1,
+        updatedAt: 1
+    )
+    let snapshot = AppSnapshot(providers: [provider, provider], updatedAt: 1)
+    let fileURL = directory.appendingPathComponent("snapshot.v1.json")
+    let store = SnapshotStore(fileURL: fileURL)
+
+    await #expect(throws: CocoaError.self) {
+        try await store.save(snapshot)
+    }
+    #expect(!FileManager.default.fileExists(atPath: fileURL.path))
+}
+
+@Test func syncCommitTransitionRoundTripsEncryptedVaultWithoutPlaintextSecrets() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("zerochat-sync-commit-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let fileURL = directory.appendingPathComponent("snapshot.v1.json")
+    let transitionURL = directory.appendingPathComponent("snapshot.v1.local-data-transition.json")
+    let store = SnapshotStore(fileURL: fileURL)
+    let provider = ProviderConfig(
+        id: "provider-a",
+        name: "Provider A",
+        kind: .openAICompatible,
+        baseUrl: "https://provider-a.example.test/v1",
+        model: "model-a",
+        enabled: true,
+        needsApiKey: true,
+        createdAt: 1,
+        updatedAt: 1
+    )
+    let target = AppSnapshot(providers: [provider], updatedAt: 1_725_000_123_456)
+    let vault = SyncVault(
+        data: target,
+        secrets: ProviderSecrets(providerKeys: ["provider-a": "sync-commit-test-secret"])
+    )
+    let passphrase = "sync-commit-test-passphrase"
+    let crypto = CryptoEngine()
+    let envelope = try await crypto.encryptVault(vault, passphrase: passphrase)
+    let encryptedVault = try JSONEncoder().encode(envelope)
+    let transition = LocalDataTransition(
+        kind: .syncCommit,
+        sourceSnapshotFingerprint: try snapshotFingerprint(nil),
+        targetUpdatedAt: target.updatedAt,
+        encryptedBackup: encryptedVault,
+        providerIds: [provider.id]
+    )
+
+    try await store.stageLocalDataTransition(transition)
+
+    let journal = try Data(contentsOf: transitionURL)
+    let journalText = String(decoding: journal, as: UTF8.self)
+    #expect(!journalText.contains("sync-commit-test-secret"))
+    #expect(!journalText.contains(provider.baseUrl))
+
+    let pending = try await store.loadLocalDataTransition()
+    let loaded = try #require(pending)
+    #expect(loaded.kind == .syncCommit)
+    #expect(loaded.targetUpdatedAt == target.updatedAt)
+    #expect(loaded.providerIds == [provider.id])
+    let loadedData = try #require(loaded.encryptedBackup)
+    let loadedEnvelope = try JSONDecoder().decode(EncryptedSnapshotEnvelope.self, from: loadedData)
+    let recovered = try await crypto.decryptVault(loadedEnvelope, passphrase: passphrase)
+    #expect(recovered.data.updatedAt == target.updatedAt)
+    #expect(recovered.data.providers.first?.baseUrl == provider.baseUrl)
+    #expect(recovered.secrets.providerKeys[provider.id] == "sync-commit-test-secret")
+
+    let stillPending = try await store.loadLocalDataTransition()
+    #expect(stillPending?.id == transition.id)
+    try await store.completeLocalDataTransition()
+    #expect(try await store.loadLocalDataTransition() == nil)
+}
+
+@Test func syncCommitTransitionRejectsUnrecoverableMetadataBeforePersistence() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("zerochat-sync-commit-invalid-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let store = SnapshotStore(fileURL: directory.appendingPathComponent("snapshot.v1.json"))
+    let sourceFingerprint = try snapshotFingerprint(nil)
+    let target = AppSnapshot(updatedAt: 7)
+    let invalidTransitions = [
+        LocalDataTransition(
+            kind: .syncCommit,
+            sourceSnapshotFingerprint: nil,
+            targetUpdatedAt: 7,
+            encryptedBackup: Data("encrypted".utf8),
+            providerIds: ["provider-a"]
+        ),
+        LocalDataTransition(
+            kind: .syncCommit,
+            sourceSnapshotFingerprint: sourceFingerprint,
+            targetSnapshot: target,
+            targetUpdatedAt: 7,
+            encryptedBackup: Data("encrypted".utf8),
+            providerIds: ["provider-a"]
+        ),
+        LocalDataTransition(
+            kind: .syncCommit,
+            sourceSnapshotFingerprint: sourceFingerprint,
+            targetUpdatedAt: nil,
+            encryptedBackup: Data("encrypted".utf8),
+            providerIds: ["provider-a"]
+        ),
+        LocalDataTransition(
+            kind: .syncCommit,
+            sourceSnapshotFingerprint: sourceFingerprint,
+            targetUpdatedAt: 7,
+            encryptedBackup: Data("encrypted".utf8),
+            providerIds: []
+        ),
+    ]
+
+    for transition in invalidTransitions {
+        await #expect(throws: LocalDataTransitionError.invalidRecord) {
+            try await store.stageLocalDataTransition(transition)
+        }
+        #expect(try await store.loadLocalDataTransition() == nil)
+    }
+}

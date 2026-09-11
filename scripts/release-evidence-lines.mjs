@@ -52,6 +52,7 @@ export function liveProviderUiReleaseEvidencePassed({
 } = {}) {
   const requestedInputs = attemptReport?.requestedInputs ?? {}
   const screenshot = attemptReport?.screenshot ?? {}
+  const browserProxyReadiness = attemptReport?.browserProxyReadiness ?? {}
 
   return (
     !blocker &&
@@ -63,6 +64,15 @@ export function liveProviderUiReleaseEvidencePassed({
     attemptReport?.browserOriginProven === true &&
     attemptReport?.markerCaptured === true &&
     attemptReport?.browserMessageSent === true &&
+    browserProxyReadiness.status === 'passed' &&
+    Number.isInteger(browserProxyReadiness.attemptCount) &&
+    browserProxyReadiness.attemptCount >= 2 &&
+    Number.isInteger(browserProxyReadiness.consecutivePasses) &&
+    browserProxyReadiness.consecutivePasses >= 2 &&
+    [200, 403].includes(browserProxyReadiness.statusCode) &&
+    browserProxyReadiness.originMatchesExpected === true &&
+    typeof browserProxyReadiness.defaultUserAgentHeadless === 'boolean' &&
+    browserProxyReadiness.effectiveUserAgentHeadless === false &&
     requestedInputs.proxyConfigured === true &&
     requestedInputs.syncPassphraseProvided === true &&
     requestedInputs.workerHostedProviderKeyRequested === true &&

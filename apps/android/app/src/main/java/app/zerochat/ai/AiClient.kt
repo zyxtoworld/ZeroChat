@@ -62,7 +62,7 @@ private fun generatedImageMimeType(bytes: ByteArray): String? = when {
 
 class AiClient(
     private val client: HttpClient = defaultAiHttpClient(),
-) {
+) : AutoCloseable {
     private val json = Json {
         encodeDefaults = true
         explicitNulls = false
@@ -166,6 +166,10 @@ class AiClient(
             } finally {
                 lineReader.close()
             }
+        }
+
+        if (received.isBlank()) {
+            throw aiProviderEmptyResponseException()
         }
 
         return received.toString()
@@ -760,6 +764,10 @@ class AiClient(
                 "AI capability response",
             )
         }
+    }
+
+    override fun close() {
+        client.close()
     }
 }
 

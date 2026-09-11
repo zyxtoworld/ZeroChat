@@ -16,6 +16,7 @@ use crate::{
         write_incremental_head, write_incremental_object,
     },
     sync_incremental_upload::build_incremental_upload,
+    sync_vault_validation::decode_validated_sync_vault,
 };
 use anyhow::{Result, bail};
 use reqwest::Client;
@@ -164,10 +165,11 @@ pub(crate) async fn manifest_to_vault(
     data.conversations = conversations;
     data.skills = skills;
 
-    Ok(SyncVault {
+    let vault = SyncVault {
         data,
         secrets: manifest.secrets.clone(),
-    })
+    };
+    decode_validated_sync_vault(&serde_json::to_vec(&vault)?)
 }
 
 pub(crate) async fn upload_incremental_vault(

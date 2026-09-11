@@ -1,4 +1,5 @@
 import { rt } from '../i18n'
+import { isDisallowedRemoteHost } from './remoteHostSafety'
 
 export function isLoopbackSyncHost(hostname: string): boolean {
   return (
@@ -30,6 +31,12 @@ export function normalizeWorkerEndpoint(value: string | undefined): string {
 
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackSyncHost(url.hostname))) {
     throw new Error(rt('error.syncCloudflareEndpointHttps'))
+  }
+
+  if (url.protocol === 'https:' && isDisallowedRemoteHost(url.hostname)) {
+    throw new Error(
+      rt('error.urlLocalNetwork', { label: rt('field.workerEndpoint') }),
+    )
   }
 
   if (url.search || url.hash) {

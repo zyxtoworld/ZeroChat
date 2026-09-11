@@ -4,6 +4,42 @@ import android.content.Context
 import android.content.Intent
 import androidx.core.net.toUri
 
+internal const val QUICK_ASK_CONSUMED_STATE_KEY = "quick_ask_consumed"
+
+internal fun shouldConsumeQuickAskOnCreate(
+    savedQuickAskConsumed: Boolean,
+    isQuickAskIntent: Boolean,
+): Boolean = isQuickAskIntent && !savedQuickAskConsumed
+
+internal class QuickAskActivityOwner {
+    var deliveryCount: Long = 0L
+        private set
+
+    var consumedForInstance: Boolean = false
+        private set
+
+    fun onCreate(savedQuickAskConsumed: Boolean, isQuickAskIntent: Boolean): Long {
+        consumedForInstance = savedQuickAskConsumed
+        if (shouldConsumeQuickAskOnCreate(savedQuickAskConsumed, isQuickAskIntent)) {
+            consume(isQuickAskIntent)
+            consumedForInstance = true
+        }
+        return deliveryCount
+    }
+
+    fun onNewIntent(isQuickAskIntent: Boolean): Long {
+        consume(isQuickAskIntent)
+        consumedForInstance = isQuickAskIntent
+        return deliveryCount
+    }
+
+    private fun consume(isQuickAskIntent: Boolean) {
+        if (isQuickAskIntent) {
+            deliveryCount += 1L
+        }
+    }
+}
+
 object QuickAskIntents {
     const val ACTION_QUICK_ASK = "app.zerochat.action.QUICK_ASK"
     const val EXTRA_QUICK_ASK = "app.zerochat.extra.QUICK_ASK"

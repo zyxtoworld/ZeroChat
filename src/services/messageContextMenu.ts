@@ -1,15 +1,72 @@
+import type { ChatMessage } from '../types'
+
 export interface MessageContextMenuState {
+  message: ChatMessage
   messageId: string
   x: number
   y: number
 }
 
 export interface MessageLongPressState {
+  messageId: string
   pointerId: number
   startX: number
   startY: number
   timer: number
   opened: boolean
+}
+
+export async function runMessageContextMenuAsyncAction<Result>(
+  action: () => Promise<Result>,
+  restoreFocus: () => void,
+): Promise<Result> {
+  try {
+    return await action()
+  } finally {
+    restoreFocus()
+  }
+}
+
+export class MessageContextMenuFocusOwnership {
+  private generation = 0
+  private owner: { target: HTMLElement; token: number } | null = null
+
+  open(target: HTMLElement): void {
+    this.owner = { target, token: ++this.generation }
+  }
+
+  close(): void {
+    this.generation += 1
+    this.owner = null
+  }
+
+  beginAsyncAction(): () => HTMLElement | null {
+    const current = this.owner
+    const token = ++this.generation
+
+    if (!current) {
+      return () => null
+    }
+
+    this.owner = { target: current.target, token }
+    let consumed = false
+
+    return () => {
+      if (consumed || this.owner?.token !== token) {
+        return null
+      }
+
+      consumed = true
+      this.owner = null
+      return current.target
+    }
+  }
+
+  takeTargetForImmediateRestore(): HTMLElement | null {
+    const target = this.owner?.target ?? null
+    this.close()
+    return target
+  }
 }
 
 export interface MessageContextMenuAnchorBounds {

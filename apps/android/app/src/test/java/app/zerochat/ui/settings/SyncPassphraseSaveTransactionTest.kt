@@ -2,114 +2,163 @@ package app.zerochat.ui.settings
 
 import app.zerochat.data.AppSnapshot
 import app.zerochat.data.SnapshotCompareAndSetResult
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class SyncPassphraseSaveTransactionTest {
     @Test
-    fun writesPassphraseOnlyAfterSnapshotCas() = runBlocking {
+    fun stagesPassphraseBeforeSnapshotAndFinishesIntent() = runBlocking {
         val source = AppSnapshot(updatedAt = 1)
         val candidate = AppSnapshot(updatedAt = 2)
         val events = mutableListOf<String>()
 
-        val commit = commitSyncPassphraseSaveTransaction(
+        val commit = commitSyncPassphraseSnapshotTransaction(
             source = source,
             candidate = candidate,
             sourceRevision = 4,
             currentRevision = { 4 },
-            writeSyncPassphrase = { events += "passphrase" },
+            stageSyncPassphrase = { events += "stage" },
+            finishSyncPassphrase = { events += "finish" },
+            restoreSyncPassphrase = { events += "restore" },
             compareAndSetSnapshot = { _, replacement ->
                 events += "snapshot"
                 SnapshotCompareAndSetResult(replacement, 9, committed = true)
             },
         )
 
-        assertEquals(listOf("snapshot", "passphrase"), events)
+        assertEquals(listOf("stage", "snapshot", "finish"), events)
         assertEquals(candidate, commit.snapshot)
         assertEquals(9, commit.revision)
     }
 
     @Test
-    fun staleSnapshotNeverWritesPassphrase() {
-        val source = AppSnapshot(updatedAt = 1)
-        val candidate = AppSnapshot(updatedAt = 2)
-        var passphraseWritten = false
+    fun snapshotCasRejectRestoresStagedPassphrase() {
+        val events = mutableListOf<String>()
 
-        assertThrows(CredentialSnapshotConflictException::class.java) {
+        assertThrows(SyncPassphraseSnapshotConflictException::class.java) {
             runBlocking {
-                commitSyncPassphraseSaveTransaction(
-                    source = source,
-                    candidate = candidate,
+                commitSyncPassphraseSnapshotTransaction(
+                    source = AppSnapshot(updatedAt = 1),
+                    candidate = AppSnapshot(updatedAt = 2),
                     sourceRevision = 1,
                     currentRevision = { 1 },
-                    writeSyncPassphrase = { passphraseWritten = true },
+                    stageSyncPassphrase = { events += "stage" },
+                    finishSyncPassphrase = { events += "finish" },
+                    restoreSyncPassphrase = { events += "restore" },
                     compareAndSetSnapshot = { _, _ ->
-                        SnapshotCompareAndSetResult(source, 2, committed = false)
+                        events += "snapshot"
+                        SnapshotCompareAndSetResult(AppSnapshot(updatedAt = 3), 2, committed = false)
                     },
                 )
             }
         }
 
-        assertFalse(passphraseWritten)
+        assertEquals(listOf("stage", "snapshot", "restore"), events)
     }
 
     @Test
-    fun credentialFailureRollsSnapshotBack() {
+    fun snapshotCasFailureAfterDurableWriteRestoresStagedPassphrase() {
         val source = AppSnapshot(updatedAt = 1)
         val candidate = AppSnapshot(updatedAt = 2)
-        val replacements = mutableListOf<AppSnapshot>()
+        val failure = IllegalStateException("snapshot response lost")
+        val events = mutableListOf<String>()
+        var durableSnapshot = source
+        var compareCalls = 0
+
+        val thrown = assertThrows(IllegalStateException::class.java) {
+            runBlocking {
+                commitSyncPassphraseSnapshotTransaction(
+                    source = source,
+                    candidate = candidate,
+                    sourceRevision = 1,
+                    currentRevision = { 1 },
+                    stageSyncPassphrase = { events += "stage" },
+                    finishSyncPassphrase = { events += "finish" },
+                    restoreSyncPassphrase = { events += "restore" },
+                    compareAndSetSnapshot = { expected, replacement ->
+                        compareCalls += 1
+                        if (compareCalls == 1) {
+                            durableSnapshot = replacement
+                            events += "snapshot"
+                            throw failure
+                        }
+                        assertEquals(candidate, expected)
+                        durableSnapshot = source
+                        events += "rollback"
+                        SnapshotCompareAndSetResult(source, 3, committed = true)
+                    },
+                )
+            }
+        }
+
+        assertTrue(thrown === failure)
+        assertEquals(source, durableSnapshot)
+        assertEquals(listOf("stage", "snapshot", "rollback", "restore"), events)
+    }
+
+    @Test
+    fun processStopAfterSnapshotCasLeavesPendingIntentForStartupRecovery() {
+        val events = mutableListOf<String>()
+        var pendingIntent = false
+
+        assertThrows(ProcessStopped::class.java) {
+            runBlocking {
+                commitSyncPassphraseSnapshotTransaction(
+                    source = AppSnapshot(updatedAt = 1),
+                    candidate = AppSnapshot(updatedAt = 2),
+                    sourceRevision = 1,
+                    currentRevision = { throw ProcessStopped() },
+                    stageSyncPassphrase = {
+                        pendingIntent = true
+                        events += "stage"
+                    },
+                    finishSyncPassphrase = { pendingIntent = false; events += "finish" },
+                    restoreSyncPassphrase = { pendingIntent = false; events += "restore" },
+                    compareAndSetSnapshot = { _, replacement ->
+                        events += "snapshot"
+                        SnapshotCompareAndSetResult(replacement, 2, committed = true)
+                    },
+                )
+            }
+        }
+
+        assertTrue(pendingIntent)
+        assertEquals(listOf("stage", "snapshot"), events)
+    }
+
+    @Test
+    fun finishFailureRollsSnapshotBackAndRestoresStagedPassphrase() {
+        val events = mutableListOf<String>()
+        var calls = 0
 
         val failure = assertThrows(IllegalStateException::class.java) {
             runBlocking {
-                commitSyncPassphraseSaveTransaction(
-                    source = source,
-                    candidate = candidate,
+                commitSyncPassphraseSnapshotTransaction(
+                    source = AppSnapshot(updatedAt = 1),
+                    candidate = AppSnapshot(updatedAt = 2),
                     sourceRevision = 1,
                     currentRevision = { 1 },
-                    writeSyncPassphrase = { error("credential failed") },
+                    stageSyncPassphrase = { events += "stage" },
+                    finishSyncPassphrase = {
+                        events += "finish"
+                        error("finish unavailable")
+                    },
+                    restoreSyncPassphrase = { events += "restore" },
                     compareAndSetSnapshot = { _, replacement ->
-                        replacements += replacement
-                        SnapshotCompareAndSetResult(replacement, 2, committed = true)
+                        calls += 1
+                        events += if (calls == 1) "snapshot" else "rollback"
+                        SnapshotCompareAndSetResult(replacement, calls.toLong(), committed = true)
                     },
                 )
             }
         }
 
-        assertEquals("credential failed", failure.message)
-        assertEquals(listOf(candidate, source), replacements)
+        assertEquals("finish unavailable", failure.message)
+        assertEquals(listOf("stage", "snapshot", "finish", "rollback", "restore"), events)
     }
 
-    @Test
-    fun rollbackCancellationRemainsPrimary() {
-        val source = AppSnapshot(updatedAt = 1)
-        val candidate = AppSnapshot(updatedAt = 2)
-        var call = 0
-
-        val cancellation = assertThrows(CancellationException::class.java) {
-            runBlocking {
-                commitSyncPassphraseSaveTransaction(
-                    source = source,
-                    candidate = candidate,
-                    sourceRevision = 1,
-                    currentRevision = { 2 },
-                    writeSyncPassphrase = {},
-                    compareAndSetSnapshot = { _, replacement ->
-                        call += 1
-                        if (call == 2) {
-                            throw CancellationException("cancel rollback")
-                        }
-                        SnapshotCompareAndSetResult(replacement, 2, committed = true)
-                    },
-                )
-            }
-        }
-
-        assertEquals("cancel rollback", cancellation.message)
-        assertTrue(cancellation.suppressed.single() is CredentialSnapshotConflictException)
-    }
+    private class ProcessStopped : RuntimeException()
 }

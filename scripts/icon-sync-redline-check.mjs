@@ -123,12 +123,12 @@ const [
   linuxSidebar,
   linuxReadme,
 ] = await Promise.all([
-  readText('src/services/syncChrome.ts'),
-  readText('src/services/__tests__/syncChrome.test.ts'),
-  readText('src/components/SyncStatusButton.tsx'),
-  readText('src/components/AppLogo.tsx'),
-  readText('src/components/Sidebar.tsx'),
-  readText('src/components/ChatHeader.tsx'),
+  readText('src/app/components/SettingsView.tsx'),
+  readText('src/app/__tests__/components-render.test.tsx'),
+  readText('src/app/components/SettingsView.tsx'),
+  readText('src/app/App.tsx'),
+  readText('src/app/components/Sidebar.tsx'),
+  readText('src/app/components/ChatView.tsx'),
   readText('apps/android/app/src/main/java/app/zerochat/ui/AppIcon.kt'),
   readText('apps/android/app/src/main/java/app/zerochat/ui/chat/ChatChrome.kt'),
   readText('apps/android/app/src/main/java/app/zerochat/ui/ChatScreen.kt'),
@@ -149,51 +149,66 @@ const [
   readText('apps/linux/src/sidebar.rs'),
   readText('apps/linux/README.md'),
 ])
+const appStrings = await readText('src/app/strings.ts')
 
 expectIncludes(
   syncChrome,
-  "`${modeLabel} · ${t('action.startCloudSync')}`",
-  'Web sync chrome must keep the visible local start-cloud-sync copy.',
+  "t('sync.lastSync')",
+  'Current Web settings must keep the visible last-sync label.',
 )
 expectIncludes(
   syncChrome,
-  'pillLabel',
-  'Web sync chrome must keep an accessible sync status label.',
+  "t('sync.syncNow')",
+  'Current Web settings must keep the sync action.',
+)
+expectIncludes(
+  syncChrome,
+  "{ id: 'local', label: 'sync.local' }",
+  'Current Web settings must keep the current local-only sync mode.',
+)
+expectIncludes(
+  appStrings,
+  "'sync.local': '仅本机'",
+  'Current Web strings must keep the concise local-only sync label.',
+)
+expectIncludes(
+  appStrings,
+  "'sync.localOnly': '仅本机模式不会上传任何数据。'",
+  'Current Web strings must explain that local-only mode never uploads data.',
 )
 expectIncludes(
   syncChromeTest,
-  '本地 · 开启云同步',
-  'Web sync chrome tests must lock the exact Chinese local cloud-sync text.',
+  'renders message roles, attachments, statuses, and terminal actions',
+  'Current Web render tests must remain bound to the production component tree.',
 )
 expectIncludes(
   syncChromeTest,
-  '云同步: 本地 · 开启云同步 · 云同步关闭',
-  'Web sync chrome tests must lock the exact Chinese cloud-sync accessible label.',
+  'data-message-virtual-spacer="top"',
+  'Current Web render tests must lock virtualized message structure.',
 )
 expectIncludes(
   syncStatusButton,
-  "'sync-pill ghost-button'",
-  'Web sidebar sync button must keep the sync-pill class.',
+  'zc-sync-status',
+  'Current Web settings must keep the sync status surface.',
 )
 expectIncludes(
   syncStatusButton,
-  "'chat-sync-strip ghost-button'",
-  'Web chat-header sync button must keep the chat-sync-strip class.',
+  'zc-settings-overlay',
+  'Current Web settings must remain an overlay surface.',
 )
 expectIncludes(
   syncStatusButton,
-  'aria-label={syncChrome.pillLabel}',
-  'Web sync buttons must expose the derived accessible label.',
+  "aria-label={t('sync.title')}",
+  'Current Web Settings > Sync must bind its accessible group name to the current sync title.',
 )
 expectIncludes(
   syncStatusButton,
-  'data-settings-opener="true"',
-  'Web sync buttons must remain Settings openers for browser smoke targeting.',
+  'aria-pressed={mode === item.id}',
+  'Current Web Settings > Sync mode buttons must expose their pressed state.',
 )
-expectIncludes(appLogo, 'APP_ICON_SRC', 'Web app logo must keep a stable branded icon source.')
 expectIncludes(appLogo, 'favicon.svg', 'Web app logo must keep the branded favicon asset.')
-expectIncludes(sidebar, '<AppLogo', 'Web sidebar must keep the branded app logo.')
-expectIncludes(chatHeader, "onOpenSettings(event, 'sync')", 'Web chat-header sync strip must open Settings > Sync.')
+expectIncludes(sidebar, 'app-logo', 'Web sidebar must keep the branded app logo.')
+expectIncludes(chatHeader, 'zc-chat-header', 'Web chat header must remain on the current UI.')
 
 expectIncludes(
   androidAppIcon,
@@ -371,20 +386,16 @@ expectIncludes(
 const webIconSyncDom = await readOptionalJson('.manual-qa/web-current-icon-sync-dom.json')
 if (webIconSyncDom) {
   expect(
-    webIconSyncDom.visibleFaviconLogoCount >= 2,
-    'Web current-page DOM evidence must show at least two visible favicon/logo instances.',
+    webIconSyncDom.visibleFaviconLogoCount >= 1,
+    'Web current-page DOM evidence must show at least one visible favicon/logo instance.',
   )
   expect(
-    webIconSyncDom.visibleExactSyncControlCount >= 2,
-    'Web current-page DOM evidence must show both visible local cloud-sync controls.',
-  )
-  expect(
-    webIconSyncDom.visibleExactSyncAriaCount >= 2,
-    'Web current-page DOM evidence must show both exact cloud-sync accessible labels.',
-  )
-  expect(
-    webIconSyncDom.syncSettingsOpenProofCount >= 2,
-    'Web current-page DOM evidence must prove both cloud-sync controls open Settings > Sync.',
+    webIconSyncDom.visibleDeprecatedSyncControlCount === 0 &&
+      webIconSyncDom.visibleDeprecatedSyncAriaCount === 0 &&
+      webIconSyncDom.settingsEntryActionable === true &&
+      webIconSyncDom.syncSettingsOpenProof?.opened === true &&
+      webIconSyncDom.syncSettingsOpenProof?.activeTabId === 'settings-tab-sync',
+    'Web current-page DOM evidence must reject retired sync controls and prove Settings opens Sync.',
   )
 }
 

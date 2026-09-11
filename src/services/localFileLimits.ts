@@ -50,6 +50,7 @@ export function readLocalFileAsDataUrl(
   file: File,
   maxBytes: number,
   tooLargeMessage: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     try {
@@ -59,9 +60,56 @@ export function readLocalFileAsDataUrl(
       return
     }
 
+    const createAbortError = (): DOMException =>
+      new DOMException('The local file read was aborted.', 'AbortError')
+
+    if (signal?.aborted) {
+      reject(createAbortError())
+      return
+    }
+
     const reader = new FileReader()
-    reader.onerror = () => reject(reader.error)
-    reader.onload = () => resolve(String(reader.result ?? ''))
-    reader.readAsDataURL(file)
+    let settled = false
+    let abortRead = (): void => undefined
+    const cleanup = (): void => {
+      signal?.removeEventListener('abort', abortRead)
+    }
+    const settle = (callback: () => void): void => {
+      if (settled) {
+        return
+      }
+      settled = true
+      cleanup()
+      callback()
+    }
+
+    reader.onerror = () => settle(() => reject(reader.error))
+    reader.onabort = () =>
+      settle(() => reject(reader.error ?? createAbortError()))
+    reader.onload = () => settle(() => resolve(String(reader.result ?? '')))
+    abortRead = (): void => {
+      if (settled) {
+        return
+      }
+      try {
+        reader.abort()
+      } catch {
+        // A non-compliant reader must not escape through the abort event.
+      } finally {
+        settle(() => reject(createAbortError()))
+      }
+    }
+    signal?.addEventListener('abort', abortRead, { once: true })
+
+    if (signal?.aborted) {
+      abortRead()
+      return
+    }
+
+    try {
+      reader.readAsDataURL(file)
+    } catch (error: unknown) {
+      settle(() => reject(error))
+    }
   })
 }

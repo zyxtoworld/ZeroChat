@@ -4,7 +4,11 @@ import { loadLocale, rt, setRuntimeLocale } from '../../i18n'
 import type { AppData, SyncVault } from '../../types'
 import { defaultSkillSettings } from '../appData'
 import { encryptVault } from '../crypto'
-import { parseRemoteVault, serializeVault } from '../syncShared'
+import {
+  isChatMessageShape,
+  parseRemoteVault,
+  serializeVault,
+} from '../syncShared'
 
 declare const process: {
   getBuiltinModule(name: 'node:fs'): {
@@ -173,6 +177,32 @@ describe('shared sync vault codec', () => {
     expect(parsed?.secrets.providerKeys).toEqual({
       providerRemote: 'remote-key',
     })
+  })
+
+  it('rejects a blank passphrase before serializing a sync vault', async () => {
+    await expect(
+      serializeVault(appData(), { providerKeys: {} }, '   '),
+    ).rejects.toThrow(rt('error.syncPassphraseRequired'))
+  })
+
+  it('keeps incremental message placeholders loose for materialization', () => {
+    expect(
+      isChatMessageShape({
+        content: '',
+        createdAt: 1,
+        id: 'placeholder-message',
+        role: 'assistant',
+        attachments: [
+          {
+            createdAt: 1,
+            id: 'placeholder-attachment',
+            kind: 'image',
+            mimeType: 'image/png',
+          },
+        ],
+      }),
+    ).toBe(true)
+
   })
 
   it('round-trips queued text requests with a prompt message id', async () => {
@@ -378,6 +408,33 @@ describe('shared sync vault codec', () => {
         parseRemoteVault(await encryptedRemoteVault(malformed), passphrase),
       ).rejects.toThrow(rt('error.remoteDataBadFormat'))
     }
+  })
+
+  it('rejects encrypted sync vaults with duplicate Provider identities', async () => {
+    const provider = {
+      baseUrl: 'https://provider.example/v1',
+      createdAt: 1,
+      enabled: true,
+      id: 'provider-duplicate',
+      kind: 'openai-compatible' as const,
+      model: 'gpt-5',
+      name: 'Duplicate provider',
+      needsApiKey: true,
+      updatedAt: 1,
+    }
+    const malformed = {
+      data: appData({
+        providers: [
+          provider,
+          { ...provider, name: 'Duplicate provider replacement' },
+        ],
+      }),
+      secrets: { providerKeys: {} },
+    }
+
+    await expect(
+      parseRemoteVault(await encryptedRemoteVault(malformed), passphrase),
+    ).rejects.toThrow(rt('error.remoteDataBadFormat'))
   })
 
   it('rejects decrypted remote vaults with malformed conversation messages', async () => {

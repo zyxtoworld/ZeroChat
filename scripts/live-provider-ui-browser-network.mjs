@@ -29,9 +29,118 @@ const canonicalPathSuffixes = [
 
 const DEFAULT_PROXY_INGRESS_RETRY_ATTEMPTS = 5
 const DEFAULT_PROXY_INGRESS_RETRY_DELAY_MS = 1_000
+const DEFAULT_BROWSER_PROXY_HOSTS_READINESS_ATTEMPTS = 45
+const DEFAULT_BROWSER_PROXY_HOSTS_READINESS_DELAY_MS = 1_000
 
 function wait(delayMs) {
   return new Promise((resolve) => setTimeout(resolve, delayMs))
+}
+
+export function normalizeAutomatedChromeUserAgent(value) {
+  const userAgent = String(value || '')
+
+  if (
+    !userAgent ||
+    userAgent.length > 512 ||
+    /[\u0000-\u001F\u007F]/u.test(userAgent)
+  ) {
+    throw new Error('Browser user agent must be a safe single-line Chrome value.')
+  }
+
+  const defaultUserAgentHeadless = /\bHeadlessChrome\//u.test(userAgent)
+  const normalizedUserAgent = userAgent.replaceAll('HeadlessChrome/', 'Chrome/')
+
+  if (!/\bChrome\/\d/u.test(normalizedUserAgent)) {
+    throw new Error('Browser user agent must be a safe single-line Chrome value.')
+  }
+
+  return {
+    userAgent: normalizedUserAgent,
+    defaultUserAgentHeadless,
+    effectiveUserAgentHeadless: /\bHeadlessChrome\//u.test(normalizedUserAgent),
+  }
+}
+
+export async function waitForBrowserProxyHostsReadiness({
+  probe,
+  maxAttempts = DEFAULT_BROWSER_PROXY_HOSTS_READINESS_ATTEMPTS,
+  requiredConsecutivePasses = 2,
+  retryDelayMs = DEFAULT_BROWSER_PROXY_HOSTS_READINESS_DELAY_MS,
+  sleep = wait,
+} = {}) {
+  if (typeof probe !== 'function') {
+    throw new Error('Browser-origin Worker host-management readiness requires a probe.')
+  }
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
+    throw new Error('Browser-origin Worker host-management maxAttempts must be positive.')
+  }
+  if (
+    !Number.isInteger(requiredConsecutivePasses) ||
+    requiredConsecutivePasses < 1 ||
+    requiredConsecutivePasses > maxAttempts
+  ) {
+    throw new Error(
+      'Browser-origin Worker host-management consecutive passes must fit maxAttempts.',
+    )
+  }
+
+  const absoluteProbeLimit = maxAttempts + requiredConsecutivePasses - 1
+  let attemptCount = 0
+  let consecutivePasses = 0
+  let statusCode = null
+  const runtimeFacts = {}
+
+  for (let attempt = 1; attempt <= absoluteProbeLimit; attempt += 1) {
+    if (attempt > maxAttempts && consecutivePasses === 0) {
+      break
+    }
+    attemptCount = attempt
+
+    let observation = null
+    try {
+      observation = await probe(attempt)
+    } catch {
+      // Browser/CORS errors are an unready observation; never surface route details.
+    }
+
+    statusCode = Number.isInteger(observation?.status) ? observation.status : null
+    for (const name of [
+      'originMatchesExpected',
+      'defaultUserAgentHeadless',
+      'effectiveUserAgentHeadless',
+    ]) {
+      if (typeof observation?.[name] === 'boolean') {
+        runtimeFacts[name] = observation[name]
+      }
+    }
+    if (observation?.ready === true) {
+      consecutivePasses += 1
+      if (consecutivePasses >= requiredConsecutivePasses) {
+        return { attemptCount, consecutivePasses, statusCode, ...runtimeFacts }
+      }
+    } else {
+      consecutivePasses = 0
+    }
+
+    const canProbeAgain =
+      attempt < maxAttempts ||
+      (consecutivePasses > 0 && consecutivePasses < requiredConsecutivePasses)
+    if (canProbeAgain) {
+      await sleep(retryDelayMs)
+    }
+  }
+
+  const error = new Error(
+    `Browser-origin Worker host management did not become ready after ${maxAttempts} bounded probes.`,
+  )
+  error.readiness = {
+    status: 'failed',
+    attemptCount,
+    consecutivePasses,
+    statusCode,
+    ...runtimeFacts,
+  }
+  throw error
 }
 
 function isRetryableProxyIngressObservation(observation) {
@@ -40,7 +149,7 @@ function isRetryableProxyIngressObservation(observation) {
     observation?.canonicalPath === '/proxy' &&
     observation?.redirected === false &&
     observation?.responseSource === 'none' &&
-    observation?.status === 404
+    (observation?.status === 403 || observation?.status === 404)
   )
 }
 
@@ -151,6 +260,22 @@ function safeResponseBodyKind(headers) {
   return 'binary-or-unknown'
 }
 
+function safeEdgePlatform(headers) {
+  const server = headerValue(headers, 'server').trim().toLowerCase()
+
+  return server === 'cloudflare' ||
+    Boolean(headerValue(headers, 'cf-ray')) ||
+    Boolean(headerValue(headers, 'cf-mitigated'))
+    ? 'cloudflare'
+    : 'none'
+}
+
+function safeEdgeMitigation(headers) {
+  return headerValue(headers, 'cf-mitigated').trim().toLowerCase() === 'challenge'
+    ? 'challenge'
+    : 'none'
+}
+
 function failedOutcome(params) {
   if (params?.corsErrorStatus?.corsError) {
     return 'cors-blocked'
@@ -216,6 +341,28 @@ export function browserProviderSetupFailureKind(
     : 'browser-origin-connection-check-failed'
 }
 
+export function browserProxyHostsIngressFailureKind(records = []) {
+  const edgeFailure = [...(Array.isArray(records) ? records : [])]
+    .reverse()
+    .find(
+      (record) =>
+        record?.method === 'OPTIONS' &&
+        record?.path === '/proxy/hosts' &&
+        record?.status === 403 &&
+        record?.bodyKind === 'html' &&
+        record?.edgePlatform === 'cloudflare',
+    )
+
+  if (edgeFailure?.edgeMitigation === 'challenge') {
+    return 'browser-ai-proxy-edge-challenge'
+  }
+  if (edgeFailure) {
+    return 'browser-ai-proxy-edge-forbidden'
+  }
+
+  return 'browser-ai-proxy-host-management-ingress-unverified'
+}
+
 export function createBrowserProviderNetworkTrace({ maxRecords = 40 } = {}) {
   const records = []
   const recordsByRequestId = new Map()
@@ -268,6 +415,15 @@ export function createBrowserProviderNetworkTrace({ maxRecords = 40 } = {}) {
     record.bodyKind = safeResponseBodyKind(headers)
     record.status = safeStatus(params?.response?.status)
     record.outcome = 'responded'
+    const edgePlatform = safeEdgePlatform(headers)
+    const edgeMitigation = safeEdgeMitigation(headers)
+
+    if (edgePlatform !== 'none') {
+      record.edgePlatform = edgePlatform
+    }
+    if (edgeMitigation !== 'none') {
+      record.edgeMitigation = edgeMitigation
+    }
   }
 
   function onLoadingFailed(params) {

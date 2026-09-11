@@ -492,15 +492,21 @@ To hand off the current blocked state without copying long logs, run
 `pnpm run report:release-blockers`. It validates the existing native prereq,
 strict preflight, live sync, hosted native CI, and live-provider diagnostic
 reports, then writes `.manual-qa/release-blockers-current.json` as a sanitized
-six-blocker summary. That summary is a map for the remaining work, not release
+blocker summary. That summary is a map for the remaining work, not release
 evidence. To verify the existing summary without refreshing its timestamp, run
 `pnpm run check:release-blockers`.
 For the safest one-command local release handoff, run
 `pnpm run report:release-diagnostics`. It strips live provider, live sync, and
 GitHub credential environment variables before refreshing the current diagnostic
 reports, writes `.manual-qa/release-diagnostics-current.json`, and audits that
-the broad runtime-artifact gate still fails only on the expected Windows trusted
-MSIX host AppX cleanup blocker. A passing diagnostics report is still
+the broad runtime-artifact failure matches the exact audited blocker set derived
+from current reports, including the classified Windows trusted MSIX state and
+live-sync source freshness.
+The wrapper accepts either a blocked AppX host preflight or a clear host that
+still needs an elevated rerun. Current host status is report-derived, never
+hard-coded in this guide; read `.manual-qa/windows-msix-host-preflight.json` and
+the generated current-evidence handoff before choosing the next proof action.
+A passing diagnostics report is still
 `releaseEvidence: false`; it is a current blocker handoff, not release
 readiness. To verify that existing summary without refreshing diagnostic report
 timestamps or hashes, run `pnpm run check:release-diagnostics`.
@@ -586,10 +592,11 @@ the gate red, while a newer passing
 `.manual-qa\windows-msix-current-trusted-install-update-qa.json` supersedes
 older diagnostic failure history. The current local evidence is a
 diagnostic-only host AppX failure, not a passing trusted report:
-`windows-appx-deployment-deleted-package-cleanup-access-denied` blocks the
-latest trusted install/update/uninstall run before ZeroChat can produce release
-evidence. Use a fresh disposable Windows profile/VM or repair the external AppX
-cleanup state, then rerun `pnpm run qa:windows-msix-trusted:elevated`; the
+`windows-appx-deployment-deleted-package-cleanup-access-denied`. Read the active
+host state from `.manual-qa\windows-msix-host-preflight.json`: this blocked host
+requires repair or replacement, or a fresh disposable Windows profile/VM;
+package freshness alone cannot prove install/update/uninstall. On a clear,
+elevated disposable host, rerun `pnpm run qa:windows-msix-trusted:elevated`; the
 wrapper refreshes host preflight, runs trusted install/update/uninstall QA,
 validates `pnpm run check:windows-msix-trusted-report`, validates
 `pnpm run check:runtime-artifacts`, and finishes with
@@ -613,7 +620,7 @@ fails on browser runtime errors. Open
 `.visual-audit/visual-audit-gallery.html` to review the screenshot set by eye
 before release. The run also writes `visual-audit-manifest.json` with the
 expected screenshot list; `pnpm run verify:release` validates that manifest, the
-118 listed PNGs, the gallery, and the contact sheet immediately after the
+79 listed PNGs, the gallery, and the contact sheet immediately after the
 screenshots are regenerated. The folder is ignored by git.
 
 Pull requests and pushes to `main` or `master` run the clean-checkout

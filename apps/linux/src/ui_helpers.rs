@@ -55,6 +55,7 @@ pub(crate) fn apply_theme_mode(mode: &str) {
         _ => adw::ColorScheme::Default,
     };
     manager.set_color_scheme(scheme);
+    crate::theme::install_theme(mode);
 }
 
 pub(crate) fn disabled_entry(placeholder: &str, value: Option<&str>) -> gtk::Entry {

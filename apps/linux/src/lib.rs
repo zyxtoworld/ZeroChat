@@ -3,6 +3,7 @@ mod ai_protocol;
 mod app_state;
 mod appearance_settings;
 mod application;
+mod atomic_file;
 mod auto_sync;
 mod auto_sync_state;
 mod background;
@@ -50,9 +51,12 @@ mod sync_incremental_upload;
 mod sync_merge;
 mod sync_settings;
 mod sync_vault_validation;
+mod theme;
 mod ui_helpers;
 
-pub(crate) use app_state::{ImageTaskMode, LinuxAppState};
+pub(crate) use app_state::{
+    ImageTaskMode, LINUX_PROVIDER_MODEL_FEATURE_HINT_ID, LinuxAppState, now_millis,
+};
 pub(crate) use application::{APP_ID, STREAMING_UI_FRAME_MS, set_window_content};
 
 pub fn run() -> gtk::glib::ExitCode {

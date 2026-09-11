@@ -1194,34 +1194,65 @@ namespace ZeroChat
         return {};
     }
 
+    std::wstring StripModelDateToken(std::wstring const& model)
+    {
+        auto isDigit = [&model](size_t index)
+        {
+            return index < model.size() && std::iswdigit(model[index]);
+        };
+
+        for (size_t index = 0; index + 11 <= model.size(); ++index)
+        {
+            if (model[index] != L'-' && model[index] != L'_')
+            {
+                continue;
+            }
+
+            if (!isDigit(index + 1) || !isDigit(index + 2) ||
+                !isDigit(index + 3) || !isDigit(index + 4) ||
+                (model[index + 5] != L'-' && model[index + 5] != L'_') ||
+                !isDigit(index + 6) || !isDigit(index + 7) ||
+                (model[index + 8] != L'-' && model[index + 8] != L'_') ||
+                !isDigit(index + 9) || !isDigit(index + 10))
+            {
+                continue;
+            }
+
+            return model.substr(0, index) + model.substr(index + 11);
+        }
+
+        return model;
+    }
+
     int ModelVersionScore(std::wstring const& model, std::wstring const& family)
     {
-        auto index = model.find(family);
+        auto versionSource = StripModelDateToken(model);
+        auto index = versionSource.find(family);
         if (index == std::wstring::npos)
         {
             return 0;
         }
 
         index += family.size();
-        while (index < model.size() &&
-            (model[index] == L'-' || model[index] == L'_' || model[index] == L' '))
+        while (index < versionSource.size() &&
+            (versionSource[index] == L'-' || versionSource[index] == L'_' || versionSource[index] == L' '))
         {
             ++index;
         }
 
         int score = 0;
         int scale = 10000;
-        for (int partIndex = 0; partIndex < 3 && index < model.size(); ++partIndex)
+        for (int partIndex = 0; partIndex < 3 && index < versionSource.size(); ++partIndex)
         {
-            if (!std::iswdigit(model[index]))
+            if (!std::iswdigit(versionSource[index]))
             {
                 break;
             }
 
             int value = 0;
-            while (index < model.size() && std::iswdigit(model[index]))
+            while (index < versionSource.size() && std::iswdigit(versionSource[index]))
             {
-                value = value * 10 + (model[index] - L'0');
+                value = value * 10 + (versionSource[index] - L'0');
                 ++index;
             }
 
@@ -1231,14 +1262,14 @@ namespace ZeroChat
             }
 
             scale /= 100;
-            if (index >= model.size() ||
-                (model[index] != L'.' && model[index] != L'-' && model[index] != L'_'))
+            if (index >= versionSource.size() ||
+                (versionSource[index] != L'.' && versionSource[index] != L'-' && versionSource[index] != L'_'))
             {
                 break;
             }
 
             auto next = index + 1;
-            if (next >= model.size() || !std::iswdigit(model[next]))
+            if (next >= versionSource.size() || !std::iswdigit(versionSource[next]))
             {
                 break;
             }
@@ -2241,6 +2272,43 @@ namespace ZeroChat
         throw hresult_invalid_argument(L"Image response does not include image data.");
     }
 
+    std::wstring OpenAIContentText(IJsonValue const& content)
+    {
+        if (content.ValueType() == JsonValueType::String)
+        {
+            return std::wstring(content.GetString());
+        }
+
+        if (content.ValueType() != JsonValueType::Array)
+        {
+            return {};
+        }
+
+        std::wstring result;
+        auto parts = content.GetArray();
+        for (uint32_t index = 0; index < parts.Size(); ++index)
+        {
+            if (parts.GetAt(index).ValueType() != JsonValueType::Object)
+            {
+                continue;
+            }
+
+            auto part = parts.GetObjectAt(index);
+            if (!part.HasKey(L"type") ||
+                part.GetNamedValue(L"type").ValueType() != JsonValueType::String ||
+                part.GetNamedString(L"type") != L"text" ||
+                !part.HasKey(L"text") ||
+                part.GetNamedValue(L"text").ValueType() != JsonValueType::String)
+            {
+                continue;
+            }
+
+            result.append(std::wstring(part.GetNamedString(L"text")));
+        }
+
+        return result;
+    }
+
     std::wstring ChatTextFromResponse(std::wstring const& text)
     {
         JsonObject root{ nullptr };
@@ -2270,10 +2338,9 @@ namespace ZeroChat
                     choice.GetNamedValue(L"message").ValueType() == JsonValueType::Object)
                 {
                     auto message = choice.GetNamedObject(L"message");
-                    if (message.HasKey(L"content") &&
-                        message.GetNamedValue(L"content").ValueType() == JsonValueType::String)
+                    if (message.HasKey(L"content"))
                     {
-                        auto content = std::wstring(message.GetNamedString(L"content"));
+                        auto content = OpenAIContentText(message.GetNamedValue(L"content"));
                         if (!content.empty())
                         {
                             return content;
@@ -2285,10 +2352,9 @@ namespace ZeroChat
                     choice.GetNamedValue(L"delta").ValueType() == JsonValueType::Object)
                 {
                     auto delta = choice.GetNamedObject(L"delta");
-                    if (delta.HasKey(L"content") &&
-                        delta.GetNamedValue(L"content").ValueType() == JsonValueType::String)
+                    if (delta.HasKey(L"content"))
                     {
-                        auto content = std::wstring(delta.GetNamedString(L"content"));
+                        auto content = OpenAIContentText(delta.GetNamedValue(L"content"));
                         if (!content.empty())
                         {
                             return content;
@@ -2394,10 +2460,9 @@ namespace ZeroChat
                     choice.GetNamedValue(L"delta").ValueType() == JsonValueType::Object)
                 {
                     auto delta = choice.GetNamedObject(L"delta");
-                    if (delta.HasKey(L"content") &&
-                        delta.GetNamedValue(L"content").ValueType() == JsonValueType::String)
+                    if (delta.HasKey(L"content"))
                     {
-                        return std::wstring(delta.GetNamedString(L"content"));
+                        return OpenAIContentText(delta.GetNamedValue(L"content"));
                     }
                 }
 
@@ -2405,10 +2470,9 @@ namespace ZeroChat
                     choice.GetNamedValue(L"message").ValueType() == JsonValueType::Object)
                 {
                     auto message = choice.GetNamedObject(L"message");
-                    if (message.HasKey(L"content") &&
-                        message.GetNamedValue(L"content").ValueType() == JsonValueType::String)
+                    if (message.HasKey(L"content"))
                     {
-                        return std::wstring(message.GetNamedString(L"content"));
+                        return OpenAIContentText(message.GetNamedValue(L"content"));
                     }
                 }
             }

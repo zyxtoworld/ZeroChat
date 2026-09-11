@@ -26,6 +26,11 @@ private func isRetryableChatGenerationError(_ error: Error, receivedText: String
     }
 
     if let aiError = error as? AiError,
+       case .chatResponseEmpty = aiError {
+        return true
+    }
+
+    if let aiError = error as? AiError,
        case let .httpFailed(statusCode, _) = aiError {
         return [408, 409, 425, 429, 500, 502, 503, 504].contains(statusCode)
     }
@@ -120,6 +125,12 @@ enum AppleLocalSnapshotIssue: Equatable {
     }
 }
 
+enum AppleSecretReadState: Equatable {
+    case missing
+    case value(String)
+    case failure(String)
+}
+
 private enum AppleSnapshotLoadState: Equatable {
     case loading
     case ready
@@ -127,13 +138,13 @@ private enum AppleSnapshotLoadState: Equatable {
 }
 
 private enum AppleLocalDataTransitionRecoveryError: LocalizedError {
-    case missingImportPassphrase
+    case missingPassphrase
     case sourceChanged
 
     var errorDescription: String? {
         switch self {
-        case .missingImportPassphrase:
-            return "The encrypted backup recovery password is unavailable."
+        case .missingPassphrase:
+            return "The local data recovery password is unavailable."
         case .sourceChanged:
             return "Local data changed while a recovery operation was pending."
         }
@@ -229,6 +240,7 @@ final class ZeroChatViewModel: ObservableObject {
     private var lastStreamingCommitAt: Int64 = 0
     private var lastSyncNotificationAt: Int64 = 0
     private var snapshotRevision: UInt64 = 0
+    private var dataReplacementEpoch: UInt64 = 0
 
     var hasSourceImageUpload: Bool {
         sourceImage != nil
@@ -239,16 +251,24 @@ final class ZeroChatViewModel: ObservableObject {
     }
 
     var hasSavedSyncPassphrase: Bool {
-        let passphrase = (try? keychain.get(account: "sync-passphrase")) ?? ""
+        guard case .value(let passphrase) = keychainSecretReadState("sync-passphrase") else {
+            return false
+        }
         return !passphrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var hasSavedCloudflareAccessKey: Bool {
-        !cloudflareAccessKey().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard case .value(let passphrase) = keychainSecretReadState("sync-passphrase") else {
+            return false
+        }
+        return !passphrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var hasSavedGitHubToken: Bool {
-        !secret("github-token").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard case .value(let token) = keychainSecretReadState("github-token") else {
+            return false
+        }
+        return !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var localSnapshotNotice: AppNotice? {
@@ -305,6 +325,8 @@ final class ZeroChatViewModel: ObservableObject {
         }
 
         do {
+            recoveringLocalSnapshot = true
+            defer { recoveringLocalSnapshot = false }
             _ = try await recoverPendingLocalDataTransition(using: loadedStore)
             let previousConversationIds = Set(snapshot.conversations.map(\.id))
             let savedSnapshot = try await loadedStore.load()
@@ -361,12 +383,12 @@ final class ZeroChatViewModel: ObservableObject {
 
     private func stageLocalDataTransition(
         _ transition: LocalDataTransition,
-        importPassphrase: String? = nil,
+        transitionPassphrase: String? = nil,
         using store: SnapshotStore
     ) async throws {
-        if let importPassphrase {
+        if let transitionPassphrase {
             try keychain.setLocalDataTransitionPassphrase(
-                importPassphrase,
+                transitionPassphrase,
                 transitionId: transition.id
             )
         }
@@ -374,7 +396,7 @@ final class ZeroChatViewModel: ObservableObject {
         do {
             try await store.stageLocalDataTransition(transition)
         } catch let operationError {
-            guard importPassphrase != nil else {
+            guard transitionPassphrase != nil else {
                 throw operationError
             }
             do {
@@ -399,7 +421,7 @@ final class ZeroChatViewModel: ObservableObject {
         }
 
         let target: AppSnapshot
-        var importedProviderKeys: [String: String] = [:]
+        var recoveredProviderKeys: [String: String] = [:]
         switch transition.kind {
         case .reset:
             guard let targetSnapshot = transition.targetSnapshot else {
@@ -413,7 +435,7 @@ final class ZeroChatViewModel: ObservableObject {
                       transitionId: transition.id
                   ),
                   !passphrase.isEmpty else {
-                throw AppleLocalDataTransitionRecoveryError.missingImportPassphrase
+                throw AppleLocalDataTransitionRecoveryError.missingPassphrase
             }
             let imported = try await appleImportedBackup(
                 data: encryptedBackup,
@@ -422,7 +444,27 @@ final class ZeroChatViewModel: ObservableObject {
                 now: targetUpdatedAt
             )
             target = imported.snapshot
-            importedProviderKeys = imported.providerKeys
+            recoveredProviderKeys = imported.providerKeys
+        case .syncCommit:
+            guard let encryptedBackup = transition.encryptedBackup,
+                  let targetUpdatedAt = transition.targetUpdatedAt,
+                  let passphrase = try keychain.localDataTransitionPassphrase(
+                      transitionId: transition.id
+                  ),
+                  !passphrase.isEmpty else {
+                throw AppleLocalDataTransitionRecoveryError.missingPassphrase
+            }
+            let envelope = try JSONDecoder().decode(EncryptedSnapshotEnvelope.self, from: encryptedBackup)
+            let targetVault = try await crypto.decryptVault(envelope, passphrase: passphrase)
+            guard targetVault.data.version == 1,
+                  targetVault.data.updatedAt == targetUpdatedAt else {
+                throw LocalDataTransitionError.invalidRecord
+            }
+            target = targetVault.data
+            recoveredProviderKeys = targetVault.secrets.providerKeys
+            guard recoveredProviderKeys.keys.sorted() == transition.providerIds else {
+                throw LocalDataTransitionError.invalidRecord
+            }
         }
 
         let current: AppSnapshot?
@@ -445,7 +487,7 @@ final class ZeroChatViewModel: ObservableObject {
         switch transition.kind {
         case .reset:
             try clearSecrets()
-        case .encryptedBackupImport:
+        case .encryptedBackupImport, .syncCommit:
             let requiredProviderIds = Set(
                 target.providers.map(\.id) + Self.defaultSnapshot().providers.map(\.id)
             )
@@ -454,7 +496,7 @@ final class ZeroChatViewModel: ObservableObject {
             }
             try appleApplyProviderKeyValues(
                 providerIds: transition.providerIds,
-                values: importedProviderKeys,
+                values: recoveredProviderKeys,
                 providerKey: { providerId in
                     try keychain.get(account: "provider:\(providerId)") ?? ""
                 },
@@ -464,7 +506,8 @@ final class ZeroChatViewModel: ObservableObject {
             )
         }
 
-        try await recoverLocalSnapshot(target)
+        let interruptAutoSync = transition.kind != .syncCommit
+        try await recoverLocalSnapshot(target, interruptAutoSync: interruptAutoSync)
         try await store.completeLocalDataTransition()
         try keychain.clearLocalDataTransitionPassphrase(transitionId: transition.id)
         return target
@@ -478,7 +521,10 @@ final class ZeroChatViewModel: ObservableObject {
         )
     }
 
-    private func recoverLocalSnapshot(_ recovered: AppSnapshot) async throws {
+    private func recoverLocalSnapshot(
+        _ recovered: AppSnapshot,
+        interruptAutoSync: Bool
+    ) async throws {
         let recoveryStore: SnapshotStore
         if let store {
             recoveryStore = store
@@ -491,9 +537,11 @@ final class ZeroChatViewModel: ObservableObject {
         pendingSnapshotSaveRevision = nil
         snapshotSaveAutoSyncRequested = false
         snapshotSaveAutoSyncStrategy = .ask
-        pendingAutoSync = nil
-        pendingAutoSyncRevision = nil
-        autoSyncTask?.cancel()
+        if interruptAutoSync {
+            pendingAutoSync = nil
+            pendingAutoSyncRevision = nil
+            autoSyncTask?.cancel()
+        }
         do {
             try await recoveryStore.save(recovered)
         } catch {
@@ -515,10 +563,14 @@ final class ZeroChatViewModel: ObservableObject {
         updateSpotlightIndex(previousIds: previousConversationIds, snapshot: recovered)
     }
 
-    private func beginLocalSnapshotRecovery() throws {
+    private func beginLocalSnapshotRecovery(expectedEpoch: UInt64? = nil) throws {
         guard !recoveringLocalSnapshot, snapshotLoadState != .loading else {
             throw AppError.message(i18n.t("message.localDataOperationInProgress"))
         }
+        if let expectedEpoch, expectedEpoch != dataReplacementEpoch {
+            throw AppError.message(i18n.t("message.localDataOperationInProgress"))
+        }
+        dataReplacementEpoch &+= 1
         recoveringLocalSnapshot = true
     }
 
@@ -667,6 +719,9 @@ final class ZeroChatViewModel: ObservableObject {
 
     @discardableResult
     func sendCurrentInput(conversationId: String?) -> String? {
+        guard localSnapshotIssue == nil, !recoveringLocalSnapshot else {
+            return nil
+        }
         guard let conversation = self.conversation(id: conversationId) ?? createConversationForSend() else {
             return nil
         }
@@ -706,6 +761,10 @@ final class ZeroChatViewModel: ObservableObject {
             return
         }
 
+        guard localSnapshotIssue == nil, !recoveringLocalSnapshot else {
+            return
+        }
+
         guard let conversation = self.conversation(id: conversationId) else {
             notice = AppNotice(message: i18n.t("message.noEnabledProvider"), kind: .warning)
             return
@@ -730,6 +789,10 @@ final class ZeroChatViewModel: ObservableObject {
             return
         }
 
+        let requestProvider = providerRequest(request.provider)
+        let apiKey = providerKey(request.provider.id)
+        let proxyToken = providerProxyToken(for: requestProvider)
+
         stopSpeaking(showNotice: false)
         speechRequestSerial += 1
         let serial = speechRequestSerial
@@ -742,11 +805,10 @@ final class ZeroChatViewModel: ObservableObject {
         speechTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let requestProvider = providerRequest(request.provider)
                 let data = try await ai.createSpeech(
                     provider: requestProvider,
-                    apiKey: providerKey(request.provider.id),
-                    proxyToken: providerProxyToken(for: requestProvider),
+                    apiKey: apiKey,
+                    proxyToken: proxyToken,
                     model: request.model,
                     input: request.input,
                     responseFormat: "mp3"
@@ -866,7 +928,7 @@ final class ZeroChatViewModel: ObservableObject {
     }
 
     func providerKey(_ providerId: String) -> String {
-        (try? keychain.get(account: "provider:\(providerId)")) ?? ""
+        secret("provider:\(providerId)")
     }
 
     @discardableResult
@@ -1065,11 +1127,28 @@ final class ZeroChatViewModel: ObservableObject {
     }
 
     func cloudflareAccessKey() -> String {
-        keychain.cloudflareAccessKey()
+        do {
+            return try keychain.cloudflareAccessKey()
+        } catch {
+            return ""
+        }
     }
 
     func secret(_ account: String) -> String {
-        (try? keychain.get(account: account)) ?? ""
+        switch keychainSecretReadState(account) {
+        case .missing, .failure:
+            return ""
+        case .value(let value):
+            return value
+        }
+    }
+
+    func secretReadState(_ account: String) -> AppleSecretReadState {
+        let state = keychainSecretReadState(account)
+        if case .failure(let message) = state {
+            reportKeychainReadFailure(message)
+        }
+        return state
     }
 
     @discardableResult
@@ -1098,26 +1177,46 @@ final class ZeroChatViewModel: ObservableObject {
         settingsNotice = AppNotice(message: message, kind: .error)
     }
 
+    private func keychainSecretReadState(_ account: String) -> AppleSecretReadState {
+        do {
+            guard let value = try keychain.get(account: account) else {
+                return .missing
+            }
+            return .value(value)
+        } catch {
+            let message = "\(i18n.t("message.keychainReadFailedPrefix")): \(i18n.errorMessage(error))"
+            return .failure(message)
+        }
+    }
+
+    private func reportKeychainReadFailure(_ message: String) {
+        notice = AppNotice(message: message, kind: .error)
+        settingsNotice = AppNotice(message: message, kind: .error)
+    }
+
     func exportEncryptedBackup(passphrase: String) async throws -> Data {
         try await appleEncryptedBackupData(
             snapshot: snapshot,
             passphrase: passphrase,
             crypto: crypto,
-            providerKey: providerKey
+            providerKey: { providerId in
+                try keychain.get(account: "provider:\(providerId)") ?? ""
+            }
         )
     }
 
     func importEncryptedBackup(_ data: Data, passphrase: String) async throws {
-        try beginLocalSnapshotRecovery()
-        defer { recoveringLocalSnapshot = false }
-        await quiesceSnapshotPersistenceForRecovery()
-        let previousSnapshot = snapshot
+        let observedReplacementEpoch = dataReplacementEpoch
         let imported = try await appleImportedBackup(
             data: data,
             passphrase: passphrase,
             crypto: crypto,
             now: nowMillis()
         )
+        try beginLocalSnapshotRecovery(expectedEpoch: observedReplacementEpoch)
+        defer { recoveringLocalSnapshot = false }
+        await quiesceSnapshotPersistenceForRecovery()
+        let previousSnapshot = snapshot
         let localStore = try localDataSnapshotStore()
         let providerIds = Set(
             previousSnapshot.providers.map(\.id) +
@@ -1133,7 +1232,7 @@ final class ZeroChatViewModel: ObservableObject {
         )
         try await stageLocalDataTransition(
             transition,
-            importPassphrase: passphrase,
+            transitionPassphrase: passphrase,
             using: localStore
         )
         do {
@@ -1351,6 +1450,9 @@ final class ZeroChatViewModel: ObservableObject {
     }
 
     private func sendChat(in conversation: Conversation) {
+        guard localSnapshotIssue == nil, !recoveringLocalSnapshot else {
+            return
+        }
         let provider = snapshot.providers.first { $0.id == conversation.providerId && $0.enabled }
         let model = provider.map { chatModelForConversation(conversation, provider: $0) } ?? ""
         let preflight = applePrepareChatRequest(
@@ -1373,6 +1475,11 @@ final class ZeroChatViewModel: ObservableObject {
             notice = blockedNotice
             return
         }
+
+        let requestProvider = providerRequest(request.provider)
+        let apiKey = providerKey(request.provider.id)
+        let proxyToken = providerProxyToken(for: requestProvider)
+        let contextMessageLimit = snapshot.preferences.chatContextMessageLimit ?? 24
 
         let assistant = appleStreamingAssistantMessage(
             id: UUID().uuidString,
@@ -1401,17 +1508,15 @@ final class ZeroChatViewModel: ObservableObject {
                 isChatStreaming = false
             }
             var retryIndex = 0
-            let requestProvider = providerRequest(request.provider)
-            let proxyToken = providerProxyToken(for: requestProvider)
             do {
                 while true {
                     do {
                         let text = try await ai.stream(
                             provider: requestProvider,
-                            apiKey: providerKey(request.provider.id),
+                            apiKey: apiKey,
                             model: request.model,
                             messages: request.baseMessages,
-                            contextMessageLimit: snapshot.preferences.chatContextMessageLimit ?? 24,
+                            contextMessageLimit: contextMessageLimit,
                             proxyToken: proxyToken
                         ) { [weak self] partial in
                             await self?.updateStreamingAssistant(
@@ -1422,7 +1527,7 @@ final class ZeroChatViewModel: ObservableObject {
                         }
                         try Task.checkCancellation()
                         var completed = assistant
-                        completed.content = text.isEmpty ? i18n.t("message.providerEmptyResponse") : text
+                        completed.content = text
                         completed.status = "done"
                         completed.error = nil
                         completeAssistant(conversationId: conversation.id, assistantId: assistant.id, message: completed)
@@ -1471,9 +1576,16 @@ final class ZeroChatViewModel: ObservableObject {
     }
 
     private func sendImagePrompt(in conversation: Conversation) {
+        guard localSnapshotIssue == nil, !recoveringLocalSnapshot else {
+            return
+        }
         guard let request = prepareImageRequest(in: conversation) else {
             return
         }
+
+        let requestProvider = providerRequest(request.provider)
+        let apiKey = providerKey(request.provider.id)
+        let proxyToken = providerProxyToken(for: requestProvider)
 
         let assistant = appleStreamingAssistantMessage(
             id: UUID().uuidString,
@@ -1497,15 +1609,13 @@ final class ZeroChatViewModel: ObservableObject {
                 imageGenerationTask = nil
                 isChatStreaming = false
             }
-            let requestProvider = providerRequest(request.provider)
-            let proxyToken = providerProxyToken(for: requestProvider)
             do {
                 let image: GeneratedImage
                 switch request.kind {
                 case .generate:
                     image = try await ai.generateImage(
                         provider: requestProvider,
-                        apiKey: providerKey(request.provider.id),
+                        apiKey: apiKey,
                         proxyToken: proxyToken,
                         model: request.imageModel,
                         responsesModel: request.responsesModel,
@@ -1514,7 +1624,7 @@ final class ZeroChatViewModel: ObservableObject {
                 case .edit(let source):
                     image = try await ai.editImage(
                         provider: requestProvider,
-                        apiKey: providerKey(request.provider.id),
+                        apiKey: apiKey,
                         proxyToken: proxyToken,
                         model: request.imageModel,
                         responsesModel: request.responsesModel,
@@ -1524,7 +1634,7 @@ final class ZeroChatViewModel: ObservableObject {
                 case .inpaint(let source, let mask):
                     image = try await ai.editImage(
                         provider: requestProvider,
-                        apiKey: providerKey(request.provider.id),
+                        apiKey: apiKey,
                         proxyToken: proxyToken,
                         model: request.imageModel,
                         responsesModel: request.responsesModel,
@@ -1730,26 +1840,29 @@ final class ZeroChatViewModel: ObservableObject {
             return nil
         }
 
-        let providerKeys = appleProviderKeys(for: local, providerKey: providerKey)
-        let passphrase = (try? keychain.get(account: "sync-passphrase")) ?? ""
-        guard !passphrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return AppleSyncCandidate(
-                snapshot: local.withSyncStatus(
-                    "Cloud sync is waiting for the data encryption password.",
-                    completed: false
-                ),
-                providerKeys: providerKeys
-            )
-        }
-
+        var providerKeys: [String: String] = [:]
         do {
-            let secrets = ProviderSecrets(providerKeys: appleProviderKeys(for: local, providerKey: providerKey))
+            providerKeys = try appleProviderKeys(for: local) { providerId in
+                try keychain.get(account: "provider:\(providerId)") ?? ""
+            }
+            let passphrase = try keychain.get(account: "sync-passphrase") ?? ""
+            guard !passphrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return AppleSyncCandidate(
+                    snapshot: local.withSyncStatus(
+                        "Cloud sync is waiting for the data encryption password.",
+                        completed: false
+                    ),
+                    providerKeys: providerKeys
+                )
+            }
+
+            let secrets = ProviderSecrets(providerKeys: providerKeys)
             let synced = local.withSyncStatus("Sync complete", completed: true)
             let vault = SyncVault(data: synced, secrets: secrets)
             let syncedVault: SyncVault
             switch local.sync.mode {
             case "gist":
-                let token = secret("github-token")
+                let token = try keychain.get(account: "github-token") ?? ""
                 guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     return AppleSyncCandidate(
                         snapshot: missingGitHubTokenSnapshot(local),
@@ -1771,7 +1884,7 @@ final class ZeroChatViewModel: ObservableObject {
                       !endpoint.isEmpty else {
                     return nil
                 }
-                let token = keychain.cloudflareAccessKey()
+                let token = try keychain.cloudflareAccessKey()
                 guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     return AppleSyncCandidate(
                         snapshot: local.withSyncStatus(
@@ -1826,9 +1939,120 @@ final class ZeroChatViewModel: ObservableObject {
             return .stale
         }
 
-        let synced = candidate.snapshot
+        let syncStatus = candidate.snapshot.sync.lastSyncStatus ?? ""
+        if appleIsCompletedSyncStatus(syncStatus) {
+            return await applyCompletedSyncedSnapshot(
+                candidate,
+                source: source,
+                sourceRevision: sourceRevision
+            )
+        }
+
+        let accepted = appleMergedSyncResult(
+            current: snapshot,
+            source: source,
+            synced: candidate.snapshot
+        )
+        return await applyOrdinarySyncedSnapshot(
+            accepted,
+            source: source,
+            sourceRevision: sourceRevision
+        )
+    }
+
+    private func applyCompletedSyncedSnapshot(
+        _ candidate: AppleSyncCandidate,
+        source: AppSnapshot,
+        sourceRevision: UInt64
+    ) async -> AppleSyncAcceptanceResult {
+        do {
+            try beginLocalSnapshotRecovery()
+        } catch {
+            return .failed
+        }
+        defer { recoveringLocalSnapshot = false }
+
+        await quiesceSnapshotPersistenceForRecovery()
+        guard !appleIsStaleSyncResult(
+            current: snapshot,
+            source: source,
+            currentRevision: snapshotRevision,
+            sourceRevision: sourceRevision
+        ) else {
+            return .stale
+        }
+
+        do {
+            guard let store else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            let persisted = try await store.load()
+            let persistedFingerprint = try snapshotFingerprint(persisted)
+            let sourceFingerprint = try snapshotFingerprint(source)
+            guard persistedFingerprint == sourceFingerprint else {
+                return .stale
+            }
+
+            let accepted = appleMergedSyncResult(
+                current: snapshot,
+                source: source,
+                synced: candidate.snapshot
+            )
+            let providerIds = Set(
+                source.providers.map(\.id) +
+                    accepted.providers.map(\.id) +
+                    Self.defaultSnapshot().providers.map(\.id)
+            ).sorted()
+            var targetProviderKeys: [String: String] = [:]
+            for providerId in providerIds {
+                targetProviderKeys[providerId] = candidate.providerKeys[providerId] ?? ""
+            }
+            let targetVault = SyncVault(
+                data: accepted,
+                secrets: ProviderSecrets(providerKeys: targetProviderKeys)
+            )
+            let transitionPassphrase = try await crypto.makeRandomPassphrase()
+            let encryptedTargetEnvelope = try await crypto.encryptVault(
+                targetVault,
+                passphrase: transitionPassphrase
+            )
+            let transitionEncoder = JSONEncoder()
+            transitionEncoder.outputFormatting = [.sortedKeys]
+            let encryptedTargetVault = try transitionEncoder.encode(encryptedTargetEnvelope)
+            let transition = LocalDataTransition(
+                kind: .syncCommit,
+                sourceSnapshotFingerprint: persistedFingerprint,
+                targetUpdatedAt: accepted.updatedAt,
+                encryptedBackup: encryptedTargetVault,
+                providerIds: providerIds
+            )
+            try await stageLocalDataTransition(
+                transition,
+                transitionPassphrase: transitionPassphrase,
+                using: store
+            )
+            guard let recovered = try await recoverPendingLocalDataTransition(using: store) else {
+                throw LocalDataTransitionError.invalidRecord
+            }
+            let recoveredFingerprint = try snapshotFingerprint(recovered)
+            let acceptedFingerprint = try snapshotFingerprint(accepted)
+            guard recoveredFingerprint == acceptedFingerprint else {
+                throw LocalDataTransitionError.invalidRecord
+            }
+            return .accepted(recovered)
+        } catch {
+            snapshotLoadState = .failed
+            reportLocalSnapshotIssue(.snapshotLoadFailed, error: error)
+            return .failed
+        }
+    }
+
+    private func applyOrdinarySyncedSnapshot(
+        _ accepted: AppSnapshot,
+        source: AppSnapshot,
+        sourceRevision: UInt64
+    ) async -> AppleSyncAcceptanceResult {
         let previousConversationIds = Set(snapshot.conversations.map(\.id))
-        let accepted = appleMergedSyncResult(current: snapshot, source: source, synced: synced)
         do {
             guard let store else {
                 throw CocoaError(.fileNoSuchFile)
@@ -1862,51 +2086,6 @@ final class ZeroChatViewModel: ObservableObject {
                 reportSnapshotSaveFailure(error)
             }
             return .stale
-        }
-
-        let local = source
-        let syncedVault = SyncVault(
-            data: candidate.snapshot,
-            secrets: ProviderSecrets(providerKeys: candidate.providerKeys)
-        )
-        let syncStatus = syncedVault.data.sync.lastSyncStatus ?? ""
-        if appleIsCompletedSyncStatus(syncStatus) {
-            do {
-                try appleApplyProviderKeys(
-                    current: local,
-                    synced: syncedVault.data,
-                    providerKeys: syncedVault.secrets.providerKeys,
-                    providerKey: { providerId in
-                        try keychain.get(account: "provider:\(providerId)") ?? ""
-                    }
-                ) { providerId, value in
-                    try keychain.set(value, account: "provider:\(providerId)")
-                }
-            } catch let keychainError {
-                let rollbackSnapshot = snapshot
-                let rollbackRevision = snapshotRevision
-                do {
-                    guard let store else {
-                        throw CocoaError(.fileNoSuchFile)
-                    }
-                    try await store.save(rollbackSnapshot)
-                    if snapshotRevision == rollbackRevision {
-                        lastPersistedSnapshot = rollbackSnapshot
-                    } else {
-                        enqueueSnapshotSave(snapshot, revision: snapshotRevision, autoSync: false)
-                    }
-                } catch let snapshotRollbackError {
-                    let transactionError = AppleCompensationError(
-                        operationError: keychainError,
-                        compensationErrors: [snapshotRollbackError]
-                    )
-                    reportSnapshotSaveFailure(snapshotRollbackError)
-                    reportKeychainWriteFailure(transactionError)
-                    return .failed
-                }
-                reportKeychainWriteFailure(keychainError)
-                return .failed
-            }
         }
 
         snapshot = accepted

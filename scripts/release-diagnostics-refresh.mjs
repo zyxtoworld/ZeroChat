@@ -20,6 +20,7 @@ import {
 import { currentAndroidDebugApkEvidence } from './android-source-fingerprint.mjs'
 import {
   androidRuntimeArtifactExpectation,
+  isRuntimeArtifactGatePass,
   liveSyncRuntimeArtifactExpectation,
   webCurrentPageRuntimeArtifactExpectation,
 } from './release-diagnostics-runtime-artifact-policy.mjs'
@@ -262,7 +263,11 @@ async function auditExpectedRuntimeArtifactBlocker(
   { allowRefreshableWebCurrentPageStale = false } = {},
 ) {
   const args = ['scripts/runtime-smoke-artifact-check.mjs']
-  const trustedMsixReportPath = '.manual-qa/windows-msix-current-trusted-install-update-qa.failure.json'
+  const trustedMsixValidationArgs = [
+    'scripts/runtime-smoke-artifact-check.mjs',
+    '--only-runtime-artifact',
+    '--require-runtime-artifact=windows-msix-trusted',
+  ]
   const trustedMsixCurrentReportPath = '.manual-qa/windows-msix-current-trusted-install-update-qa.json'
   const hostPreflightReportPath = '.manual-qa/windows-msix-host-preflight.json'
   const hostPreflightReport = await readOptionalJsonReport(
@@ -291,6 +296,27 @@ async function auditExpectedRuntimeArtifactBlocker(
   const webCurrentPageExpectation = webCurrentPageRuntimeArtifactExpectation({
     allowRefreshableStale: allowRefreshableWebCurrentPageStale,
   })
+  const trustedMsixValidationResult = await runCapturedStep({
+    args: trustedMsixValidationArgs,
+    env,
+  })
+  const trustedMsixValidationOutput = trustedMsixValidationResult.output
+  const trustedMsixReleasePassCurrent =
+    trustedMsixValidationResult.code === 0 &&
+    isRuntimeArtifactGatePass(trustedMsixValidationOutput)
+  if (
+    (trustedMsixValidationResult.code === 0 && !trustedMsixReleasePassCurrent) ||
+    (trustedMsixValidationResult.code !== 0 &&
+      !trustedMsixValidationOutput.includes('Runtime smoke artifact checks failed:'))
+  ) {
+    throw new Error(
+      [
+        'Focused trusted MSIX runtime-artifact validation returned an unrecognized result.',
+        'Captured output:',
+        compactOutput(trustedMsixValidationOutput),
+      ].join('\n'),
+    )
+  }
   const hostClassification = isObject(hostPreflightReport?.blockerClassification)
     ? hostPreflightReport.blockerClassification
     : {}
@@ -309,45 +335,134 @@ async function auditExpectedRuntimeArtifactBlocker(
     : liveSyncExpectation.sourceFingerprintCurrent
       ? ' plus missing current-source live sync release-pass evidence'
       : ' plus stale live sync release-pass evidence'
-  const expectedReason = hostPreflightClear
-    ? `trusted MSIX release-pass evidence is still missing after a clear host preflight${liveSyncExpectedReason}`
-    : `current trusted MSIX host blocker${
-        liveSyncExpectation.releasePassCurrent ? ' only' : liveSyncExpectedReason
-      }`
-  const summary = hostPreflightClear
-    ? currentShellElevated
-      ? 'Full runtime-artifact gate still fails on Windows trusted MSIX release-pass evidence; host preflight is clear and the current shell is elevated, so a trusted MSIX QA rerun on a disposable Windows profile is required.'
-      : 'Full runtime-artifact gate still fails on Windows trusted MSIX release-pass evidence; host preflight is clear but the current shell is not elevated, so an elevated trusted MSIX QA rerun is required.'
-    : 'Full runtime-artifact gate still fails on the current trusted MSIX host AppX cleanup blocker.'
+  const expectedReason = trustedMsixReleasePassCurrent
+    ? liveSyncExpectation.releasePassCurrent
+      ? 'no trusted-MSIX or live-sync blocker'
+      : liveSyncExpectation.sourceFingerprintCurrent
+        ? 'missing current-source live sync release-pass evidence only'
+        : 'stale live sync release-pass evidence only'
+    : hostPreflightClear
+      ? `trusted MSIX release-pass evidence is still missing after a clear host preflight${liveSyncExpectedReason}`
+      : `current trusted MSIX host blocker${
+          liveSyncExpectation.releasePassCurrent ? ' only' : liveSyncExpectedReason
+        }`
+  const summary = trustedMsixReleasePassCurrent
+    ? 'Focused Windows trusted MSIX runtime-artifact validation passes for the current packaged release.'
+    : hostPreflightClear
+      ? currentShellElevated
+        ? 'Full runtime-artifact gate still fails on Windows trusted MSIX release-pass evidence; host preflight is clear and the current shell is elevated, so a trusted MSIX QA rerun on a disposable Windows profile is required.'
+        : 'Full runtime-artifact gate still fails on Windows trusted MSIX release-pass evidence; host preflight is clear but the current shell is not elevated, so an elevated trusted MSIX QA rerun is required.'
+      : 'Full runtime-artifact gate still fails on the current trusted MSIX host AppX cleanup blocker.'
   const completeSummary = liveSyncExpectation.releasePassCurrent
     ? summary
     : liveSyncExpectation.sourceFingerprintCurrent
       ? `${summary} The current sync source still needs a disposable live-sync release-pass.`
       : `${summary} The current sync source also needs a fresh disposable live-sync release drill.`
-  console.log('\n[release-diagnostics] Audit full runtime-artifact gate expected blocker')
-  console.log(`> ${displayCommand(node, args)}  # expected exit 1: ${expectedReason}`)
+  const expectedOutcome =
+    trustedMsixReleasePassCurrent && liveSyncExpectation.releasePassCurrent
+      ? 'requires a complete runtime-artifact pass'
+      : `accepts a complete pass or the exact audited blocker: ${expectedReason}`
+  console.log('\n[release-diagnostics] Audit full runtime-artifact gate')
+  console.log(`> ${displayCommand(node, args)}  # ${expectedOutcome}`)
 
   const result = await runCapturedStep({ args, env })
   const output = result.output
-  const blockerClassification = hostPreflightClear
-    ? 'windows-trusted-msix-needs-elevated-current-source-rerun'
-    : 'windows-appx-deployment-deleted-package-cleanup-access-denied'
-  const blockerOwner = hostPreflightClear
-    ? 'windows-release-qa-operator'
-    : 'host-windows-appx-deployment-service'
-  const windowsRequiredMarkers = hostPreflightClear
-    ? [
-        `${trustedMsixCurrentReportPath} distWebAssets`,
-        `${trustedMsixCurrentReportPath} currentPackageEvidence`,
-      ]
-    : [
-        trustedMsixReportPath,
-        hostPreflightReportPath,
-        blockerClassification,
-        'owner=host-windows-appx-deployment-service',
-        'cleanupVerified shows no ZeroChat package',
-        `trustedMsixQaReadiness=${trustedMsixQaReadiness}`,
-      ]
+  const blockerClassification = trustedMsixReleasePassCurrent
+    ? null
+    : hostPreflightClear
+      ? 'windows-trusted-msix-needs-elevated-current-source-rerun'
+      : (hostClassification.kind ?? 'windows-host-preflight-blocked')
+  const blockerOwner = trustedMsixReleasePassCurrent
+    ? null
+    : hostPreflightClear
+      ? 'windows-release-qa-operator'
+      : (hostClassification.owner ?? 'host-windows-appx-deployment-service')
+
+  if (result.code === 0) {
+    const passFailures = []
+    if (!isRuntimeArtifactGatePass(output)) {
+      passFailures.push('Runtime artifact gate exit code 0 must include the explicit pass marker without a failure header.')
+    }
+    if (!liveSyncExpectation.releasePassCurrent) {
+      passFailures.push('Runtime artifact gate cannot pass while current-source live sync release-pass evidence is missing.')
+    }
+    if (!trustedMsixReleasePassCurrent) {
+      passFailures.push('Runtime artifact gate cannot pass while focused trusted MSIX release evidence is not current.')
+    }
+    for (const marker of webCurrentPageExpectation.forbiddenMarkers) {
+      if (output.includes(marker)) {
+        passFailures.push(`Runtime artifact pass contains forbidden stale marker: ${marker}`)
+      }
+    }
+    if (passFailures.length > 0) {
+      throw new Error(
+        [
+          'Runtime artifact pass audit failed.',
+          ...passFailures,
+          'Captured output:',
+          compactOutput(output),
+        ].join('\n'),
+      )
+    }
+
+    const passSummary =
+      'Full runtime-artifact gate passes with current Windows trusted MSIX, Android, Web visual, and canonical live-sync artifacts; target-host prerequisites and strict remote evidence remain separate release blockers.'
+    console.log(`[release-diagnostics] ${passSummary}`)
+    return {
+      kind: 'zerochat.releaseDiagnosticsRuntimeArtifactExpectedBlocker.v1',
+      command: displayCommand(node, args),
+      expectedExitCode: 0,
+      actualExitCode: 0,
+      passed: true,
+      status: 'passed',
+      blockerReport: null,
+      blockerClassification: null,
+      owner: null,
+      currentHostPreflight: {
+        path: hostPreflightReportPath,
+        status: hostPreflightReport?.status ?? null,
+        hostReadyForTrustedMsix: hostPreflightClear,
+        currentShellElevated,
+        trustedMsixQaCanRunInCurrentShell,
+        trustedMsixQaReadiness,
+        blockerKind: hostClassification.kind ?? null,
+        matchedEventIds: Array.isArray(hostClassification.matchedEventIds)
+          ? hostClassification.matchedEventIds
+          : [],
+        generatedAt:
+          hostPreflightReport?.generatedAt ??
+          hostPreflightReport?.finishedAt ??
+          hostPreflightReport?.startedAt ??
+          null,
+      },
+      currentTrustedQaState: 'current-trusted-msix-release-pass',
+      additionalExpectedBlockers: [],
+      androidRuntimeArtifact: {
+        currentSourceBoundApk: androidExpectation.currentSourceBoundApk,
+        staleBulletLines: [],
+      },
+      webCurrentPageArtifact: {
+        allowRefreshableStale: allowRefreshableWebCurrentPageStale,
+        staleBulletLines: [],
+      },
+      requiredMarkersPresent: ['Runtime smoke artifact checks passed:'],
+      forbiddenMarkersAbsent: [
+        'Runtime smoke artifact checks failed:',
+        ...webCurrentPageExpectation.forbiddenMarkers,
+      ],
+      unexpectedBulletLineCount: 0,
+      bulletLineCount: 0,
+      summary: passSummary,
+    }
+  }
+  const windowsRequiredMarkers = trustedMsixReleasePassCurrent
+    ? []
+    : hostPreflightClear
+      ? [
+          `${trustedMsixCurrentReportPath} distWebAssets`,
+          `${trustedMsixCurrentReportPath} currentPackageEvidence`,
+        ]
+      : [`${hostPreflightReportPath} current host preflight status=blocked`]
   const requiredMarkers = [
     ...windowsRequiredMarkers,
     ...liveSyncExpectation.requiredMarkers,
@@ -395,8 +510,13 @@ async function auditExpectedRuntimeArtifactBlocker(
 
   const unexpectedBulletLines = bulletLines.filter(
     (line) =>
-      !line.startsWith(`- ${hostPreflightClear ? trustedMsixCurrentReportPath : trustedMsixReportPath}`) &&
-      !line.startsWith(`- ${hostPreflightReportPath}`) &&
+      !(
+        !trustedMsixReleasePassCurrent &&
+        (line.startsWith(
+          `- ${hostPreflightClear ? trustedMsixCurrentReportPath : hostPreflightReportPath}`,
+        ) ||
+          line.startsWith(`- ${hostPreflightReportPath}`))
+      ) &&
       !liveSyncExpectation.allowedBulletPrefixes.some((prefix) => line.startsWith(prefix)) &&
       !androidExpectation.allowedBulletPrefixes.some((prefix) => line.startsWith(prefix)) &&
       !webCurrentPageExpectation.allowedBulletPrefixes.some((prefix) => line.startsWith(prefix)),
@@ -434,7 +554,11 @@ async function auditExpectedRuntimeArtifactBlocker(
     actualExitCode: result.code,
     passed: true,
     status: 'expected-blocker',
-    blockerReport: hostPreflightClear ? trustedMsixCurrentReportPath : trustedMsixReportPath,
+    blockerReport: trustedMsixReleasePassCurrent
+      ? null
+      : hostPreflightClear
+        ? trustedMsixCurrentReportPath
+        : hostPreflightReportPath,
     blockerClassification,
     owner: blockerOwner,
     currentHostPreflight: {
@@ -454,9 +578,11 @@ async function auditExpectedRuntimeArtifactBlocker(
         hostPreflightReport?.startedAt ??
         null,
     },
-    currentTrustedQaState: hostPreflightClear
-      ? 'host-clear-needs-elevated-trusted-msix-rerun'
-      : 'host-preflight-blocked-or-unproven',
+    currentTrustedQaState: trustedMsixReleasePassCurrent
+      ? 'current-trusted-msix-release-pass'
+      : hostPreflightClear
+        ? 'host-clear-needs-elevated-trusted-msix-rerun'
+        : 'host-preflight-blocked-or-unproven',
     additionalExpectedBlockers: [
       ...(liveSyncExpectation.blocker ? [liveSyncExpectation.blocker] : []),
       ...(androidStaleBulletLines.length && androidExpectation.blocker
@@ -466,6 +592,10 @@ async function auditExpectedRuntimeArtifactBlocker(
     androidRuntimeArtifact: {
       currentSourceBoundApk: androidExpectation.currentSourceBoundApk,
       staleBulletLines: androidStaleBulletLines,
+    },
+    webCurrentPageArtifact: {
+      allowRefreshableStale: allowRefreshableWebCurrentPageStale,
+      staleBulletLines: webCurrentPageStaleBulletLines,
     },
     requiredMarkersPresent: requiredMarkers,
     forbiddenMarkersAbsent: forbiddenMarkers,

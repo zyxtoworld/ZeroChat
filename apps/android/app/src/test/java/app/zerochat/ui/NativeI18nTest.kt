@@ -4,6 +4,7 @@ import app.zerochat.sync.SyncStatusNotifier
 import io.mockk.mockk
 import io.mockk.verify
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -156,6 +157,62 @@ class NativeI18nTest {
             "This provider or relay does not expose that endpoint. Check the capability, Base URL, or AI proxy path.",
             en.errorMessage("""Audio speech request failed: {"error":{"message":"route not found"}} HTTP 404"""),
         )
+    }
+
+    @Test
+    fun unknownErrorMessagesUseFixedLocalizedCopy() {
+        val sentinel =
+            "C:\\private\\backup\\secret.json /home/runner/.config/token https://provider.invalid/v1 " +
+                "sk-test-not-a-real-key"
+
+        val projected = NativeI18n.forMode("en-US").errorMessage(sentinel)
+
+        assertEquals(
+            NativeI18n.forMode("en-US").t("error.apiRequestFailed"),
+            projected,
+        )
+        assertFalse(projected.contains("private"))
+        assertFalse(projected.contains("runner"))
+        assertFalse(projected.contains("provider.invalid"))
+        assertFalse(projected.contains("sk-test-not-a-real-key"))
+    }
+
+    @Test
+    fun cloudClearErrorDoesNotEchoAResponseBody() {
+        val sentinel =
+            "Cloud clear failed: C:\\private\\cloud\\secret.json /home/runner/.config/token " +
+                "https://provider.invalid/v1 sk-test-not-a-real-key"
+
+        val projected = NativeI18n.forMode("en-US").errorMessage(sentinel)
+
+        assertEquals(
+            NativeI18n.forMode("en-US").t("message.cloudClearFailedPrefix"),
+            projected,
+        )
+        assertFalse(projected.contains("C:\\private"))
+        assertFalse(projected.contains("/home/runner"))
+        assertFalse(projected.contains("provider.invalid"))
+        assertFalse(projected.contains("sk-test-not-a-real-key"))
+    }
+
+    @Test
+    fun incrementalCloudSyncErrorsDoNotEchoAResponseBody() {
+        val sentinel =
+            "C:\\private\\sync\\secret.json /home/runner/.config/token " +
+                "https://provider.invalid/v1 sk-test-not-a-real-key"
+        val i18n = NativeI18n.forMode("en-US")
+
+        val checkFailure = i18n.errorMessage(
+            "Cloud incremental sync check failed: $sentinel",
+        )
+        val stepFailure = i18n.errorMessage(
+            "Cloud incremental object request failed: $sentinel",
+        )
+
+        assertEquals(i18n.t("error.cloudIncrementalCheckFailedPrefix"), checkFailure)
+        assertEquals(i18n.t("error.cloudSyncStepFailedPrefix"), stepFailure)
+        assertFalse(checkFailure.contains("provider.invalid"))
+        assertFalse(stepFailure.contains("sk-test-not-a-real-key"))
     }
 
     @Test

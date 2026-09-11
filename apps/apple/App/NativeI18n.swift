@@ -174,7 +174,7 @@ struct NativeI18n {
             containsAny(normalized, providerEndpointMissingMarkers) {
             return "error.providerEndpointMissing"
         }
-        if (status != nil && (500...599).contains(status!)) ||
+        if status.map({ (500...599).contains($0) }) == true ||
             containsAny(normalized, providerUnavailableErrorMarkers) {
             return "error.apiUnavailable"
         }
@@ -186,7 +186,8 @@ struct NativeI18n {
 
     private static func providerHttpStatus(_ text: String) -> Int? {
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        guard let match = providerHttpStatusRegex.firstMatch(in: text, options: [], range: range),
+        guard let regex = providerHttpStatusRegex,
+              let match = regex.firstMatch(in: text, options: [], range: range),
               match.numberOfRanges > 1,
               let statusRange = Range(match.range(at: 1), in: text) else {
             return nil
@@ -254,7 +255,7 @@ struct NativeI18n {
         "fr-FR": "Français",
     ]
 
-    private static let providerHttpStatusRegex = try! NSRegularExpression(
+    private static let providerHttpStatusRegex = try? NSRegularExpression(
         pattern: #"\b(?:http|status|code)\s*:?\s*(\d{3})\b"#,
         options: [.caseInsensitive]
     )
@@ -454,6 +455,7 @@ struct NativeI18n {
             "message.localDataOperationInProgress": "另一项本机数据操作仍在进行，请稍候。",
             "message.localSnapshotLoadFailed": "本机数据无法读取。ZeroChat 已用默认数据启动，并会保留原快照不覆盖。请导入加密备份或重置本机数据以恢复保存。",
             "message.localStorageUnavailable": "本机存储目录不可用。ZeroChat 已用默认数据启动，本次更改不会保存；请修复数据目录权限后重启或导入加密备份。",
+            "message.keychainReadFailedPrefix": "无法读取安全密钥",
             "message.keychainWriteFailedPrefix": "安全密钥保存失败",
             "message.maskImageRequired": "请先选择涂抹区域。",
             "notice.audioSpeechEmpty": "这条消息没有可朗读的文本",
@@ -504,6 +506,7 @@ struct NativeI18n {
             "message.localDataOperationInProgress": "Another local data operation is still in progress. Wait for it to finish.",
             "message.localSnapshotLoadFailed": "Local data could not be read. ZeroChat opened with defaults and will not overwrite the existing snapshot. Import an encrypted backup or reset local data to resume saving.",
             "message.localStorageUnavailable": "The local storage directory is unavailable. ZeroChat opened with defaults and changes will not be saved. Fix the data-directory permissions and restart, or import an encrypted backup.",
+            "message.keychainReadFailedPrefix": "Secure key storage could not be read",
             "message.keychainWriteFailedPrefix": "Secure key storage failed",
             "message.maskImageRequired": "Choose a mask image first.",
             "notice.audioSpeechEmpty": "This message has no text to read aloud",
@@ -1589,6 +1592,7 @@ struct NativeI18n {
             "notice.backupExportNeedsPassphrase": "Enter the data encryption password before exporting an encrypted backup.",
             "notice.backupExportStarted": "Encrypted backup saved.",
             "notice.backupExportFailedPrefix": "Backup export failed",
+            "notice.imageDownloadFailed": "Image download failed",
             "notice.backupImportNeedsPassphrase": "Enter the data encryption password before importing an encrypted backup.",
             "notice.backupImportEncryptedOnly": "Only ZeroChat encrypted backups can be imported.",
             "notice.backupImportFormatInvalid": "File format is invalid.",
@@ -1794,6 +1798,7 @@ struct NativeI18n {
             "notice.backupExportNeedsPassphrase": "请先输入数据加密密码，再导出加密备份。",
             "notice.backupExportStarted": "加密备份已保存。",
             "notice.backupExportFailedPrefix": "备份导出失败",
+            "notice.imageDownloadFailed": "图片下载失败",
             "notice.backupImportNeedsPassphrase": "请先输入数据加密密码，再导入加密备份。",
             "notice.backupImportEncryptedOnly": "只能导入 ZeroChat 加密备份。",
             "notice.backupImportFormatInvalid": "文件格式不正确。",
@@ -1970,6 +1975,7 @@ struct NativeI18n {
             "notice.backupExportNeedsPassphrase": "Introduce la contraseña de datos antes de exportar una copia cifrada.",
             "notice.backupExportStarted": "Copia cifrada guardada.",
             "notice.backupExportFailedPrefix": "Error al exportar la copia",
+            "notice.imageDownloadFailed": "No se pudo descargar la imagen",
             "notice.backupImportNeedsPassphrase": "Introduce la contraseña de datos antes de importar una copia cifrada.",
             "notice.backupImportEncryptedOnly": "Solo se pueden importar copias cifradas de ZeroChat.",
             "notice.backupImportFormatInvalid": "El formato de archivo no es válido.",
@@ -2175,6 +2181,7 @@ struct NativeI18n {
             "notice.backupExportNeedsPassphrase": "एन्क्रिप्टेड बैकअप निर्यात करने से पहले डेटा पासवर्ड दर्ज करें।",
             "notice.backupExportStarted": "एन्क्रिप्टेड बैकअप सहेजा गया।",
             "notice.backupExportFailedPrefix": "बैकअप निर्यात विफल",
+            "notice.imageDownloadFailed": "चित्र डाउनलोड विफल",
             "notice.backupImportNeedsPassphrase": "एन्क्रिप्टेड बैकअप आयात करने से पहले डेटा पासवर्ड दर्ज करें।",
             "notice.backupImportEncryptedOnly": "केवल ZeroChat एन्क्रिप्टेड बैकअप आयात किए जा सकते हैं।",
             "notice.backupImportFormatInvalid": "फ़ाइल प्रारूप अमान्य है।",
@@ -2380,6 +2387,7 @@ struct NativeI18n {
             "notice.backupExportNeedsPassphrase": "أدخل كلمة مرور البيانات قبل تصدير نسخة مشفرة.",
             "notice.backupExportStarted": "تم حفظ النسخة المشفرة.",
             "notice.backupExportFailedPrefix": "فشل تصدير النسخة",
+            "notice.imageDownloadFailed": "فشل تنزيل الصورة",
             "notice.backupImportNeedsPassphrase": "أدخل كلمة مرور البيانات قبل استيراد نسخة مشفرة.",
             "notice.backupImportEncryptedOnly": "يمكن استيراد نسخ ZeroChat المشفرة فقط.",
             "notice.backupImportFormatInvalid": "تنسيق الملف غير صالح.",
@@ -2585,6 +2593,7 @@ struct NativeI18n {
             "notice.backupExportNeedsPassphrase": "Digite a senha de dados antes de exportar um backup criptografado.",
             "notice.backupExportStarted": "Backup criptografado salvo.",
             "notice.backupExportFailedPrefix": "Falha ao exportar backup",
+            "notice.imageDownloadFailed": "Falha ao baixar a imagem",
             "notice.backupImportNeedsPassphrase": "Digite a senha de dados antes de importar um backup criptografado.",
             "notice.backupImportEncryptedOnly": "Somente backups criptografados do ZeroChat podem ser importados.",
             "notice.backupImportFormatInvalid": "Formato de arquivo inválido.",
@@ -2790,6 +2799,7 @@ struct NativeI18n {
             "notice.backupExportNeedsPassphrase": "Введите пароль данных перед экспортом зашифрованной копии.",
             "notice.backupExportStarted": "Зашифрованная копия сохранена.",
             "notice.backupExportFailedPrefix": "Не удалось экспортировать копию",
+            "notice.imageDownloadFailed": "Не удалось скачать изображение",
             "notice.backupImportNeedsPassphrase": "Введите пароль данных перед импортом зашифрованной копии.",
             "notice.backupImportEncryptedOnly": "Можно импортировать только зашифрованные копии ZeroChat.",
             "notice.backupImportFormatInvalid": "Недопустимый формат файла.",
@@ -2995,6 +3005,7 @@ struct NativeI18n {
             "notice.backupExportNeedsPassphrase": "暗号化バックアップを書き出す前にデータパスワードを入力してください。",
             "notice.backupExportStarted": "暗号化バックアップを保存しました。",
             "notice.backupExportFailedPrefix": "バックアップの書き出しに失敗しました",
+            "notice.imageDownloadFailed": "画像のダウンロードに失敗しました",
             "notice.backupImportNeedsPassphrase": "暗号化バックアップを読み込む前にデータパスワードを入力してください。",
             "notice.backupImportEncryptedOnly": "ZeroChat の暗号化バックアップのみ読み込めます。",
             "notice.backupImportFormatInvalid": "ファイル形式が無効です。",
@@ -3200,6 +3211,7 @@ struct NativeI18n {
             "notice.backupExportNeedsPassphrase": "암호화 백업을 내보내기 전에 데이터 비밀번호를 입력하세요.",
             "notice.backupExportStarted": "암호화 백업을 저장했습니다.",
             "notice.backupExportFailedPrefix": "백업 내보내기 실패",
+            "notice.imageDownloadFailed": "이미지 다운로드 실패",
             "notice.backupImportNeedsPassphrase": "암호화 백업을 가져오기 전에 데이터 비밀번호를 입력하세요.",
             "notice.backupImportEncryptedOnly": "ZeroChat 암호화 백업만 가져올 수 있습니다.",
             "notice.backupImportFormatInvalid": "파일 형식이 잘못되었습니다.",
@@ -3405,6 +3417,7 @@ struct NativeI18n {
             "notice.backupExportNeedsPassphrase": "Saisissez le mot de passe des données avant d’exporter une sauvegarde chiffrée.",
             "notice.backupExportStarted": "Sauvegarde chiffrée enregistrée.",
             "notice.backupExportFailedPrefix": "Échec de l’export de sauvegarde",
+            "notice.imageDownloadFailed": "Échec du téléchargement de l’image",
             "notice.backupImportNeedsPassphrase": "Saisissez le mot de passe des données avant d’importer une sauvegarde chiffrée.",
             "notice.backupImportEncryptedOnly": "Seules les sauvegardes chiffrées ZeroChat peuvent être importées.",
             "notice.backupImportFormatInvalid": "Format de fichier invalide.",

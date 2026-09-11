@@ -2,10 +2,6 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { AppData } from '../../types'
 import { defaultSkillSettings } from '../../services/appData'
-import {
-  captureGenerationIncarnation,
-  generationIncarnationExists,
-} from '../../services/generationOwnership'
 import { AppDataWriteConflictError } from '../appDataWriteConflict'
 import { recoverAppDataWriteConflict } from '../appDataConflictRecovery'
 
@@ -65,6 +61,19 @@ function generationData(updatedAt: number): AppData {
       },
     ],
   }
+}
+
+function ownsGenerationIncarnation(snapshot: AppData | null): boolean {
+  const conversation = snapshot?.conversations.find(
+    (candidate) =>
+      candidate.id === 'conversation-1' && candidate.createdAt === 1,
+  )
+  const message = conversation?.messages.find(
+    (candidate) => candidate.id === 'assistant-1',
+  )
+  return Boolean(
+    message && message.createdAt === 2 && message.role === 'assistant',
+  )
 }
 
 describe('recoverAppDataWriteConflict', () => {
@@ -207,11 +216,7 @@ describe('recoverAppDataWriteConflict', () => {
     'rejects a stale generation commit after remote $name without saving it',
     async ({ remote: createRemote }) => {
       const base = generationData(10)
-      const incarnation = captureGenerationIncarnation(
-        base,
-        'conversation-1',
-        'assistant-1',
-      )
+      expect(ownsGenerationIncarnation(base)).toBe(true)
       const local = {
         ...base,
         conversations: base.conversations.map((conversation) =>
@@ -232,7 +237,6 @@ describe('recoverAppDataWriteConflict', () => {
       const remote = createRemote(base)
       const save = vi.fn(async () => undefined)
 
-      expect(incarnation).not.toBeNull()
       const result = await recoverAppDataWriteConflict(
         new AppDataWriteConflictError(),
         base,
@@ -241,9 +245,7 @@ describe('recoverAppDataWriteConflict', () => {
           load: vi.fn(async () => remote),
           save,
         },
-        (snapshot) =>
-          incarnation !== null &&
-          generationIncarnationExists(snapshot, incarnation),
+        ownsGenerationIncarnation,
       )
 
       expect(result.commitPreconditionSatisfied).toBe(false)
@@ -257,11 +259,7 @@ describe('recoverAppDataWriteConflict', () => {
         }).preferences.compactMode,
       ).toBe(true)
       expect(
-        incarnation &&
-          generationIncarnationExists(
-            result.rebaseSnapshot(local),
-            incarnation,
-          ),
+        ownsGenerationIncarnation(result.rebaseSnapshot(local)),
       ).toBe(false)
     },
   )

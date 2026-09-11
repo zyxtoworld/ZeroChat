@@ -39,12 +39,27 @@ export function runtimeFailureCopy(): RuntimeFailureCopy {
 function reportStartupFailure(
   logger: StartupFailureLogger,
   message: string,
-  error: unknown,
 ): void {
   try {
-    logger.error(message, error)
+    logger.error(message)
   } catch {
     // Fatal recovery must not depend on a working diagnostic logger.
+  }
+}
+
+export function reloadRuntimePage(
+  reloadPage: () => void = () => window.location.reload(),
+  logger: StartupFailureLogger = console,
+): boolean {
+  try {
+    reloadPage()
+    return true
+  } catch {
+    reportStartupFailure(
+      logger,
+      'ZeroChat startup recovery reload failed.',
+    )
+    return false
   }
 }
 
@@ -60,7 +75,8 @@ export function reportStartupRenderFailure(
     reloadPage?: () => void
   } = {},
 ): void {
-  reportStartupFailure(logger, 'ZeroChat startup failed.', error)
+  void error
+  reportStartupFailure(logger, 'ZeroChat startup failed.')
 
   try {
     const host = doc.getElementById('root') ?? doc.body
@@ -84,27 +100,20 @@ export function reportStartupRenderFailure(
 
     const reloadButton = doc.createElement('button')
     reloadButton.type = 'button'
+    reloadButton.className = 'zc-btn primary'
     reloadButton.textContent = copy.reloadLabel
     reloadButton.addEventListener('click', () => {
-      try {
-        reloadPage()
-      } catch (reloadError) {
-        reportStartupFailure(
-          logger,
-          'ZeroChat startup recovery reload failed.',
-          reloadError,
-        )
-      }
+      reloadRuntimePage(reloadPage, logger)
     })
 
     main.append(title, message, reloadButton)
     host.append(main)
     reloadButton.focus()
   } catch (fallbackError) {
+    void fallbackError
     reportStartupFailure(
       logger,
       'ZeroChat startup fallback failed.',
-      fallbackError,
     )
   }
 }

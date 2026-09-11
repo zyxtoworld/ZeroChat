@@ -73,9 +73,9 @@ export function finalizeServiceWorkerTemplate(
     throw new Error('Service worker static-assets placeholder must appear exactly once.')
   }
 
-  const serializedAssetPaths = JSON.stringify(JSON.stringify(assetPaths))
+  const serializedAssetPaths = JSON.stringify(assetPaths)
   const staticPathsPattern = new RegExp(
-    `["'\`]${STATIC_ASSET_PATHS_PLACEHOLDER}["'\`]`,
+    `\\[\\s*["'\`]${STATIC_ASSET_PATHS_PLACEHOLDER}["'\`]\\s*\\]|["'\`]${STATIC_ASSET_PATHS_PLACEHOLDER}["'\`]`,
   )
   const finalized = template
     .replace(CACHE_VERSION_PLACEHOLDER, cacheVersion)

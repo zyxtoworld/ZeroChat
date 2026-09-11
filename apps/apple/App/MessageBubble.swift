@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import UniformTypeIdentifiers
 import ZeroChatCore
 
 #if os(iOS)
@@ -50,17 +51,18 @@ struct MessageBubble: View {
                 if let error = message.error, !error.isEmpty {
                     Text(error)
                         .font(.caption)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(message.role == .user ? messageForeground.opacity(0.9) : ZeroChatTheme.danger)
                 }
 
                 Text(Date(milliseconds: message.createdAt).formatted(date: .numeric, time: .shortened))
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(message.role == .user ? messageForeground.opacity(0.75) : .secondary)
             }
+            .foregroundStyle(messageForeground)
             .padding(12)
             .background(messageBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .contentShape(RoundedRectangle(cornerRadius: 10))
+            .clipShape(RoundedRectangle(cornerRadius: ZeroChatTheme.radiusLarge))
+            .contentShape(RoundedRectangle(cornerRadius: ZeroChatTheme.radiusLarge))
             .contextMenu {
                 messageContextMenu(copyableContent: copyableContent)
             } preview: {
@@ -120,10 +122,15 @@ struct MessageBubble: View {
 
     private var messageBackground: Color {
         if message.status == "error" {
-            return Color.red.opacity(0.15)
+            return ZeroChatTheme.danger.opacity(0.15)
         }
 
-        return message.role == .user ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.12)
+        // Current design: user bubble is solid accent with contrast text; assistant uses an elevated card.
+        return message.role == .user ? ZeroChatTheme.accent : ZeroChatTheme.bubbleAi
+    }
+
+    private var messageForeground: Color {
+        message.role == .user ? ZeroChatTheme.bubbleUserText : .primary
     }
 }
 
@@ -138,7 +145,7 @@ private struct MessagePreviewCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: message.role == .user ? "person.crop.circle.fill" : "sparkles")
-                    .foregroundStyle(message.role == .user ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(message.role == .user ? ZeroChatTheme.accent : Color.secondary)
                     .accessibilityHidden(true)
                 Text(Date(milliseconds: message.createdAt).formatted(date: .abbreviated, time: .shortened))
                     .font(.caption)
@@ -193,24 +200,64 @@ private struct AttachmentPreview: View {
 private struct AttachmentView: View {
     let attachment: MessageAttachment
     let i18n: NativeI18n
+    @State private var imageExportPresented = false
+    @State private var imageExportFailed = false
+    @State private var imageExportDocument = ZeroChatImageDocument()
+    @State private var imageExportContentType: UTType = .png
+    @State private var imageExportFileName = "zerochat-image.png"
 
     var body: some View {
-        if let dataUrl = attachment.dataUrl, let image = platformImage(dataUrl: dataUrl) {
-            PlatformImageView(image: image)
-                .scaledToFit()
-                .frame(maxHeight: 360)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-            Button {
-                saveDataUrl(dataUrl, suggestedName: "zerochat-image.png")
-            } label: {
-                Label(i18n.t("action.downloadImage"), systemImage: "square.and.arrow.down")
+        VStack(alignment: .leading, spacing: 6) {
+            if let safeData = safeImageAttachmentDataURL(attachment.dataUrl),
+               let image = platformImage(dataUrl: safeData.dataURL) {
+                PlatformImageView(image: image)
+                    .scaledToFit()
+                    .frame(maxHeight: 360)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                Button {
+                    beginImageExport(dataURL: safeData.dataURL, mimeType: safeData.mimeType)
+                } label: {
+                    Label(i18n.t("action.downloadImage"), systemImage: "square.and.arrow.down")
+                }
+            } else if let url = safeRemoteImageAttachmentURL(attachment.url) {
+                Link(i18n.t("action.openGeneratedImage"), destination: url)
+            } else {
+                Text(i18n.t("message.imageAttached"))
+                    .foregroundStyle(.secondary)
             }
-        } else if let url = safeRemoteImageAttachmentURL(attachment.url) {
-            Link(i18n.t("action.openGeneratedImage"), destination: url)
-        } else {
-            Text(i18n.t("message.imageAttached"))
-                .foregroundStyle(.secondary)
+
+            if imageExportFailed {
+                Text(i18n.t("notice.imageDownloadFailed"))
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
         }
+        .fileExporter(
+            isPresented: $imageExportPresented,
+            document: imageExportDocument,
+            contentType: imageExportContentType,
+            defaultFilename: imageExportFileName
+        ) { result in
+            guard case .failure(let error) = result else { return }
+            if let cocoaError = error as? CocoaError, cocoaError.code == .userCancelled {
+                return
+            }
+            imageExportFailed = true
+        }
+    }
+
+    private func beginImageExport(dataURL: String, mimeType: String) {
+        guard let data = decodedImageData(dataURL: dataURL) else {
+            imageExportFailed = true
+            return
+        }
+
+        imageExportDocument = ZeroChatImageDocument(data: data)
+        imageExportContentType = UTType(mimeType: mimeType) ?? .data
+        let extensionName = imageExportContentType.preferredFilenameExtension ?? "img"
+        imageExportFileName = "zerochat-image.\(extensionName)"
+        imageExportFailed = false
+        imageExportPresented = true
     }
 }
 
@@ -229,18 +276,11 @@ private struct PlatformImageView: View {
 #endif
 
 private func platformImage(dataUrl: String) -> PlatformImage? {
-    guard let range = dataUrl.range(of: "base64,") else { return nil }
-    let raw = String(dataUrl[range.upperBound...])
-    guard let data = Data(base64Encoded: raw) else { return nil }
+    guard let data = decodedImageData(dataURL: dataUrl) else { return nil }
     return PlatformImage(data: data)
 }
 
-private func saveDataUrl(_ dataUrl: String, suggestedName: String) {
-    guard let range = dataUrl.range(of: "base64,"),
-          let data = Data(base64Encoded: String(dataUrl[range.upperBound...])) else {
-        return
-    }
-
-    let url = FileManager.default.temporaryDirectory.appendingPathComponent(suggestedName)
-    try? data.write(to: url, options: [.atomic])
+private func decodedImageData(dataURL: String) -> Data? {
+    guard let range = dataURL.range(of: "base64,") else { return nil }
+    return Data(base64Encoded: String(dataURL[range.upperBound...]))
 }

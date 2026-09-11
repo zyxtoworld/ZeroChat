@@ -83,7 +83,7 @@ namespace winrt::ZeroChat::implementation
         bool TryHandleSecretWebMessage(
             winrt::hstring const& json,
             WebViewSessionToken const& webViewSession);
-        winrt::fire_and_forget ProcessSecretWebMessageAsync(
+        winrt::Windows::Foundation::IAsyncAction ProcessSecretWebMessageAsync(
             winrt::hstring json,
             winrt::hstring requestId,
             WebViewSessionToken webViewSession);
@@ -92,7 +92,7 @@ namespace winrt::ZeroChat::implementation
         bool TryInitializeWebViewShell();
         void InitializeFallbackSurface();
 
-        static LRESULT CALLBACK TrayWindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
+        static LRESULT CALLBACK TrayWindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) noexcept;
 
         HWND m_windowHandle{ nullptr };
         WNDPROC m_originalWindowProc{ nullptr };

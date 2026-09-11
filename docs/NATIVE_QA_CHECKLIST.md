@@ -13,7 +13,7 @@ Run these from the repository root before platform-specific QA. The native
 preflight checks both required project files and local build tools:
 
 ```bash
-pnpm install --frozen-lockfile
+pnpm install --frozen-lockfile --prod=false
 pnpm run verify:release
 pnpm run verify:all-platforms
 ```
@@ -39,9 +39,13 @@ checks, so IPA, macOS `.app`, and Linux release-binary budget evidence stay
 paired with the runtime smoke handoff instead of being remembered separately.
 The same `nextSteps` object also carries
 `releaseGateCommands` and `releaseEvidenceCommands`, which point reviewers at
-the staged all-platform release gates plus the native runtime, disposable live
-sync, hosted native CI, and live-provider full-capability evidence checks that
-must still pass before final release. Each report also carries a
+the staged all-platform release gates plus the native runtime, hosted native CI,
+and live-provider full-capability evidence checks that must still pass before
+final release. The current blocker map derives disposable live sync from the
+canonical report's source fingerprint: a current passed report closes it, while
+a stale, skipped, or missing report keeps it open. The final gate validates that
+binding so a stale diagnostic cannot replace current release evidence. Each
+report also carries a
 `sourceFingerprint` for the guarded native source tree; rerun
 `native-build-prereq-check.mjs` after native source, project, workflow, or
 packaging changes so the focused runtime-artifact validator can reject stale
@@ -167,11 +171,15 @@ adb running for another local device tool, `-- --show-emulator` to watch the
 run, or `-- --avd <name>` to pick a specific AVD. After a fresh debug APK build,
 `pnpm run qa:android:current` runs the same wrapper with `--skip-build` so
 reviewers can refresh UI, Cloudflare sync, and contact-sheet evidence against
-the current APK without rebuilding first; reserve roughly 25-30 minutes for the
-full pass on slower local machines. If only Cloudflare smoke failed after a
-current UI pass, `pnpm run qa:android:refresh-cloud` revalidates the UI report's
-APK hash and device before reinstalling the APK and rerunning sync. After both individual smoke reports have
-already passed against the current debug APK, `pnpm run qa:android:reuse-current`
+the current APK without rebuilding first; reserve roughly 50-60 minutes for the
+full pass on slower local machines. The current encrypted Cloudflare drill alone
+has taken roughly 29 minutes under emulator load, so each UI/cloud child keeps a
+finite 45-minute parent budget rather than relying on optimistic host timing. If
+only Cloudflare smoke failed after a current UI pass,
+`pnpm run qa:android:refresh-cloud` revalidates the UI report's APK hash and
+device before reinstalling the APK and rerunning sync. After both individual
+smoke reports have already passed against the current debug APK,
+`pnpm run qa:android:reuse-current`
 may rebuild only the aggregate report and contact sheet. That path fails closed
 unless both reports are passed, use the same device, prove installed/local APK
 equality, and match the current APK bytes and SHA-256. For a connected emulator or device,
@@ -199,7 +207,7 @@ bubbles, opens the delete-conversation confirmation without deleting the seeded
 chat, dismisses it with Android system Back, long-presses a user message and an
 assistant message, confirms their role-specific operation menus, asserts that
 the Settings UI returned to the device's resolved system language, and writes
-34 screenshots plus
+55 screenshots plus
 `.manual-qa/android-ui-smoke.json` to `.manual-qa/`. The Quick Ask proof must
 include `.manual-qa/android-ui-smoke-01a-quick-ask-route.png`; the report also
 records `quickAskWidget` evidence from `dumpsys package` and `dumpsys
@@ -214,6 +222,17 @@ picker proof must include
 `.manual-qa/android-ui-smoke-08d-backup-export-picker.png`,
 `.manual-qa/android-ui-smoke-08e-backup-import-confirmation.png`, and
 `.manual-qa/android-ui-smoke-08f-backup-import-picker.png`.
+The Provider pass must also prove a same-process Activity recreation instead of
+treating `force-stop` as a substitute. Debug-only sanitized lifecycle markers
+must show one configuration-change destruction and a distinct Activity instance
+under the same PID for the landscape transition, then another such transition
+when the original orientation is restored. The committed Provider credential
+must remain masked with Save disabled in both orientations, and the harness must
+restore and re-read the exact original `accelerometer_rotation` and
+`user_rotation` values on every exit. Required frames are
+`.manual-qa/android-ui-smoke-04c-activity-recreation.png` and
+`.manual-qa/android-ui-smoke-04d-activity-recreation-restored.png`. The later
+force-stop proof remains a separate process-relaunch persistence check.
 The Android smokes intentionally tap exact settings-tab labels for Sync so the
 top explanatory copy can mention sync without stealing the automation tap.
 Pass `-- --no-install` if the current APK is already installed and should not
@@ -246,7 +265,14 @@ verifies Skill add/delete cleanup in the decrypted vault, grants
 posted `ZeroChat sync` / `Sync complete` sync-status notifications for initial
 Cloudflare sync and manual pull-to-refresh. It does not
 replace a disposable live Worker/R2 cleanup drill or physical-device release
-pass. The smoke writes `.manual-qa/android-cloud-sync-smoke.json`, and
+pass. Exact-text automation rejects candidate button centers outside the current
+hierarchy viewport's safe region so an offscreen Save node cannot tap the system
+navigation area. After the IME closes, the source, local replacement, remote
+restore, and process-relaunch credential captures must record viewport and field
+bounds, then keep complete masked Provider fields above system navigation. The
+manual-refresh upload wait remains finite but allows 360
+polls for per-object PBKDF2 derivation on a slow emulator. The smoke writes
+`.manual-qa/android-cloud-sync-smoke.json`, and
 `pnpm run qa:android` then folds both Android smoke reports into the current
 contact sheet so reviewers do not accidentally rely on stale overview images.
 If the smoke screenshots already exist and only the overview needs refreshing,
@@ -255,14 +281,16 @@ run `pnpm run check:android-contact-sheet`.
 two Android reports. Both Android smokes also pull the installed
 `/data/app/.../base.apk` into `.manual-qa/`, hash that pulled copy, and require
 it to match the freshly built debug APK. `pnpm run check:runtime-artifacts`
-validates those reports, the installed-APK evidence, 53 Android UI screenshots,
-15 Android Cloudflare screenshots, the combined 68-screenshot emulator QA
-report, the 68-screenshot contact sheet, and the required quick-ask route,
+validates those reports, the installed-APK evidence, 55 Android UI screenshots,
+15 Android Cloudflare screenshots, the combined 70-screenshot emulator QA
+report, the 70-screenshot contact sheet, and the required quick-ask route,
 dark-theme, system-Back, backup-picker, conversation-search,
 delete-conversation, IME-open composer, message-menu, assistant Share chooser,
 offline/reconnect Cloudflare sync, posted sync-status notification, and
 pull-to-refresh Cloudflare sync, first-sync conflict, remote Provider-key
-restore, and process-relaunch persistence screenshots when they exist.
+restore, safe credential framing, same-process Activity recreation, exact
+rotation-setting restoration, and process-relaunch persistence screenshots when
+they exist.
 
 If preflight reports a JDK path but the Gradle Wrapper cannot find Java, set
 `JAVA_HOME` to the JDK root that contains `bin\java.exe`, or add that `bin`
@@ -297,6 +325,12 @@ Runtime checks:
   the user and assistant long-press message menus. The automated smoke also
   verifies Android system Back closes Settings to Home and dismisses the
   delete-chat confirmation without deleting the chat.
+- Inspect the required Activity-recreation frames and report. Confirm the PID is
+  unchanged, Activity instance ids are distinct, the old instance reports a
+  configuration-change destruction, the Provider credential stays masked with
+  Save disabled, and the exact original rotation settings are restored. Repeat
+  on a physical device when available; emulator proof does not replace manual
+  device rotation and lifecycle QA.
 - Install the debug APK on an emulator and on one physical phone if available.
 - Verify one-handed chat ergonomics, system back behavior, IME open/close,
   long composer text, attachment controls, and destructive dialogs.
@@ -567,15 +601,16 @@ first instead of mutating the Windows profile. Signed dry runs also report
 whether the signature is trusted and whether certificate trust is still
 required. Use `-Install` for first-install QA, `-Update` only after a previous
 signed build is already installed, and `-Uninstall` for cleanup. For self-signed
-QA packages, Windows must trust the signing root before install/update QA; use a
-disposable QA profile and an elevated PowerShell. The helper can import the
-certificate into Current User Trusted People, Local Machine Trusted People, and
-Local Machine Root before calling `Add-AppxPackage`; use
-`-TrustCertificate`, `-TrustMachineCertificate`, `-TrustSigningRoot`, and
-`-TrustedCertificatePath <public .cer>` together for that disposable pass.
-Cleanup should pass `-RemoveTrustedCertificate`,
-`-RemoveTrustedMachineCertificate`, and `-RemoveTrustedSigningRoot` with
-`-Uninstall`. `pnpm run qa:windows-msix-trusted:elevated` is the repeatable
+QA packages, Windows App Installer must trust the signing leaf in Local Machine
+Trusted People before install/update QA; use a disposable QA profile and an
+elevated PowerShell. Pass `-TrustMachineCertificate` and
+`-TrustedCertificatePath <public .cer>` for that disposable pass, then pair
+`-RemoveTrustedMachineCertificate` with `-Uninstall`. Do not import a leaf
+package-signing certificate into Current User Trusted People or Local Machine
+Root. The optional `-TrustSigningRoot` path is reserved for an actual CA root
+and rejects non-CA certificates. The low-level helper exposes no Current User
+trust switch; only the outer cleanup retains historical-residue removal.
+`pnpm run qa:windows-msix-trusted:elevated` is the repeatable
 one-command path for the disposable current-package pass: it refreshes host
 preflight, rebuilds the current Web/PWA bundle and Windows MSIX-ready Release
 output, and signs previous/current MSIX packages from that output only after
@@ -593,11 +628,16 @@ disposable QA machine or profile.
 If the host AppX deployment service blocks that pass before ZeroChat can
 complete install/update/uninstall proof, the same command writes
 `.manual-qa\windows-msix-current-trusted-install-update-qa.failure.json` as
-diagnostic-only host AppX evidence with `releaseEvidence: false`. The current
-known blocker is
+diagnostic-only host AppX evidence with `releaseEvidence: false`; older failed
+runs are historical diagnostic evidence. Historical diagnostic reports can classify
 `windows-appx-deployment-deleted-package-cleanup-access-denied` under
-`C:\Program Files\WindowsApps\Deleted`; use a fresh disposable Windows profile
-or VM, or repair the external AppX cleanup state, before rerunning
+`C:\Program Files\WindowsApps\Deleted`, but the latest historical failure report
+remains diagnostic-only. Current host status is report-derived, never hard-coded
+in this guide: inspect `.manual-qa/windows-msix-host-preflight.json`. A blocked
+host must be repaired or replaced before trusted QA; a clear non-elevated host
+must rerun from an elevated disposable Windows profile. If preflight reports the
+Deleted cleanup classifier, use a fresh disposable profile or VM, or repair the
+external AppX cleanup state, before rerunning
 `pnpm run qa:windows-msix-trusted:elevated`,
 `pnpm run check:windows-msix-trusted-report`, and
 `pnpm run check:runtime-artifacts`.

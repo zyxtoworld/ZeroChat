@@ -7,6 +7,7 @@ use crate::{
         read_bounded_json, read_bounded_text,
     },
     sync_incremental_helpers::is_safe_object_key,
+    sync_incremental_read::validate_incremental_manifest,
 };
 use anyhow::{Result, bail};
 use reqwest::{Client, StatusCode, header};
@@ -205,6 +206,10 @@ pub(crate) async fn read_incremental_object(
     token: &str,
     key: &str,
 ) -> Result<EncryptedObjectEnvelope> {
+    if !is_safe_object_key(key) {
+        bail!("Remote incremental object key is invalid.");
+    }
+
     let response = http
         .get(format!("{endpoint}/sync/object/{key}"))
         .bearer_auth(token)
@@ -398,12 +403,7 @@ pub(crate) async fn read_incremental_manifest(
     let envelope = read_incremental_object(http, endpoint, token, &head.manifest_key).await?;
     let manifest =
         crypto.decrypt_object::<IncrementalManifest>(&envelope, passphrase, "manifest")?;
-    if manifest.kind != "zerochat.incrementalManifest"
-        || manifest.version != 1
-        || manifest.updated_at != head.updated_at
-    {
-        bail!("Remote incremental manifest is invalid.");
-    }
+    validate_incremental_manifest(&manifest, head)?;
     Ok(manifest)
 }
 

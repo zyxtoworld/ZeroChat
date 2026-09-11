@@ -11,6 +11,7 @@ const nativeFailures = {
     'apple: required runtime smoke artifact is missing',
     'linux: required runtime smoke artifact is missing',
     'windows-msix trusted install evidence is stale',
+    'android-emulator-qa: runtime evidence is stale',
   ].join('\n'),
 }
 const directFailures = [
@@ -38,7 +39,7 @@ function blockedReport(blockers, requestedEvidence = fullRequestedEvidence) {
 }
 
 describe('release blocker active-state transitions', () => {
-  it('keeps every baseline blocker active for the current six-way failure state', () => {
+  it('keeps every baseline blocker active for the current seven-way failure state', () => {
     expect(
       activeBaselineReleaseBlockerIds({
         strictReport: blockedReport([nativeFailures, ...directFailures]),
@@ -82,6 +83,44 @@ describe('release blocker active-state transitions', () => {
     expect(active).not.toContain('windows-trusted-msix-release-pass')
   })
 
+  it('keeps an Android runtime blocker active when the strict failure names only Android', () => {
+    const active = activeBaselineReleaseBlockerIds({
+      strictReport: blockedReport([
+        {
+          label: 'Native runtime smoke artifacts',
+          message: 'android-emulator-qa: source fingerprint stale; emulator runtime failed',
+        },
+      ]),
+    })
+
+    expect(active).toEqual(['android-target-runtime-qa'])
+  })
+
+  it('does not expand an Android prerequisite failure to every native target', () => {
+    const active = activeBaselineReleaseBlockerIds({
+      strictReport: blockedReport([
+        { label: 'All-platform native prerequisites', message: 'Android prerequisite missing' },
+      ]),
+      androidPrerequisitesMissing: true,
+    })
+
+    expect(active).toEqual(['android-target-runtime-qa'])
+  })
+
+  it('keeps the conservative native fallback when no platform is classified as missing', () => {
+    const active = activeBaselineReleaseBlockerIds({
+      strictReport: blockedReport([
+        { label: 'All-platform native prerequisites', message: 'unclassified prerequisite failure' },
+      ]),
+    })
+
+    expect(active).toEqual(
+      baselineReleaseBlockerIds.filter((id) =>
+        ['apple-target-runtime-qa', 'linux-target-runtime-qa', 'windows-trusted-msix-release-pass', 'android-target-runtime-qa'].includes(id),
+      ),
+    )
+  })
+
   it('fails closed for malformed blocked and unknown native-runtime diagnostics', () => {
     expect(
       activeBaselineReleaseBlockerIds({ strictReport: blockedReport([]) }),
@@ -92,7 +131,17 @@ describe('release blocker active-state transitions', () => {
         { label: 'Native runtime smoke artifacts', message: 'unclassified runtime failure' },
       ]),
     })
-    expect(active).toEqual(baselineReleaseBlockerIds.slice(0, 3))
+    expect(active).toEqual(baselineReleaseBlockerIds.slice(0, 4))
+  })
+
+  it('rejects coherent strict blockers that have no baseline classification', () => {
+    expect(() =>
+      activeBaselineReleaseBlockerIds({
+        strictReport: blockedReport([
+          { label: 'Future strict gate', message: 'failed' },
+        ]),
+      }),
+    ).toThrow(/strict release blocker is not classified/u)
   })
 
   it('reaches an empty terminal baseline state only after a strict release pass', () => {

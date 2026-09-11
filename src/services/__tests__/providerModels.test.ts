@@ -242,6 +242,9 @@ describe('provider model helpers', () => {
     expect(chatModelPreferenceScore('gpt-4.2')).toBeGreaterThan(
       chatModelPreferenceScore('gpt-4.1-2025-04-14'),
     )
+    expect(
+      preferredChatModel(['gpt-5.5', 'gpt-5-2025-08-07']),
+    ).toBe('gpt-5.5')
   })
 
   it('prefers frontier relay variants when numeric revisions tie', () => {
@@ -706,22 +709,22 @@ describe('provider model helpers', () => {
 
     expect(
       modelsForProviderCapability(explicitCatalogProvider, 'embeddings'),
-    ).toEqual([])
+    ).toEqual(['gpt-5.5'])
     expect(
       modelsForProviderCapability(explicitCatalogProvider, 'audio-speech'),
-    ).toEqual([])
+    ).toEqual(['gpt-5.5'])
     expect(
       modelsForProviderCapability(
         explicitCatalogProvider,
         'audio-transcription',
       ),
-    ).toEqual([])
+    ).toEqual(['gpt-5.5'])
     expect(
       modelsForProviderCapability(explicitCatalogProvider, 'moderation'),
-    ).toEqual([])
+    ).toEqual(['gpt-5.5'])
     expect(
       modelsForProviderCapability(explicitCatalogProvider, 'realtime'),
-    ).toEqual([])
+    ).toEqual(['gpt-5.5'])
     expect(
       providerCapabilityUsesStandardFallbackModels(
         explicitCatalogProvider,
@@ -796,6 +799,39 @@ describe('provider model helpers', () => {
         'embeddings',
       ),
     ).toBe(false)
+  })
+
+  it('keeps opaque catalog IDs selectable for explicitly declared capabilities', () => {
+    const opaqueCatalogProvider = provider({
+      capabilities: ['chat', 'audio', 'embeddings', 'image-generation'],
+      embeddingModel: 'vendor-vector-v7',
+      imageModel: 'vendor-vision-v2',
+      models: ['vendor-chat-v4', 'vendor-vector-v7', 'vendor-vision-v2'],
+    })
+    const unconfiguredOpaqueCatalogProvider = provider({
+      capabilities: ['chat', 'embeddings'],
+      embeddingModel: '',
+      models: ['vendor-chat-v4', 'vendor-vector-v7'],
+    })
+
+    expect(
+      modelsForProviderCapability(opaqueCatalogProvider, 'embeddings'),
+    ).toEqual(['vendor-chat-v4', 'vendor-vector-v7', 'vendor-vision-v2'])
+    expect(modelForProviderCapability(opaqueCatalogProvider, 'embeddings')).toBe(
+      'vendor-vector-v7',
+    )
+    expect(
+      modelForProviderCapability(
+        unconfiguredOpaqueCatalogProvider,
+        'embeddings',
+      ),
+    ).toBe('')
+    expect(
+      modelsForProviderCapability(opaqueCatalogProvider, 'image-generation'),
+    ).toEqual(['vendor-chat-v4', 'vendor-vector-v7', 'vendor-vision-v2'])
+    expect(modelForProviderCapability(opaqueCatalogProvider, 'image-generation')).toBe(
+      'vendor-vision-v2',
+    )
   })
 
   it('summarizes per-model capabilities for model-list badges', () => {

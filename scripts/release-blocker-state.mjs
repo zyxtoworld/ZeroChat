@@ -1,6 +1,7 @@
 export const baselineReleaseBlockerIds = [
   'apple-target-runtime-qa',
   'linux-target-runtime-qa',
+  'android-target-runtime-qa',
   'windows-trusted-msix-release-pass',
   'disposable-live-sync-release-pass',
   'hosted-native-ci-release-evidence',
@@ -15,6 +16,11 @@ const directStrictBlockers = new Map([
     'live-provider-full-capability-release-evidence',
   ],
 ])
+const classifiedStrictBlockerLabels = new Set([
+  'All-platform native prerequisites',
+  'Native runtime smoke artifacts',
+  ...directStrictBlockers.keys(),
+])
 const nativeRuntimeTargets = new Map([
   [
     'apple-target-runtime-qa',
@@ -27,6 +33,10 @@ const nativeRuntimeTargets = new Map([
   [
     'windows-trusted-msix-release-pass',
     /(?:\bwindows\s*:|windows-msix|windows trusted|\.manual-qa[\\/]windows|\bappx\b|\bmsix\b)/iu,
+  ],
+  [
+    'android-target-runtime-qa',
+    /(?:\bandroid\s*:|android-runtime|android target|\.manual-qa[\\/]android|\bemulator\b|\bapk\b|\bgradle\b)/iu,
   ],
 ])
 
@@ -110,6 +120,7 @@ export function activeBaselineReleaseBlockerIds({
   strictReport,
   applePrerequisitesMissing = false,
   linuxPrerequisitesMissing = false,
+  androidPrerequisitesMissing = false,
   candidateIds = baselineReleaseBlockerIds,
 } = {}) {
   const candidates = normalizedCandidateIds(candidateIds)
@@ -125,6 +136,17 @@ export function activeBaselineReleaseBlockerIds({
     return candidates
   }
 
+  if (
+    isStrictReleaseBlocked(strictReport) &&
+    blockers.some(
+      (blocker) => !classifiedStrictBlockerLabels.has(blocker.label),
+    )
+  ) {
+    throw new Error(
+      'A coherent strict release blocker is not classified by the baseline blocker protocol.',
+    )
+  }
+
   const active = new Set(candidates.filter((id) => !covered.has(id)))
 
   if (applePrerequisitesMissing && candidateSet.has('apple-target-runtime-qa')) {
@@ -132,6 +154,9 @@ export function activeBaselineReleaseBlockerIds({
   }
   if (linuxPrerequisitesMissing && candidateSet.has('linux-target-runtime-qa')) {
     active.add('linux-target-runtime-qa')
+  }
+  if (androidPrerequisitesMissing && candidateSet.has('android-target-runtime-qa')) {
+    active.add('android-target-runtime-qa')
   }
 
   if (isStrictReleasePass(strictReport)) {
@@ -141,7 +166,12 @@ export function activeBaselineReleaseBlockerIds({
   const prerequisiteBlocker = blockers.find(
     (blocker) => blocker.label === 'All-platform native prerequisites',
   )
-  if (prerequisiteBlocker && !applePrerequisitesMissing && !linuxPrerequisitesMissing) {
+  if (
+    prerequisiteBlocker &&
+    !applePrerequisitesMissing &&
+    !linuxPrerequisitesMissing &&
+    !androidPrerequisitesMissing
+  ) {
     for (const id of nativeRuntimeTargets.keys()) {
       if (candidateSet.has(id)) active.add(id)
     }

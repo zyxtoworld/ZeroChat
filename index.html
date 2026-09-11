@@ -8,7 +8,7 @@
       content="default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; script-src 'self'; connect-src 'self' https: wss: ws:; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; media-src 'self' blob:; font-src 'self' data:; worker-src 'self' blob:"
     />
     <link rel="icon" href="./favicon.ico" />
-    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="icon" href="./favicon.svg" />
     <link rel="apple-touch-icon" href="./icon-180.png" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <meta
@@ -20,7 +20,7 @@
       name="description"
       content="隐私优先的 AI 聊天"
     />
-    <script src="%BASE_URL%zerochat-startup.js" defer vite-ignore></script>
+    <script type="module" src="/src/app/bootstrap.tsx"></script>
     <title>ZeroChat</title>
   </head>
   <body>
@@ -45,6 +45,5 @@
         <p data-initial-loading>正在载入... / Loading...</p>
       </main>
     </div>
-    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

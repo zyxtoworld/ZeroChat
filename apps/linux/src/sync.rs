@@ -18,7 +18,7 @@ use crate::{
     },
     sync_merge::{accept_remote_vault, merge_first_sync_vault},
 };
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use reqwest::redirect::Policy;
 use std::{
     sync::{Mutex, OnceLock},
@@ -75,16 +75,18 @@ pub enum FirstSyncStrategy {
 }
 
 impl SyncClient {
-    pub fn new() -> Self {
-        Self {
-            http: reqwest::Client::builder()
-                .connect_timeout(SYNC_REQUEST_TIMEOUT)
-                .timeout(SYNC_REQUEST_TIMEOUT)
-                .redirect(Policy::none())
-                .build()
-                .expect("sync HTTP client with timeout budget should build"),
+    pub fn new() -> Result<Self> {
+        let http = reqwest::Client::builder()
+            .connect_timeout(SYNC_REQUEST_TIMEOUT)
+            .timeout(SYNC_REQUEST_TIMEOUT)
+            .redirect(Policy::none())
+            .build()
+            .map_err(|_| anyhow!("Cloud sync is unavailable."))?;
+
+        Ok(Self {
+            http,
             crypto: SnapshotCrypto::new(),
-        }
+        })
     }
 
     async fn revalidate_cloudflare_read(
@@ -669,6 +671,7 @@ mod tests {
             ]);
 
             let error = SyncClient::new()
+                .expect("sync HTTP client should initialize in tests")
                 .sync_cloudflare_with_strategy(
                     envelope(),
                     &endpoint,

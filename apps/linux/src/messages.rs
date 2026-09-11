@@ -39,7 +39,11 @@ pub(crate) fn message_row_with_body(
     bubble.set_margin_start(row_spacing(compact));
     bubble.set_margin_end(row_spacing(compact));
     bubble.set_width_request(if compact { 460 } else { 520 });
-    bubble.add_css_class(if is_user { "accent" } else { "card" });
+    // Current design: solid accent user bubble / elevated assistant card (see theme.rs).
+    bubble.add_css_class(if is_user { "zc-bubble-user" } else { "card" });
+    if !is_user {
+        bubble.add_css_class("zc-bubble-ai");
+    }
 
     let heading = gtk::Label::new(Some(author));
     heading.set_xalign(if is_user { 1.0 } else { 0.0 });

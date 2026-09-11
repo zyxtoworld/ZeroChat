@@ -101,7 +101,13 @@ describe('mergeConcurrentAppData', () => {
   it('preserves disjoint provider and conversation edits from separate tabs', () => {
     const base = appData()
     const remote = appData({
-      providers: [provider({ name: 'Remote provider', updatedAt: 20 })],
+      providers: [
+        provider({
+          name: 'Remote provider',
+          baseUrl: 'https://remote-provider.invalid/v2',
+          updatedAt: 20,
+        }),
+      ],
       updatedAt: 20,
     })
     const local = appData({
@@ -118,6 +124,9 @@ describe('mergeConcurrentAppData', () => {
     const merged = mergeConcurrentAppData(base, remote, local, 40)
 
     expect(merged.providers[0]?.name).toBe('Remote provider')
+    expect(merged.providers[0]?.baseUrl).toBe(
+      'https://remote-provider.invalid/v2',
+    )
     expect(merged.conversations[0]?.title).toBe('Local title')
     expect(merged.updatedAt).toBe(40)
   })
@@ -252,6 +261,284 @@ describe('mergeConcurrentAppData', () => {
     ).toBe(false)
   })
 
+  it('does not resurrect the last conversation after a concurrent deletion', () => {
+    const base = appData({ updatedAt: 10 })
+    const remote = appData({ conversations: [], updatedAt: 30 })
+    const local = appData({
+      conversations: [
+        {
+          ...base.conversations[0]!,
+          title: 'Late stale title',
+          updatedAt: 50,
+        },
+      ],
+      updatedAt: 50,
+    })
+
+    const merged = mergeConcurrentAppData(base, remote, local, 60)
+
+    expect(merged.conversations).toEqual([])
+    expect(merged.preferences.activeConversationId).toBeUndefined()
+  })
+
+  it('keeps a same-id conversation recreation after the old incarnation is deleted', () => {
+    const base = appData({ updatedAt: 10 })
+    const remote = appData({ conversations: [], updatedAt: 30 })
+    const local = appData({
+      conversations: [
+        {
+          ...base.conversations[0]!,
+          title: 'Recreated conversation',
+          createdAt: 100,
+          updatedAt: 50,
+        },
+      ],
+      updatedAt: 50,
+    })
+
+    const merged = mergeConcurrentAppData(base, remote, local, 60)
+
+    expect(merged.conversations).toEqual([
+      expect.objectContaining({
+        id: 'conversation-1',
+        title: 'Recreated conversation',
+        createdAt: 100,
+      }),
+    ])
+    expect(merged.preferences.activeConversationId).toBe('conversation-1')
+  })
+
+  it('keeps a same-id remote conversation recreation after local deletion', () => {
+    const base = appData({ updatedAt: 10 })
+    const remote = appData({
+      conversations: [
+        {
+          ...base.conversations[0]!,
+          title: 'Recreated remotely',
+          createdAt: 100,
+          updatedAt: 50,
+        },
+      ],
+      updatedAt: 50,
+    })
+    const local = appData({ conversations: [], updatedAt: 30 })
+
+    const merged = mergeConcurrentAppData(base, remote, local, 60)
+
+    expect(merged.conversations).toEqual([
+      expect.objectContaining({
+        id: 'conversation-1',
+        title: 'Recreated remotely',
+        createdAt: 100,
+      }),
+    ])
+    expect(merged.preferences.activeConversationId).toBe('conversation-1')
+  })
+
+  it('does not resurrect the last Provider after a concurrent deletion', () => {
+    const base = appData({ updatedAt: 10 })
+    const remote = appData({ providers: [], updatedAt: 30 })
+    const local = appData({
+      conversations: [
+        {
+          ...base.conversations[0]!,
+          title: 'Late stale title',
+          updatedAt: 50,
+        },
+      ],
+      updatedAt: 50,
+    })
+
+    const merged = mergeConcurrentAppData(base, remote, local, 60)
+
+    expect(merged.providers).toEqual([])
+  })
+
+  it('keeps a same-id Provider recreation after the old incarnation is deleted', () => {
+    const base = appData({ updatedAt: 10 })
+    const remote = appData({ providers: [], updatedAt: 30 })
+    const local = appData({
+      providers: [
+        provider({
+          name: 'Recreated provider',
+          createdAt: 100,
+          updatedAt: 50,
+        }),
+      ],
+      updatedAt: 50,
+    })
+
+    const merged = mergeConcurrentAppData(base, remote, local, 60)
+
+    expect(merged.providers).toEqual([
+      expect.objectContaining({
+        id: 'provider-1',
+        name: 'Recreated provider',
+        createdAt: 100,
+      }),
+    ])
+  })
+
+  it('keeps a newer same-id Provider incarnation over a stale local edit', () => {
+    const base = appData({ updatedAt: 10 })
+    const remote = appData({
+      providers: [
+        provider({
+          createdAt: 100,
+          name: 'Recreated remotely',
+          updatedAt: 20,
+        }),
+      ],
+      updatedAt: 20,
+    })
+    const local = appData({
+      providers: [provider({ name: 'Stale local edit', updatedAt: 50 })],
+      updatedAt: 50,
+    })
+
+    const merged = mergeConcurrentAppData(base, remote, local, 60)
+
+    expect(merged.providers).toEqual([
+      expect.objectContaining({
+        createdAt: 100,
+        name: 'Recreated remotely',
+      }),
+    ])
+  })
+
+  it('keeps a newer same-id Skill incarnation over a stale local edit', () => {
+    const base = appData({ updatedAt: 10 })
+    const remote = appData({
+      skills: [
+        skill({
+          createdAt: 100,
+          name: 'Recreated remotely',
+          contentHash: 'remote-hash',
+          chunks: [
+            {
+              id: 'remote-chunk',
+              heading: 'Recreated remotely',
+              content: 'remote content',
+              keywords: ['remote'],
+              tokenEstimate: 2,
+            },
+          ],
+          updatedAt: 20,
+        }),
+      ],
+      updatedAt: 20,
+    })
+    const local = appData({
+      skills: [
+        skill({
+          name: 'Stale local edit',
+          contentHash: 'stale-local-hash',
+          chunks: [
+            {
+              id: 'stale-local-chunk',
+              heading: 'Stale local edit',
+              content: 'late stale content',
+              keywords: ['stale'],
+              tokenEstimate: 3,
+            },
+          ],
+          updatedAt: 50,
+        }),
+      ],
+      updatedAt: 50,
+    })
+
+    const merged = mergeConcurrentAppData(base, remote, local, 60)
+
+    expect(merged.skills).toEqual([
+      expect.objectContaining({
+        createdAt: 100,
+        name: 'Recreated remotely',
+        contentHash: 'remote-hash',
+        chunks: [
+          expect.objectContaining({
+            id: 'remote-chunk',
+            content: 'remote content',
+          }),
+        ],
+      }),
+    ])
+  })
+
+  it('keeps a newer same-id attachment incarnation over a stale local edit', () => {
+    const baseAttachment = {
+      id: 'attachment-1',
+      kind: 'image' as const,
+      mimeType: 'image/png',
+      url: 'https://old.example.invalid/image.png',
+      alt: 'old image',
+      createdAt: 1,
+    }
+    const baseMessage = {
+      ...message('message-1', 10),
+      attachments: [baseAttachment],
+    }
+    const baseConversation = {
+      ...appData().conversations[0]!,
+      messages: [baseMessage],
+      updatedAt: 10,
+    }
+    const base = appData({ conversations: [baseConversation], updatedAt: 10 })
+    const remote = appData({
+      conversations: [
+        {
+          ...baseConversation,
+          messages: [
+            {
+              ...baseMessage,
+              attachments: [
+                {
+                  ...baseAttachment,
+                  createdAt: 100,
+                  url: 'https://remote.example.invalid/image.png',
+                  alt: 'remote image',
+                },
+              ],
+            },
+          ],
+          updatedAt: 20,
+        },
+      ],
+      updatedAt: 20,
+    })
+    const local = appData({
+      conversations: [
+        {
+          ...baseConversation,
+          messages: [
+            {
+              ...baseMessage,
+              attachments: [
+                {
+                  ...baseAttachment,
+                  alt: 'late stale image edit',
+                },
+              ],
+            },
+          ],
+          updatedAt: 50,
+        },
+      ],
+      updatedAt: 50,
+    })
+
+    const merged = mergeConcurrentAppData(base, remote, local, 60)
+
+    expect(merged.conversations[0]?.messages[0]?.attachments).toEqual([
+      expect.objectContaining({
+        id: 'attachment-1',
+        createdAt: 100,
+        url: 'https://remote.example.invalid/image.png',
+        alt: 'remote image',
+      }),
+    ])
+  })
+
   it('does not merge an old completion into a same-id recreated message', () => {
     const oldAssistant = {
       ...message('assistant-1', 10),
@@ -308,6 +595,70 @@ describe('mergeConcurrentAppData', () => {
         createdAt: 100,
       }),
     ])
+  })
+
+  it('does not merge same-timestamp message incarnations with different generations', () => {
+    const oldAssistant: ChatMessage = {
+      ...message('assistant-1', 10),
+      role: 'assistant',
+      content: 'old stream',
+      status: 'streaming',
+      generationId: 'old-generation',
+    }
+    const base = appData({
+      conversations: [
+        {
+          ...appData().conversations[0]!,
+          messages: [oldAssistant],
+          updatedAt: 10,
+        },
+      ],
+      updatedAt: 10,
+    })
+    const remote = appData({
+      conversations: [
+        {
+          ...base.conversations[0]!,
+          messages: [
+            {
+              ...oldAssistant,
+              content: 'new stream',
+              generationId: 'new-generation',
+            },
+          ],
+          updatedAt: 20,
+        },
+      ],
+      updatedAt: 20,
+    })
+    const local = appData({
+      conversations: [
+        {
+          ...base.conversations[0]!,
+          messages: [
+            { ...oldAssistant, content: 'late old completion', status: 'done' },
+          ],
+          updatedAt: 30,
+        },
+      ],
+      updatedAt: 30,
+    })
+
+    const merged = mergeConcurrentAppData(base, remote, local, 40)
+
+    expect(merged.conversations[0]?.messages).toEqual([
+      expect.objectContaining({
+        id: 'assistant-1',
+        content: 'new stream',
+        status: 'streaming',
+        generationId: 'new-generation',
+      }),
+    ])
+    expect(
+      merged.conversations[0]?.messages.some(
+        (item) => item.content === 'late old completion',
+      ),
+    ).toBe(false)
   })
 
   it('orders equal-time messages and attachments by UTF-16 code units', () => {

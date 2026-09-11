@@ -307,17 +307,17 @@ class NativeI18n private constructor(val locale: String) {
             isRemoteSyncFormatError(text) ->
                 t("error.remoteDataBadFormat")
             text.startsWith("Cloud incremental sync check failed:") ->
-                "${t("error.cloudIncrementalCheckFailedPrefix")}: ${text.substringAfter(':').trim()}"
+                t("error.cloudIncrementalCheckFailedPrefix")
             isCloudSyncStepFailure(text) ->
-                "${t("error.cloudSyncStepFailedPrefix")}: ${text.substringAfter(':').trim()}"
+                t("error.cloudSyncStepFailedPrefix")
             text.startsWith("Cloud clear failed:") ->
-                "${t("message.cloudClearFailedPrefix")}: ${text.substringAfter(':').trim()}"
+                t("message.cloudClearFailedPrefix")
             text.startsWith("Cloud sync request failed with HTTP ") ||
                 text.startsWith("Gist sync request failed with HTTP ") ->
                 "${t("error.cloudSyncHttpFailedPrefix")} ${text.substringAfter("HTTP").trim().trimEnd('.')}"
             text.startsWith("Gist clear failed:") ->
-                "${t("message.cloudClearFailedPrefix")}: ${text.substringAfter(':').trim()}"
-            else -> providerHttpErrorKey(text)?.let { t(it) } ?: text
+                t("message.cloudClearFailedPrefix")
+            else -> providerHttpErrorKey(text)?.let { t(it) } ?: t("error.apiRequestFailed")
         }
     }
 

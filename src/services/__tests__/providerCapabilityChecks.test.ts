@@ -720,6 +720,31 @@ describe('provider capability checks', () => {
     })
   })
 
+  it('cancels an unread capability response when cancellation wins before body handoff', async () => {
+    const controller = new AbortController()
+    const cancel = vi.fn()
+    const plan = readyPlan('embeddings')
+    const response = new Response(new ReadableStream<Uint8Array>({ cancel }))
+
+    await expect(
+      executeProviderCapabilityRequestPlan({
+        plan: {
+          ...plan,
+          init: {
+            ...plan.init,
+            signal: controller.signal,
+          },
+        },
+        fetcher: vi.fn(() => {
+          queueMicrotask(() => controller.abort())
+          return Promise.resolve(response)
+        }),
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+
+    expect(cancel).toHaveBeenCalledTimes(1)
+  })
+
   it('wraps capability network failures with localized capability targets', async () => {
     await loadLocale('en-US')
     setRuntimeLocale('en-US')

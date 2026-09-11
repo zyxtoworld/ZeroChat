@@ -12,7 +12,7 @@ use sync_actions::{append_cloud_sync_status, append_manual_sync_controls};
 
 pub(crate) fn sync_settings(locale: &str, compact: bool, state: LinuxAppState) -> gtk::Box {
     let box_ = settings_box(compact);
-    let sync = state.snapshot.borrow().sync.clone();
+    let sync = state.sync_config();
     box_.append(&settings_text(tr(locale, "sync.compare.encrypted")));
     let mode_selector = gtk::DropDown::from_strings(&[
         tr(locale, "mode.local"),

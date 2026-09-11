@@ -18,9 +18,27 @@ import {
 } from '../syncIncrementalHelpers'
 
 const encryptedObjects = new Map<string, EncryptedObjectEnvelope>()
+const readIncrementalObject = vi.hoisted(() =>
+  vi.fn(
+    async (
+      endpoint: string,
+      token: string,
+      key: string,
+    ): Promise<EncryptedObjectEnvelope> => {
+      void endpoint
+      void token
+      void key
+      throw new Error('incremental object mock is not initialized')
+    },
+  ),
+)
 
 vi.mock('../syncIncrementalRemote', () => ({
-  readIncrementalObject: vi.fn(async (_endpoint: string, _token: string, key: string) => {
+  readIncrementalObject,
+}))
+
+readIncrementalObject.mockImplementation(
+  async (_endpoint: string, _token: string, key: string) => {
     const envelope = encryptedObjects.get(key)
 
     if (!envelope) {
@@ -28,8 +46,8 @@ vi.mock('../syncIncrementalRemote', () => ({
     }
 
     return envelope
-  }),
-}))
+  },
+)
 
 const { manifestToVault } = await import('../syncIncrementalRead')
 
@@ -73,6 +91,22 @@ function appData(patch: Partial<AppData> = {}): AppData {
     updatedAt: 10,
     version: 1,
     ...patch,
+  }
+}
+
+function providerConfig(
+  id: string,
+): AppData['providers'][number] {
+  return {
+    baseUrl: 'https://provider.example.test/v1',
+    createdAt: 10,
+    enabled: true,
+    id,
+    kind: 'openai-responses',
+    model: 'gpt-5',
+    name: 'Test provider',
+    needsApiKey: false,
+    updatedAt: 10,
   }
 }
 
@@ -305,6 +339,128 @@ describe('incremental sync read boundary', () => {
     })
   })
 
+  it('rejects duplicate conversation refs before materializing duplicate messages', async () => {
+    const manifest = await manifestWithChunk([
+      {
+        content: 'remote message',
+        createdAt: 10,
+        id: 'message-1',
+        role: 'assistant',
+        status: 'done',
+      },
+    ])
+    const ref = manifest.chunks[0]
+    expect(ref).toBeDefined()
+    manifest.chunks.push({ ...ref! })
+
+    await expect(
+      manifestToVault(endpoint, token, passphrase, manifest),
+    ).rejects.toThrow(rt('error.remoteIncrementalManifestFormat'))
+  })
+
+  it('rejects duplicate conversation identities before reading remote chunks', async () => {
+    const manifest = await manifestWithChunk([
+      {
+        content: 'remote message',
+        createdAt: 10,
+        id: 'message-1',
+        role: 'assistant',
+        status: 'done',
+      },
+    ])
+    const conversation = manifest.data.conversations[0]
+    expect(conversation).toBeDefined()
+    manifest.data.conversations.push({ ...conversation! })
+    readIncrementalObject.mockClear()
+
+    await expect(
+      manifestToVault(endpoint, token, passphrase, manifest),
+    ).rejects.toThrow()
+    expect(readIncrementalObject).not.toHaveBeenCalled()
+  })
+
+  it('rejects duplicate skill identities before reading remote chunks', async () => {
+    const manifest = await manifestWithSkillChunk('remote skill content')
+    const skill = manifest.data.skills[0]
+    expect(skill).toBeDefined()
+    manifest.data.skills.push({ ...skill! })
+    readIncrementalObject.mockClear()
+
+    await expect(
+      manifestToVault(endpoint, token, passphrase, manifest),
+    ).rejects.toThrow()
+    expect(readIncrementalObject).not.toHaveBeenCalled()
+  })
+
+  it('rejects duplicate provider identities before reading remote chunks', async () => {
+    const manifest = await manifestWithChunk(
+      [
+        {
+          content: 'remote message',
+          createdAt: 10,
+          id: 'message-1',
+          role: 'assistant',
+          status: 'done',
+        },
+      ],
+      {
+        data: appData({
+          providers: [providerConfig('provider-1'), providerConfig('provider-1')],
+        }),
+      },
+    )
+    readIncrementalObject.mockClear()
+
+    await expect(
+      manifestToVault(endpoint, token, passphrase, manifest),
+    ).rejects.toThrow()
+    expect(readIncrementalObject).not.toHaveBeenCalled()
+  })
+
+  it('rejects duplicate chunk identities within one skill before reading remote chunks', async () => {
+    const manifest = await manifestWithSkillChunk('remote skill content')
+    const skill = manifest.data.skills[0]
+    expect(skill).toBeDefined()
+    skill!.chunks.push({ ...skill!.chunks[0]! })
+    readIncrementalObject.mockClear()
+
+    await expect(
+      manifestToVault(endpoint, token, passphrase, manifest),
+    ).rejects.toThrow()
+    expect(readIncrementalObject).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['conversation', async () => {
+      const manifest = await manifestWithChunk([])
+      manifest.data.conversations[0]!.id = ''
+      return manifest
+    }],
+    ['provider', async () => {
+      const manifest = await manifestWithChunk([])
+      manifest.data.providers = [providerConfig('')]
+      return manifest
+    }],
+    ['skill', async () => {
+      const manifest = await manifestWithSkillChunk('remote skill content')
+      manifest.data.skills[0]!.id = ''
+      return manifest
+    }],
+    ['skill chunk', async () => {
+      const manifest = await manifestWithSkillChunk('remote skill content')
+      manifest.data.skills[0]!.chunks[0]!.id = ''
+      return manifest
+    }],
+  ])('rejects an empty %s identity before reading remote chunks', async (_label, buildManifest) => {
+    const manifest = await buildManifest()
+    readIncrementalObject.mockClear()
+
+    await expect(
+      manifestToVault(endpoint, token, passphrase, manifest),
+    ).rejects.toThrow()
+    expect(readIncrementalObject).not.toHaveBeenCalled()
+  })
+
   it('rejects attachment chunks whose decrypted content does not match the reference', async () => {
     const manifest = await manifestWithAttachmentChunks(
       'data:image/png;base64,iVBORw0KGgo=',
@@ -335,7 +491,50 @@ describe('incremental sync read boundary', () => {
 
     await expect(
       manifestToVault(endpoint, token, passphrase, manifest),
-    ).rejects.toThrow(rt('error.remoteMessageChunkFormat'))
+    ).rejects.toThrow(rt('error.remoteIncrementalManifestFormat'))
+  })
+
+  it('rejects non-contiguous conversation refs before reading their objects', async () => {
+    const manifest = await manifestWithChunk([
+      {
+        content: 'remote message',
+        createdAt: 10,
+        id: 'message-1',
+        role: 'assistant',
+        status: 'done',
+      },
+    ])
+    const ref = manifest.chunks[0]
+    expect(ref).toBeDefined()
+    manifest.chunks.push({
+      ...ref!,
+      index: 2,
+      key: 'chunk-11111111-1111-4111-8111-111111111112.json',
+      objectType: chunkObjectType('conversation-1', 2),
+    })
+
+    await expect(
+      manifestToVault(endpoint, token, passphrase, manifest),
+    ).rejects.toThrow(rt('error.remoteIncrementalManifestFormat'))
+  })
+
+  it('rejects a manifest whose advertised revision differs from AppData', async () => {
+    const manifest = await manifestWithChunk(
+      [
+        {
+          content: 'remote message',
+          createdAt: 10,
+          id: 'message-1',
+          role: 'assistant',
+          status: 'done',
+        },
+      ],
+      { data: appData({ updatedAt: 9 }) },
+    )
+
+    await expect(
+      manifestToVault(endpoint, token, passphrase, manifest),
+    ).rejects.toThrow(rt('error.remoteIncrementalManifestFormat'))
   })
 
   it('rejects decrypted conversation chunks with malformed messages even when the fingerprint matches', async () => {

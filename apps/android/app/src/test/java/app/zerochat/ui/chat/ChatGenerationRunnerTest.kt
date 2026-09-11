@@ -108,6 +108,33 @@ class ChatGenerationRunnerTest {
     }
 
     @Test
+    fun streamingChatDoesNotPublishWhitespaceBeforeRetryingAnEmptyResponse() = runBlocking {
+        val receivedText = StringBuilder()
+        val visibleTexts = mutableListOf<String>()
+        var streamCalls = 0
+
+        val result = runStreamingChatGenerationWithRetry(
+            receivedText = receivedText,
+            onRetry = { _, _ -> },
+            onVisibleText = { visibleTexts += it },
+            retryDelay = {},
+        ) { onDelta ->
+            streamCalls += 1
+            if (streamCalls == 1) {
+                onDelta("  \n")
+                throw IOException("empty provider response")
+            }
+
+            onDelta("Zero")
+            "Zero"
+        }
+
+        assertEquals("Zero", result)
+        assertEquals("Zero", receivedText.toString())
+        assertEquals(listOf("Zero"), visibleTexts)
+    }
+
+    @Test
     fun streamingChatDoesNotRetryAfterVisibleText() {
         val receivedText = StringBuilder()
         val retryAttempts = mutableListOf<Int>()

@@ -1,20 +1,13 @@
 import type {
   AppData,
+  ChatMessage,
+  MessageAttachment,
   ProviderSecrets,
   SyncVault,
 } from '../types'
 import { rt } from '../i18n'
-import {
-  decryptVault,
-  encryptVault,
-  isEncryptedSnapshot,
-} from './crypto'
 import type { FirstSyncStrategy } from './syncMerge'
-import {
-  MAX_SYNC_SNAPSHOT_BYTES,
-  assertSyncTextSize,
-  readSyncError,
-} from './syncHttpBody'
+import { safeProviderImageAttachmentSource } from './imageAttachmentSafety'
 
 export { DEFAULT_GIST_FILE } from './syncDefaults'
 export {
@@ -109,6 +102,19 @@ function isStringArray(value: unknown, requireNonEmpty = false): value is string
   )
 }
 
+function hasUniqueIds<T extends { id: string }>(items: readonly T[]): boolean {
+  const ids = new Set<string>()
+
+  for (const item of items) {
+    if (ids.has(item.id)) {
+      return false
+    }
+    ids.add(item.id)
+  }
+
+  return true
+}
+
 const providerCapabilities = new Set([
   'chat',
   'vision',
@@ -189,7 +195,10 @@ function isProviderShape(value: unknown): boolean {
   )
 }
 
-function isMessageAttachmentShape(value: unknown): boolean {
+function isMessageAttachmentShape(
+  value: unknown,
+  strict = false,
+): value is MessageAttachment {
   if (!isPlainRecord(value)) {
     return false
   }
@@ -217,11 +226,18 @@ function isMessageAttachmentShape(value: unknown): boolean {
     isOptionalString(value.url) &&
     isOptionalString(value.alt) &&
     isOptionalString(value.model) &&
-    isSafeNonNegativeInteger(value.createdAt)
+    isSafeNonNegativeInteger(value.createdAt) &&
+    (!strict ||
+      safeProviderImageAttachmentSource(
+        value as unknown as MessageAttachment,
+      ) !== '')
   )
 }
 
-export function isChatMessageShape(value: unknown): boolean {
+export function isChatMessageShape(
+  value: unknown,
+  strict = false,
+): value is ChatMessage {
   if (!isPlainRecord(value)) {
     return false
   }
@@ -232,6 +248,7 @@ export function isChatMessageShape(value: unknown): boolean {
       'role',
       'content',
       'createdAt',
+      'generationId',
       'status',
       'error',
       'attachments',
@@ -244,6 +261,7 @@ export function isChatMessageShape(value: unknown): boolean {
       value.role === 'assistant') &&
     typeof value.content === 'string' &&
     isSafeNonNegativeInteger(value.createdAt) &&
+    (value.generationId === undefined || isNonEmptyString(value.generationId)) &&
     (value.status === undefined ||
       value.status === 'queued' ||
       value.status === 'streaming' ||
@@ -252,7 +270,9 @@ export function isChatMessageShape(value: unknown): boolean {
     isOptionalString(value.error) &&
     (value.attachments === undefined ||
       (Array.isArray(value.attachments) &&
-        value.attachments.every(isMessageAttachmentShape))) &&
+        value.attachments.every((attachment) =>
+          isMessageAttachmentShape(attachment, strict),
+        ))) &&
     (value.queuedTextRequest === undefined ||
       (isPlainRecord(value.queuedTextRequest) &&
         hasOnlyKeys(value.queuedTextRequest, [
@@ -292,7 +312,8 @@ function isConversationShape(value: unknown): boolean {
     isNonEmptyString(value.providerId) &&
     typeof value.model === 'string' &&
     Array.isArray(value.messages) &&
-    value.messages.every(isChatMessageShape) &&
+    value.messages.every((message) => isChatMessageShape(message, true)) &&
+    hasUniqueIds(value.messages as Array<{ id: string }>) &&
     isSafeNonNegativeInteger(value.createdAt) &&
     isSafeNonNegativeInteger(value.updatedAt)
   )
@@ -360,6 +381,7 @@ function isSkillShape(value: unknown): boolean {
     Array.isArray(value.chunks) &&
     value.chunks.length > 0 &&
     value.chunks.every(isSkillChunkShape) &&
+    hasUniqueIds(value.chunks as Array<{ id: string }>) &&
     typeof value.fixed === 'boolean' &&
     typeof value.enabled === 'boolean' &&
     typeof value.autoMatch === 'boolean' &&
@@ -445,10 +467,13 @@ function isAppDataShape(value: unknown): value is AppData {
     value.version === 1 &&
     Array.isArray(value.providers) &&
     value.providers.every(isProviderShape) &&
+    hasUniqueIds(value.providers as Array<{ id: string }>) &&
     Array.isArray(value.conversations) &&
     value.conversations.every(isConversationShape) &&
+    hasUniqueIds(value.conversations as Array<{ id: string }>) &&
     Array.isArray(value.skills) &&
     value.skills.every(isSkillShape) &&
+    hasUniqueIds(value.skills) &&
     isSkillSettingsShape(value.skillSettings) &&
     isSyncConfigShape(value.sync) &&
     isPreferencesShape(value.preferences) &&
@@ -473,6 +498,10 @@ export async function parseRemoteVault(
     return null
   }
 
+  const { MAX_SYNC_SNAPSHOT_BYTES, assertSyncTextSize } = await import(
+    './syncHttpBody'
+  )
+
   assertSyncTextSize(content, MAX_SYNC_SNAPSHOT_BYTES, 'Remote sync snapshot')
 
   let parsed: unknown
@@ -482,6 +511,8 @@ export async function parseRemoteVault(
   } catch {
     throw new Error(rt('error.remoteDataInvalidJson'))
   }
+
+  const { decryptVault, isEncryptedSnapshot } = await import('./crypto')
 
   if (isEncryptedSnapshot(parsed)) {
     const vault = await decryptVault(parsed, passphrase)
@@ -501,6 +532,15 @@ export async function serializeVault(
   secrets: ProviderSecrets,
   passphrase: string,
 ): Promise<string> {
+  if (!isSyncVaultShape({ data, secrets })) {
+    throw new Error(rt('error.remoteDataBadFormat'))
+  }
+
+  const { MAX_SYNC_SNAPSHOT_BYTES, assertSyncTextSize } = await import(
+    './syncHttpBody'
+  )
+  const { encryptVault } = await import('./crypto')
+
   const envelope = await encryptVault(
     {
       data,
@@ -518,5 +558,6 @@ export async function readError(
   response: Response,
   signal?: AbortSignal,
 ): Promise<string> {
+  const { readSyncError } = await import('./syncHttpBody')
   return readSyncError(response, signal)
 }

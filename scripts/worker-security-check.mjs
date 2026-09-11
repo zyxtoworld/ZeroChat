@@ -1044,6 +1044,37 @@ await expectStatus(
   'strict CORS must reject unlisted browser origins',
 )
 
+const strictSameOriginPreflightResponse = await call(
+  {
+    ...createEnv(),
+    AUTO_ALLOWED_ORIGINS: 'false',
+    ALLOWED_ORIGINS: 'https://locked.example.com',
+    REQUIRE_ALLOWED_ORIGINS: 'true',
+  },
+  '/proxy/hosts',
+  {
+    method: 'OPTIONS',
+    headers: {
+      origin: 'https://zerochat.test',
+      'access-control-request-method': 'PUT',
+      'access-control-request-headers':
+        'content-type,x-zerochat-access-key',
+    },
+  },
+)
+
+await expectStatus(
+  strictSameOriginPreflightResponse,
+  200,
+  'strict CORS must allow the Worker-hosted app to call its own API',
+)
+await expectHeader(
+  strictSameOriginPreflightResponse,
+  'access-control-allow-origin',
+  'https://zerochat.test',
+  'strict CORS same-origin response should echo the Worker origin',
+)
+
 const permissiveConfigCorsResponse = await call(
   {
     ...createEnv(),

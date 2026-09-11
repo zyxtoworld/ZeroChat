@@ -9,8 +9,23 @@ import {
   isAndroidDeviceSelectionError,
   selectAndroidDevice,
 } from './android-device-selection.mjs'
+import {
+  ANDROID_ACTIVITY_LIFECYCLE_LOG_TAG,
+  androidActivityLifecycleEventsAfterCursor,
+  assertAndroidActivityRecreationEvents,
+  firstAndroidActivityRecreationEvents,
+  parseAndroidActivityLifecycleEvents,
+} from './android-activity-recreation-evidence.mjs'
+import { planAndroidProviderEditorStep } from './android-provider-editor-navigation.mjs'
 import { looksLikeAndroidLaunchSplashStats } from './android-screenshot-classifier.mjs'
 import { currentAndroidDebugApkEvidence } from './android-source-fingerprint.mjs'
+import {
+  androidGestureViewportFromBounds,
+  androidTapCenterIsSafe,
+  androidWindowSizeFromBounds,
+  boundedAndroidForwardScrollGesture,
+  boundedAndroidReverseScrollGesture,
+} from './android-ui-scroll-gesture.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, '..')
@@ -40,6 +55,8 @@ const ADB_COMMAND_TIMEOUT_MS = 30_000
 const APK_INSTALL_TIMEOUT_MS = 120_000
 const ADB_SCREENSHOT_TIMEOUT_MS = 30_000
 const UI_HIERARCHY_CACHE_TTL_MS = 350
+const PROVIDER_LIST_REWIND_ATTEMPTS = 12
+const PROVIDER_LIST_SCAN_ATTEMPTS = 48
 let cachedWindowSize = null
 let cachedHierarchy = null
 
@@ -239,6 +256,14 @@ function apkEvidence() {
 function readWindowSize() {
   if (cachedWindowSize) {
     return cachedWindowSize
+  }
+
+  try {
+    const rootBounds = nodeEntries(dumpVisibleXml())[0]?.bounds
+    cachedWindowSize = androidWindowSizeFromBounds(rootBounds)
+    return cachedWindowSize
+  } catch {
+    // Fall back to the physical display size when the UI hierarchy is unavailable.
   }
 
   const output = runAdb(['shell', 'wm', 'size']).trim()
@@ -478,6 +503,11 @@ const cloudSyncStatusLabels = [
   'Synchronisation',
 ]
 
+const cloudSyncSettingsActionLabels = [
+  ...settingsActionLabels,
+  ...cloudSyncStatusLabels,
+]
+
 const syncNowLabels = [
   'Sync now',
   '立即同步',
@@ -704,6 +734,7 @@ function installApk() {
 
 function resetAppState() {
   runAdb(['shell', 'am', 'force-stop', packageName])
+  runAdb(['logcat', '-c'])
 
   if (args.has('--preserve-data')) {
     return
@@ -716,7 +747,14 @@ function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
+function prepareDeviceForAppLaunch() {
+  runAdb(['shell', 'input', 'keyevent', 'KEYCODE_WAKEUP'])
+  runAdb(['shell', 'wm', 'dismiss-keyguard'])
+  runAdb(['shell', 'cmd', 'statusbar', 'collapse'])
+}
+
 function launchApp() {
+  prepareDeviceForAppLaunch()
   runAdb([
     'shell',
     'am',
@@ -733,6 +771,221 @@ function relaunchApp() {
   runAdb(['shell', 'am', 'force-stop', packageName])
   sleep(500)
   launchApp()
+}
+
+function readAndroidActivityPid() {
+  const pids = runAdb(['shell', 'pidof', packageName])
+    .trim()
+    .split(/\s+/u)
+    .filter(Boolean)
+    .map(Number)
+
+  if (
+    pids.length !== 1 ||
+    !Number.isSafeInteger(pids[0]) ||
+    pids[0] <= 0
+  ) {
+    throw new Error(`Expected exactly one running ${packageName} process.`)
+  }
+
+  return pids[0]
+}
+
+function readAndroidSystemSetting(namespace, name, minimum, maximum) {
+  const value = runAdb(['shell', 'settings', 'get', namespace, name]).trim()
+
+  if (!/^\d+$/u.test(value)) {
+    throw new Error(`Expected Android ${namespace} setting ${name} to be numeric.`)
+  }
+
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(`Android ${namespace} setting ${name} was outside its supported range.`)
+  }
+
+  return parsed
+}
+
+function writeAndroidSystemSetting(namespace, name, value) {
+  runAdb(['shell', 'settings', 'put', namespace, name, String(value)])
+}
+
+function hierarchyRotation(xml = dumpVisibleXml()) {
+  const match = xml.match(/<hierarchy\b[^>]*\brotation="([0-3])"/u)
+
+  if (!match) {
+    throw new Error('Android UI hierarchy did not report a display rotation.')
+  }
+
+  return Number(match[1])
+}
+
+function waitForHierarchyRotation(expectedRotation, label) {
+  let lastError = null
+  let lastObservedRotation = null
+
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    invalidateHierarchyCache()
+
+    try {
+      const xml = dumpVisibleXml()
+      assertZeroChatForeground(xml, label)
+      lastObservedRotation = hierarchyRotation(xml)
+
+      if (lastObservedRotation === expectedRotation) {
+        cachedWindowSize = null
+        return expectedRotation
+      }
+    } catch (error) {
+      lastError = error
+    }
+
+    sleep(500)
+  }
+
+  throw new Error(
+    `Expected Android display rotation ${expectedRotation} for ${label}; last observed ${
+      lastObservedRotation ?? 'unavailable'
+    }.${lastError instanceof Error ? ` ${lastError.message}` : ''}`,
+  )
+}
+
+function androidActivityLifecycleLog() {
+  return runAdb([
+    'logcat',
+    '-d',
+    '-v',
+    'brief',
+    '-s',
+    `${ANDROID_ACTIVITY_LIFECYCLE_LOG_TAG}:I`,
+    '*:S',
+  ], {
+    maxBuffer: 2 * 1024 * 1024,
+    timeout: 15_000,
+  })
+}
+
+function androidActivityLifecycleCursor(expectedPid) {
+  const output = androidActivityLifecycleLog()
+  const events = parseAndroidActivityLifecycleEvents(output).filter(
+    (event) => event.pid === expectedPid,
+  )
+
+  if (events.length === 0) {
+    throw new Error('Expected the current Android process to have a lifecycle log event.')
+  }
+
+  return {
+    lastInstanceId: Math.max(...events.map((event) => event.instanceId)),
+  }
+}
+
+function lifecycleEventsAfterCursor(output, expectedPid, cursor) {
+  return androidActivityLifecycleEventsAfterCursor(
+    parseAndroidActivityLifecycleEvents(output).filter(
+      (event) => event.pid === expectedPid,
+    ),
+    cursor.lastInstanceId,
+  )
+}
+
+function waitForAndroidActivityRecreation(expectedPid, lifecycleCursor, label) {
+  let lastError = null
+  let lastEvents = []
+
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const currentLog = androidActivityLifecycleLog()
+    lastEvents = lifecycleEventsAfterCursor(currentLog, expectedPid, lifecycleCursor)
+
+    try {
+      return assertAndroidActivityRecreationEvents({
+        expectedPid,
+        events: firstAndroidActivityRecreationEvents(lastEvents),
+      })
+    } catch (error) {
+      lastError = error
+    }
+
+    sleep(400)
+  }
+
+  throw new Error(
+    `Could not verify ${label}: ${
+      lastError instanceof Error ? lastError.message : 'lifecycle events were unavailable'
+    }. Events after cursor: ${JSON.stringify(lastEvents)}`,
+  )
+}
+
+function androidRotationState() {
+  invalidateHierarchyCache()
+
+  return {
+    accelerometerRotation: readAndroidSystemSetting(
+      'system',
+      'accelerometer_rotation',
+      0,
+      1,
+    ),
+    hierarchyRotation: hierarchyRotation(),
+    userRotation: readAndroidSystemSetting('system', 'user_rotation', 0, 3),
+  }
+}
+
+function restoreAndroidRotationState(rotationState) {
+  const errors = []
+  const attempt = (action) => {
+    try {
+      action()
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  attempt(() => writeAndroidSystemSetting('system', 'accelerometer_rotation', 0))
+  attempt(() => writeAndroidSystemSetting(
+    'system',
+    'user_rotation',
+    rotationState.hierarchyRotation,
+  ))
+  attempt(() => waitForHierarchyRotation(
+    rotationState.hierarchyRotation,
+    'rotation-state restoration',
+  ))
+  attempt(() => writeAndroidSystemSetting(
+    'system',
+    'user_rotation',
+    rotationState.userRotation,
+  ))
+  attempt(() => writeAndroidSystemSetting(
+    'system',
+    'accelerometer_rotation',
+    rotationState.accelerometerRotation,
+  ))
+  attempt(() => {
+    const restoredAccelerometerRotation = readAndroidSystemSetting(
+      'system',
+      'accelerometer_rotation',
+      0,
+      1,
+    )
+    const restoredUserRotation = readAndroidSystemSetting(
+      'system',
+      'user_rotation',
+      0,
+      3,
+    )
+
+    if (
+      restoredAccelerometerRotation !== rotationState.accelerometerRotation ||
+      restoredUserRotation !== rotationState.userRotation
+    ) {
+      throw new Error('Android rotation settings did not return to their original values.')
+    }
+  })
+
+  if (errors.length > 0) {
+    throw new Error(`Could not restore Android rotation state: ${errors.join(' ')}`)
+  }
 }
 
 function launchQuickAskRoute() {
@@ -1039,6 +1292,7 @@ function nodeEntries(xml) {
       focusable: attr(node, 'focusable') === 'true',
       focused: attr(node, 'focused') === 'true',
       password: attr(node, 'password') === 'true',
+      scrollable: attr(node, 'scrollable') === 'true',
     }
   })
 }
@@ -1522,6 +1776,17 @@ function findExactEntry(values) {
   ) ?? null
 }
 
+function findVisibleExactEntryInEntries(entries, values) {
+  const valueList = Array.isArray(values) ? values : [values]
+
+  return entries.find((entry) => {
+    const center = boundsCenter(entry.bounds)
+
+    return center && center.y > 160 && center.y < 2260 &&
+      valueList.some((value) => entry.text === value || entry.description === value)
+  }) ?? null
+}
+
 function findResourceEntry(resourceIdSuffix) {
   let xml = null
 
@@ -1617,7 +1882,7 @@ function findEntryWithinBounds(patterns, containerBounds, label) {
 
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const entries = nodeEntries(dumpVisibleXml())
-    const entry = entries.find((candidate) => {
+    const matchingEntries = entries.filter((candidate) => {
       const center = boundsCenter(candidate.bounds)
 
       return (
@@ -1626,6 +1891,9 @@ function findEntryWithinBounds(patterns, containerBounds, label) {
         patternList.some((pattern) => matches(candidate, pattern))
       )
     })
+    const entry = matchingEntries.sort(
+      (left, right) => Number(right.clickable) - Number(left.clickable),
+    )[0]
 
     if (entry) {
       return entry
@@ -1637,6 +1905,48 @@ function findEntryWithinBounds(patterns, containerBounds, label) {
   throw new Error(`Expected Android UI entry within ${containerBounds} for ${label}.`)
 }
 
+function findClickableEntryWithinBounds(patterns, containerBounds, label) {
+  const patternList = Array.isArray(patterns) ? patterns : [patterns]
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const entries = nodeEntries(dumpVisibleXml())
+    const textEntries = entries.filter((entry) => {
+      const center = boundsCenter(entry.bounds)
+
+      return (
+        center &&
+        boundsContainsPoint(containerBounds, center, 8) &&
+        patternList.some((pattern) => matches(entry, pattern))
+      )
+    })
+    const clickableEntries = textEntries
+      .flatMap((textEntry) => {
+        const textCenter = boundsCenter(textEntry.bounds)
+
+        return entries
+          .filter((candidate) => {
+            const center = boundsCenter(candidate.bounds)
+
+            return (
+              candidate.clickable &&
+              center &&
+              boundsContainsPoint(containerBounds, center, 8) &&
+              boundsContainsPoint(candidate.bounds, textCenter, 0)
+            )
+          })
+          .sort((left, right) => boundsArea(left.bounds) - boundsArea(right.bounds))
+      })
+
+    if (clickableEntries[0]) {
+      return clickableEntries[0]
+    }
+
+    sleep(500)
+  }
+
+  throw new Error(`Expected clickable Android UI entry within ${containerBounds} for ${label}.`)
+}
+
 function assertAndroidHomeSetupActionVisible(label) {
   return {
     kind: 'provider-key',
@@ -1645,8 +1955,8 @@ function assertAndroidHomeSetupActionVisible(label) {
 }
 
 function assertAndroidHomeCloudSyncSettingsActionOpensSyncSettings(strip) {
-  const settingsAction = findEntryWithinBounds(
-    settingsActionLabels,
+  const settingsAction = findClickableEntryWithinBounds(
+    cloudSyncSettingsActionLabels,
     strip.bounds,
     'home cloud-sync Settings action',
   )
@@ -1803,9 +2113,36 @@ function longPressText(patterns, label) {
   throw new Error(`Could not long-press Android UI text for ${label}.`)
 }
 
+function readScrollGestureViewport() {
+  const candidates = nodeEntries(dumpVisibleXml())
+    .filter((entry) => entry.packageName === packageName && entry.scrollable)
+    .flatMap((entry) => {
+      try {
+        return [androidGestureViewportFromBounds(entry.bounds)]
+      } catch {
+        return []
+      }
+    })
+    .sort((left, right) =>
+      right.width * right.height - left.width * left.height,
+    )
+
+  return candidates[0] ?? { left: 0, top: 0, ...readWindowSize() }
+}
+
 function swipeContentUp() {
   assertZeroChatForeground(dumpVisibleXml(), 'scroll')
-  runAdb(['shell', 'input', 'swipe', '540', '2100', '540', '1250', '350'])
+  const gesture = boundedAndroidForwardScrollGesture(readScrollGestureViewport())
+  runAdb([
+    'shell',
+    'input',
+    'swipe',
+    String(gesture.startX),
+    String(gesture.startY),
+    String(gesture.endX),
+    String(gesture.endY),
+    String(gesture.durationMs),
+  ])
   sleep(800)
 }
 
@@ -1817,80 +2154,186 @@ function swipeMessageListUp() {
 
 function swipeContentDown() {
   assertZeroChatForeground(dumpVisibleXml(), 'reverse scroll')
-  runAdb(['shell', 'input', 'swipe', '540', '1250', '540', '2100', '350'])
+  const gesture = boundedAndroidReverseScrollGesture(readScrollGestureViewport(), { side: 'left' })
+  runAdb([
+    'shell',
+    'input',
+    'swipe',
+    String(gesture.startX),
+    String(gesture.startY),
+    String(gesture.endX),
+    String(gesture.endY),
+    String(gesture.durationMs),
+  ])
+  sleep(800)
+}
+
+function swipeContentUpBounded() {
+  assertZeroChatForeground(dumpVisibleXml(), 'bounded content scroll')
+  const gesture = boundedAndroidForwardScrollGesture(readScrollGestureViewport())
+  runAdb([
+    'shell',
+    'input',
+    'swipe',
+    String(gesture.startX),
+    String(gesture.startY),
+    String(gesture.endX),
+    String(gesture.endY),
+    String(gesture.durationMs),
+  ])
   sleep(800)
 }
 
 function ensureProviderEditorExpanded(providerId, providerDisplayName, label) {
   const editorResourceId = `zerochat-provider-editor-${providerId}`
   const expandResourceId = `zerochat-provider-expand-${providerId}`
+  let expandedBy = null
+  let compactSummaryEvidence = null
+  let expandActionEvidence = null
+  let expandedProviderNameEvidence = null
+  let targetEditorObserved = false
+  const navigationTrace = []
+  let previousTraceSignature = null
 
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    const editor = findResourceEntry(editorResourceId)
+  const readState = () => {
+    const entries = nodeEntries(dumpVisibleXml())
+    const editor = entries.find((entry) =>
+      entry.packageName === packageName && entry.resourceId.endsWith(editorResourceId),
+    ) ?? null
+    const taggedExpand = entries.find((entry) =>
+      entry.packageName === packageName && entry.resourceId.endsWith(expandResourceId),
+    ) ?? null
+    const providerNameEditor = entries.find((entry) => {
+      const center = boundsCenter(entry.bounds)
 
-    if (editor) {
-      return {
-        providerId,
-        expandedBy: 'editor-test-tag',
-        resourceId: editor.resourceId,
-        bounds: editor.bounds,
-      }
+      return entry.packageName === packageName &&
+        entry.className === 'android.widget.EditText' &&
+        entry.enabled &&
+        entry.text === providerDisplayName &&
+        center && center.y > 160 && center.y < 2260
+    }) ?? null
+
+    return {
+      editor,
+      listTop: findVisibleExactEntryInEntries(entries, addProviderLabels),
+      providerKey: findLabeledEditTextInEntries(entries, providerKeyFieldLabels),
+      providerName: findVisibleExactEntryInEntries(entries, [providerDisplayName]),
+      providerNameEditor,
+      providerSpecificExpand: findVisibleExactEntryInEntries(entries, [
+        `Edit provider: ${providerDisplayName}`,
+      ]),
+      showMore: findVisibleExactEntryInEntries(entries, ['Show more']),
+      taggedExpand,
     }
-
-    const expand = findResourceEntry(expandResourceId)
-    const center = expand ? boundsCenter(expand.bounds) : null
-
-    if (center && center.y > 160 && center.y < 2260) {
-      runAdb(['shell', 'input', 'tap', String(center.x), String(center.y)])
-      sleep(800)
-      return {
-        providerId,
-        expandedBy: 'expand-action-test-tag',
-        resourceId: expand.resourceId,
-        bounds: expand.bounds,
-      }
-    }
-
-    const providerName = findExactEntry([providerDisplayName])
-    const providerNameCenter = providerName ? boundsCenter(providerName.bounds) : null
-    const fallbackExpand = findEntryAfter([providerDisplayName], ['Edit provider'])
-    const fallbackExpandCenter = fallbackExpand ? boundsCenter(fallbackExpand.bounds) : null
-
-    if (
-      providerNameCenter &&
-      fallbackExpandCenter &&
-      fallbackExpandCenter.y - providerNameCenter.y > 0 &&
-      fallbackExpandCenter.y - providerNameCenter.y < 500
-    ) {
-      runAdb([
-        'shell',
-        'input',
-        'tap',
-        String(fallbackExpandCenter.x),
-        String(fallbackExpandCenter.y),
-      ])
-      sleep(800)
-      return {
-        providerId,
-        expandedBy: 'adjacent-edit-action',
-        resourceId: fallbackExpand.resourceId,
-        bounds: fallbackExpand.bounds,
-      }
-    }
-
-    if (providerNameCenter) {
-      return {
-        providerId,
-        expandedBy: 'already-expanded',
-        resourceId: editor?.resourceId ?? '',
-        bounds: providerName.bounds,
-      }
-    }
-
-    sleep(400)
   }
 
-  throw new Error(`Could not expand Android provider editor for ${label}.`)
+  const runStep = (state, phase) => {
+    const taggedExpandCenter = state.taggedExpand
+      ? boundsCenter(state.taggedExpand.bounds)
+      : null
+    const step = planAndroidProviderEditorStep({
+      editorVisible: Boolean(state.editor),
+      listTopVisible: Boolean(state.listTop),
+      phase,
+      providerKeyVisible: Boolean(state.providerKey),
+      providerNameEditorVisible: Boolean(state.providerNameEditor),
+      providerNameVisible: Boolean(state.providerName),
+      providerSpecificExpandVisible: Boolean(state.providerSpecificExpand),
+      showMoreVisible: Boolean(state.showMore),
+      taggedExpandVisible: Boolean(
+        taggedExpandCenter && taggedExpandCenter.y > 160 && taggedExpandCenter.y < 2260,
+      ),
+      targetEditorObserved,
+    })
+    targetEditorObserved = step.targetEditorObserved
+    if (!expandedProviderNameEvidence && state.providerNameEditor) {
+      expandedProviderNameEvidence = {
+        text: state.providerNameEditor.text || state.providerNameEditor.description,
+        bounds: state.providerNameEditor.bounds,
+      }
+    }
+    if (step.captureCompactEvidence) {
+      const expandAction = state.providerSpecificExpand ?? state.taggedExpand
+
+      if (!compactSummaryEvidence && state.providerName) {
+        compactSummaryEvidence = {
+          text: state.providerName.text || state.providerName.description,
+          bounds: state.providerName.bounds,
+        }
+      }
+      if (!expandActionEvidence && expandAction) {
+        expandActionEvidence = {
+          text: expandAction.text || expandAction.description,
+          bounds: expandAction.bounds,
+        }
+      }
+    }
+    const traceState = {
+      action: step.action,
+      editorVisible: Boolean(state.editor),
+      phase,
+      providerKeyVisible: Boolean(state.providerKey),
+      providerNameEditorVisible: Boolean(state.providerNameEditor),
+      providerNameVisible: Boolean(state.providerName),
+      showMoreVisible: Boolean(state.showMore),
+      targetEditorObserved,
+    }
+    const traceSignature = JSON.stringify(traceState)
+
+    if (traceSignature !== previousTraceSignature) {
+      navigationTrace.push(traceState)
+      previousTraceSignature = traceSignature
+    }
+
+    if (step.action === 'resolved') {
+      const evidence = state.editor ?? state.providerKey.editText
+
+      return {
+        resolved: true,
+        value: {
+          providerId,
+          expandedBy: expandedBy ?? 'editor-test-tag',
+          resourceId: evidence.resourceId,
+          bounds: evidence.bounds,
+          summary: compactSummaryEvidence,
+          expandAction: expandActionEvidence,
+          providerName: expandedProviderNameEvidence,
+        },
+      }
+    }
+
+    if (step.action === 'tap-provider-specific-expand') {
+      tapBounds(state.providerSpecificExpand.bounds)
+      expandedBy = 'provider-specific-edit-action'
+    } else if (step.action === 'tap-tagged-expand') {
+      tapBounds(state.taggedExpand.bounds)
+      expandedBy = 'expand-action-test-tag'
+    } else if (step.action === 'tap-show-more') {
+      tapBounds(state.showMore.bounds)
+    } else if (step.action === 'rewind') {
+      swipeContentDown()
+    }
+
+    return { resolved: false, step }
+  }
+
+  for (let attempt = 0; attempt < PROVIDER_LIST_REWIND_ATTEMPTS; attempt += 1) {
+    const result = runStep(readState(), 'rewind')
+
+    if (result.resolved) return result.value
+    if (result.step.action === 'scan-forward') break
+  }
+
+  for (let attempt = 0; attempt < PROVIDER_LIST_SCAN_ATTEMPTS; attempt += 1) {
+    const result = runStep(readState(), 'scan')
+
+    if (result.resolved) return result.value
+    if (result.step.action === 'scan-forward') swipeContentUpBounded()
+  }
+
+  throw new Error(
+    `Could not expand Android provider editor for ${label}. Navigation trace: ${JSON.stringify(navigationTrace)}`,
+  )
 }
 
 function tapTextWithScroll(patterns, label) {
@@ -1917,6 +2360,10 @@ function assertVisibleWithScroll(patterns, label) {
     }
 
     swipeContentUp()
+  }
+
+  if (findEntry(patterns)) {
+    return
   }
 
   throw new Error(`Expected visible Android UI text for ${label}.`)
@@ -1946,6 +2393,10 @@ function assertVisibleWithReverseScroll(patterns, label) {
     }
 
     swipeContentDown()
+  }
+
+  if (findEntry(patterns)) {
+    return
   }
 
   throw new Error(`Expected visible Android UI text for ${label}.`)
@@ -1987,7 +2438,10 @@ function findLabeledEditText(labelPatterns) {
     return null
   }
 
-  const entries = nodeEntries(xml)
+  return findLabeledEditTextInEntries(nodeEntries(xml), labelPatterns)
+}
+
+function findLabeledEditTextInEntries(entries, labelPatterns) {
   const labels = entries
     .map((entry) => ({ entry, center: boundsCenter(entry.bounds) }))
     .filter(({ entry, center }) => center && matchesAny(entry, labelPatterns))
@@ -2015,7 +2469,7 @@ function findLabeledEditText(labelPatterns) {
 }
 
 function tapLabeledEditTextWithScroll(labelPatterns, label) {
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  for (let attempt = 0; attempt < 16; attempt += 1) {
     const match = findLabeledEditText(labelPatterns)
     const center = match ? boundsCenter(match.editText.bounds) : null
 
@@ -2042,7 +2496,7 @@ function tapLabeledEditTextWithScroll(labelPatterns, label) {
       }
     }
 
-    swipeContentUp()
+    swipeContentUpBounded()
   }
 
   throw new Error(`Could not focus Android input for ${label}.`)
@@ -2100,31 +2554,43 @@ function inputTextIntoLabeledEditText(labelPatterns, value, label) {
 }
 
 function inputSecretIntoLabeledEditText(labelPatterns, value, label) {
-  const focusedBefore = tapLabeledEditTextWithScroll(labelPatterns, label)
+  let lastError = null
 
-  if (focusedBefore.text) {
-    clearFocusedText(focusedBefore.text.length + 4)
-  }
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const focusedBefore = tapLabeledEditTextWithScroll(labelPatterns, label)
+      clearFocusedText(Math.max(focusedBefore.text.length + 8, value.length + 8, 48))
+      inputTextInChunks(value)
 
-  inputText(value)
+      for (let waitAttempt = 0; waitAttempt < 10; waitAttempt += 1) {
+        const focusedAfter = focusedEditTextEntry()
 
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const focusedAfter = focusedEditTextEntry()
+        if (
+          focusedAfter?.password &&
+          focusedAfter.text.length === value.length
+        ) {
+          return {
+            bounds: focusedAfter.bounds,
+            maskedLength: focusedAfter.text.length,
+          }
+        }
 
-    if (
-      focusedAfter?.password &&
-      focusedAfter.text.length === value.length
-    ) {
-      return {
-        bounds: focusedAfter.bounds,
-        maskedLength: focusedAfter.text.length,
+        sleep(400)
       }
-    }
 
-    sleep(400)
+      const focusedAfter = focusedEditTextEntry()
+      throw new Error(
+        `Expected a masked Android credential value for ${label}, saw ${
+          focusedAfter?.password ? focusedAfter.text.length : '<non-password>'
+        }.`,
+      )
+    } catch (error) {
+      lastError = error
+      sleep(500)
+    }
   }
 
-  throw new Error(`Expected a masked Android credential value for ${label}.`)
+  throw lastError ?? new Error(`Could not enter Android credential for ${label}.`)
 }
 
 function assertEmptySecretInputWithScroll(labelPatterns, label) {
@@ -2168,6 +2634,180 @@ function assertSecretInputMaskedLengthWithScroll(labelPatterns, expectedLength, 
       focused?.password ? focused.text.length : '<non-password>'
     }.`,
   )
+}
+
+function ensureSettingsSheetOpen(label) {
+  const xml = dumpVisibleXml()
+  const entries = nodeEntries(xml)
+
+  if (entries.some((entry) => matchesAny(entry, settingsSheetLabels))) {
+    return
+  }
+
+  const settingsEntry = entries.find((entry) =>
+    entry.packageName === packageName && entry.resourceId.endsWith('zerochat-topbar-settings'),
+  )
+  const center = settingsEntry ? boundsCenter(settingsEntry.bounds) : null
+  const viewport = androidGestureViewportFromBounds(entries[0]?.bounds)
+
+  if (
+    !settingsEntry ||
+    !settingsEntry.clickable ||
+    !settingsEntry.enabled ||
+    !center ||
+    !androidTapCenterIsSafe(center, viewport)
+  ) {
+    throw new Error(`Could not reopen Android Settings after Activity recreation for ${label}.`)
+  }
+
+  tapBounds(settingsEntry.bounds)
+  assertVisible(settingsSheetLabels, `${label} settings sheet`)
+}
+
+function assertCommittedOpenAiProviderCredential(expectedLength, label) {
+  ensureSettingsSheetOpen(label)
+  tapText(['Providers', 'AI providers', 'AI 服务'], `${label} Providers tab`)
+  ensureProviderEditorExpanded('openai', 'OpenAI', label)
+  const credential = assertSecretInputMaskedLengthWithScroll(
+    providerKeyFieldLabels,
+    expectedLength,
+    label,
+  )
+  hideKeyboardIfShown()
+  const saveAction = assertTextButtonEnabledWithScroll(
+    ['Save'],
+    false,
+    `${label} Save`,
+  )
+
+  return {
+    maskedLength: credential.maskedLength,
+    providerId: 'openai',
+    saveActionDisabled: true,
+    saveActionBounds: saveAction.bounds,
+  }
+}
+
+function proveAndroidActivityRecreation(expectedCredentialLength) {
+  const rotationState = androidRotationState()
+  const expectedPid = readAndroidActivityPid()
+  const targetRotation = rotationState.hierarchyRotation % 2 === 0 ? 1 : 0
+  let operationError = null
+  let proof = null
+
+  try {
+    writeAndroidSystemSetting('system', 'accelerometer_rotation', 0)
+    sleep(400)
+
+    const targetLogCursor = androidActivityLifecycleCursor(expectedPid)
+    writeAndroidSystemSetting('system', 'user_rotation', targetRotation)
+    waitForHierarchyRotation(targetRotation, 'injected Activity recreation')
+    const rotatedLifecycle = waitForAndroidActivityRecreation(
+      expectedPid,
+      targetLogCursor,
+      'injected Activity recreation',
+    )
+    if (readAndroidActivityPid() !== expectedPid) {
+      throw new Error('Android process changed after the injected Activity recreation.')
+    }
+    const rotatedProvider = assertCommittedOpenAiProviderCredential(
+      expectedCredentialLength,
+      'rotated Activity recreation',
+    )
+    const rotatedScreenshot = captureSettledAndroidScreenshot(
+      'android-ui-smoke-04c-activity-recreation.png',
+      'rotated Activity recreation',
+    )
+
+    const restoreLogCursor = androidActivityLifecycleCursor(expectedPid)
+    writeAndroidSystemSetting(
+      'system',
+      'user_rotation',
+      rotationState.hierarchyRotation,
+    )
+    waitForHierarchyRotation(
+      rotationState.hierarchyRotation,
+      'Activity recreation orientation restore',
+    )
+    const restoredLifecycle = waitForAndroidActivityRecreation(
+      expectedPid,
+      restoreLogCursor,
+      'Activity recreation orientation restore',
+    )
+    if (readAndroidActivityPid() !== expectedPid) {
+      throw new Error('Android process changed while restoring the Activity orientation.')
+    }
+    const restoredProvider = assertCommittedOpenAiProviderCredential(
+      expectedCredentialLength,
+      'restored Activity recreation',
+    )
+    const restoredScreenshot = captureSettledAndroidScreenshot(
+      'android-ui-smoke-04d-activity-recreation-restored.png',
+      'restored Activity recreation',
+    )
+
+    proof = {
+      credentialPlaintextReported: false,
+      expectedPid,
+      originalRotation: rotationState.hierarchyRotation,
+      targetRotation,
+      rotatedLifecycle,
+      rotatedProvider,
+      rotatedScreenshot,
+      restoredLifecycle,
+      restoredProvider,
+      restoredScreenshot,
+      sameApplicationProcess: true,
+    }
+  } catch (error) {
+    try {
+      capture('android-ui-smoke-activity-recreation-failure-current.png')
+    } catch {
+      // Preserve the lifecycle assertion error when screenshot capture is unavailable.
+    }
+    try {
+      writeFileSync(
+        path.join(
+          screenshotDir,
+          'android-ui-smoke-activity-recreation-failure-window.xml',
+        ),
+        dumpVisibleXml(),
+      )
+    } catch {
+      // Rotation restoration remains mandatory even when hierarchy capture fails.
+    }
+    operationError = error
+  }
+
+  let restorationError = null
+  try {
+    restoreAndroidRotationState(rotationState)
+  } catch (error) {
+    restorationError = error
+  }
+
+  if (operationError) {
+    if (restorationError) {
+      throw new Error(
+        `${operationError instanceof Error ? operationError.message : String(operationError)} ` +
+          `${restorationError instanceof Error ? restorationError.message : String(restorationError)}`,
+        { cause: operationError },
+      )
+    }
+
+    throw operationError
+  }
+
+  if (restorationError) {
+    throw restorationError
+  }
+
+  return {
+    ...proof,
+    originalAccelerometerRotation: rotationState.accelerometerRotation,
+    originalUserRotation: rotationState.userRotation,
+    rotationSettingsRestored: true,
+  }
 }
 
 function findTextButton(patterns) {
@@ -2215,7 +2855,7 @@ function assertTextButtonEnabledWithScroll(patterns, expected, label) {
     }
 
     if (attempt > 3) {
-      swipeContentUp()
+      swipeContentUpBounded()
     } else {
       sleep(400)
     }
@@ -2240,7 +2880,7 @@ function tapEnabledTextButtonWithScroll(patterns, label) {
     }
 
     if (attempt > 3) {
-      swipeContentUp()
+      swipeContentUpBounded()
     } else {
       sleep(400)
     }
@@ -2290,15 +2930,19 @@ function clearFocusedText(characterCount) {
 
     const focusedText = focusedEditTextValue()
 
-    if (!focusedText) {
+    if (focusedText === '') {
       return
     }
 
-    runAdb(['shell', 'input', 'keyevent', 'KEYCODE_MOVE_END'])
-    for (let index = 0; index < Math.min(focusedText.length + 4, 80); index += 1) {
-      runAdb(['shell', 'input', 'keyevent', 'KEYCODE_DEL'])
+    if (focusedText) {
+      runAdb(['shell', 'input', 'keyevent', 'KEYCODE_MOVE_END'])
+      for (let index = 0; index < Math.min(focusedText.length + 4, 80); index += 1) {
+        runAdb(['shell', 'input', 'keyevent', 'KEYCODE_DEL'])
+      }
     }
   }
+
+  throw new Error('Could not clear the focused Android input.')
 }
 
 function clearFocusedTextBlind(characterCount) {
@@ -2317,27 +2961,18 @@ function hideKeyboardIfShown() {
   }
 }
 
-function isSafeTapCenter(center) {
-  if (!center) {
-    return false
-  }
-
-  const { width, height } = readWindowSize()
-
-  return center.x > 24 && center.x < width - 24 && center.y > 140 && center.y < height - 240
-}
-
 function findNearestCheckboxBeforeLabel(label, options = {}) {
   const { requireSafeTap = false } = options
   const xml = dumpVisibleXml()
   assertZeroChatForeground(xml, `finding ${label} checkbox`)
   const entries = nodeEntries(xml)
+  const viewport = androidGestureViewportFromBounds(entries[0]?.bounds)
   const labelEntries = entries
     .map((entry) => ({ entry, center: boundsCenter(entry.bounds) }))
     .filter(({ entry, center }) =>
       center &&
       (entry.text === label || entry.description === label) &&
-      (!requireSafeTap || isSafeTapCenter(center)),
+      (!requireSafeTap || androidTapCenterIsSafe(center, viewport)),
     )
     .sort((a, b) => a.center.y - b.center.y)
 
@@ -2348,7 +2983,7 @@ function findNearestCheckboxBeforeLabel(label, options = {}) {
         center &&
         entry.className === 'android.widget.CheckBox' &&
         Math.abs(center.y - labelEntry.center.y) < 90 &&
-        (!requireSafeTap || isSafeTapCenter(center)),
+        (!requireSafeTap || androidTapCenterIsSafe(center, viewport)),
       )
       .sort((a, b) => {
         const aBefore = a.center.x < labelEntry.center.x ? 0 : 1
@@ -2374,7 +3009,7 @@ function tapCheckboxBeforeLabel(label, description) {
     const checkbox = findNearestCheckboxBeforeLabel(label, { requireSafeTap: true })
     const center = checkbox ? boundsCenter(checkbox.bounds) : null
 
-    if (isSafeTapCenter(center)) {
+    if (center) {
       runAdb(['shell', 'input', 'tap', String(center.x), String(center.y)])
       sleep(800)
       return
@@ -2466,23 +3101,6 @@ function tapTextAfter(anchorPatterns, targetPatterns, label) {
   }
 
   throw new Error(`Could not tap Android UI text after anchor for ${label}.`)
-}
-
-function tapTextAfterWithScroll(anchorPatterns, targetPatterns, label) {
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    const entry = findEntryAfter(anchorPatterns, targetPatterns)
-    const center = entry ? boundsCenter(entry.bounds) : null
-
-    if (center && center.y > 160 && center.y < 2260) {
-      runAdb(['shell', 'input', 'tap', String(center.x), String(center.y)])
-      sleep(800)
-      return entry
-    }
-
-    swipeContentUp()
-  }
-
-  throw new Error(`Could not tap Android UI text after anchor while scrolling for ${label}.`)
 }
 
 function capture(name) {
@@ -3024,6 +3642,7 @@ let homeSetupAction = null
 let homeCloudSyncSettingsProof = null
 let providerConnectionStatus = null
 let providerExpansion = null
+let activityRecreation = null
 let imeSmoke = null
 let compactImageInpaint = null
 let skillsInputProof = null
@@ -3200,11 +3819,6 @@ try {
   tapText(['Providers', 'AI providers', 'AI 服务'], 'Providers tab')
   assertVisible(addProviderLabels, 'AI providers add action')
   assertVisible(['Not connected'], 'provider connection status')
-  const backupProviderEditor = ensureProviderEditorExpanded(
-    'openai',
-    'OpenAI',
-    'OpenAI backup Provider fixture',
-  )
   const providerStatusEntry = findEntry(['Not connected'])
   providerConnectionStatus = providerStatusEntry
     ? {
@@ -3212,10 +3826,12 @@ try {
         bounds: providerStatusEntry.bounds,
       }
     : null
+  const backupProviderEditor = ensureProviderEditorExpanded(
+    'openai',
+    'OpenAI',
+    'OpenAI backup Provider fixture',
+  )
   assertVisibleWithScroll(providerKeyFieldLabels, 'provider key field')
-  assertVisibleWithScroll(['Base URL'], 'provider Base URL field')
-  screenshots.push(capture('android-ui-smoke-04-providers.png'))
-
   const exportedProviderCredentialFixture = 'AndroidBackupProviderAlpha'
   const overwrittenProviderCredentialFixture = 'AndroidBackupProviderReplacementLong'
   if (exportedProviderCredentialFixture.length === overwrittenProviderCredentialFixture.length) {
@@ -3227,10 +3843,17 @@ try {
     'OpenAI backup Provider credential fixture',
   )
   hideKeyboardIfShown()
+  assertVisibleWithScroll(['Base URL'], 'provider Base URL field')
+  screenshots.push(capture('android-ui-smoke-04-providers.png'))
   assertTextButtonEnabledWithScroll(['Save'], true, 'OpenAI Provider key Save before backup export')
   tapEnabledTextButtonWithScroll(['Save'], 'save OpenAI Provider key before backup export')
   assertTextButtonEnabledWithScroll(['Save'], false, 'OpenAI Provider key Save after backup fixture commit')
   assertVisibleWithReverseScroll(['Connected'], 'OpenAI Provider connected status after backup fixture commit')
+  ensureProviderEditorExpanded(
+    'openai',
+    'OpenAI',
+    'committed OpenAI Provider credential before backup export',
+  )
   const committedProviderCredential = assertSecretInputMaskedLengthWithScroll(
     providerKeyFieldLabels,
     exportedProviderCredentialFixture.length,
@@ -3240,20 +3863,33 @@ try {
   const providerCredentialSavedScreenshot = capture('android-ui-smoke-04b-provider-key-saved.png')
   screenshots.push(providerCredentialSavedScreenshot)
 
-  assertVisibleWithScroll(['Anthropic'], 'compact Anthropic provider summary')
-  const providerSummary = findExactEntry(['Anthropic'])
-  if (!providerSummary) {
-    throw new Error('Expected an exact Anthropic provider summary label.')
-  }
-  const providerExpandAction = tapTextAfterWithScroll(
-    ['Anthropic'],
-    ['Edit provider'],
-    'expand Anthropic provider editor',
+  setCurrentStep('Settings provider Activity recreation')
+  activityRecreation = proveAndroidActivityRecreation(
+    exportedProviderCredentialFixture.length,
   )
-  assertVisible(['Anthropic'], 'expanded Anthropic provider name')
-  const anthropicProviderName = findExactEntry(['Anthropic'])
-  if (!anthropicProviderName) {
-    throw new Error('Expected Anthropic provider name after expanding its editor.')
+  screenshots.push(
+    activityRecreation.rotatedScreenshot,
+    activityRecreation.restoredScreenshot,
+  )
+
+  setCurrentStep('Settings providers after Activity recreation')
+
+  const anthropicProviderEditor = ensureProviderEditorExpanded(
+    'anthropic',
+    'Anthropic',
+    'Anthropic secondary Provider editor',
+  )
+  const providerSummary = anthropicProviderEditor.summary
+  const providerExpandAction = anthropicProviderEditor.expandAction
+  const anthropicProviderName = anthropicProviderEditor.providerName
+  if (providerSummary?.text !== 'Anthropic') {
+    throw new Error('Expected exact compact Anthropic provider summary evidence before expansion.')
+  }
+  if (providerExpandAction?.text !== 'Edit provider: Anthropic') {
+    throw new Error('Expected Provider-specific Anthropic edit-action evidence before expansion.')
+  }
+  if (anthropicProviderName?.text !== 'Anthropic') {
+    throw new Error('Expected editable Anthropic provider-name evidence after expansion.')
   }
   const providerExpansionScreenshot = capture('android-ui-smoke-04a-provider-expanded.png')
   screenshots.push(providerExpansionScreenshot)
@@ -3414,6 +4050,11 @@ try {
   assertTextButtonEnabledWithScroll(['Save'], true, 'OpenAI Provider key Save before overwrite')
   tapEnabledTextButtonWithScroll(['Save'], 'overwrite OpenAI Provider key after backup export')
   assertTextButtonEnabledWithScroll(['Save'], false, 'OpenAI Provider key Save after overwrite')
+  ensureProviderEditorExpanded(
+    'openai',
+    'OpenAI',
+    'committed OpenAI Provider credential overwrite',
+  )
   const committedOverwrittenProviderCredential = assertSecretInputMaskedLengthWithScroll(
     providerKeyFieldLabels,
     overwrittenProviderCredentialFixture.length,
@@ -3893,6 +4534,7 @@ try {
     homeSetupAction,
     providerConnectionStatus,
     providerExpansion,
+    activityRecreation,
     syncNotificationChannel,
     skillsInputProof,
     quickAskWidget,

@@ -1,13 +1,13 @@
 use crate::{
     LinuxAppState,
     ai_protocol::{provider_proxy_access_key, provider_request},
-    background::{poll_background_result, spawn_model_list_request},
+    background::{BACKGROUND_TASK_DISCONNECTED, poll_background_result, spawn_model_list_request},
     i18n::{localize_ai_error, replace_placeholders, tr},
     models::ProviderConfig,
     providers::{
         apply_configured_provider_models, apply_fetched_provider_models,
         ensure_provider_model_present, model_capability_keys, parse_model_list,
-        provider_display_name, provider_key_missing,
+        provider_display_name, provider_key_missing, provider_request_is_current,
     },
     ui_helpers::{editable_entry, optional_text, settings_box, settings_card, settings_text},
 };
@@ -85,9 +85,9 @@ pub(crate) fn model_settings(locale: &str, compact: bool, state: LinuxAppState) 
             let provider_id = provider_id.clone();
             let models_entry = models_entry.clone();
             let default_model_entry = default_model_entry.clone();
-            let manual_model_entry = manual_model_entry.clone();
+            let manual_model_entry_for_add = manual_model_entry.clone();
             let add_manual_models = move || {
-                let values = parse_model_list(&manual_model_entry.text());
+                let values = parse_model_list(&manual_model_entry_for_add.text());
                 if values.is_empty() {
                     return;
                 }
@@ -108,7 +108,7 @@ pub(crate) fn model_settings(locale: &str, compact: bool, state: LinuxAppState) 
                 state.update_provider_config(&provider_id, |provider| {
                     apply_configured_provider_models(provider, merged_for_state);
                 });
-                manual_model_entry.set_text("");
+                manual_model_entry_for_add.set_text("");
             };
             let add_manual_models = std::rc::Rc::new(add_manual_models);
             {
@@ -264,95 +264,86 @@ fn run_model_fetch(
 
     let locale = locale.to_owned();
     let provider_id = provider_id.to_owned();
-    poll_background_result(receiver, move |result| {
-        button.set_sensitive(true);
-        button.set_label(tr(&locale, "button.fetchModels"));
-        match result {
-            Ok(models) => {
-                let Some(current_provider) = state.provider(&provider_id) else {
-                    status.set_text("");
-                    return;
-                };
-                let current_request_provider =
-                    provider_request(&current_provider, &state.sync_config());
-                let current_api_key = state.provider_key(&provider_id);
-                let current_access_key =
-                    provider_proxy_access_key(&current_request_provider, || {
-                        state.cloudflare_access_key()
+    poll_background_result(
+        receiver,
+        move |result| {
+            button.set_sensitive(true);
+            button.set_label(tr(&locale, "button.fetchModels"));
+            match result {
+                Ok(models) => {
+                    let Some(current_provider) = state.provider(&provider_id) else {
+                        status.set_text("");
+                        return;
+                    };
+                    let current_request_provider =
+                        provider_request(&current_provider, &state.sync_config());
+                    let current_api_key = state.provider_key(&provider_id);
+                    let current_access_key =
+                        provider_proxy_access_key(&current_request_provider, || {
+                            state.cloudflare_access_key()
+                        });
+                    if !provider_request_is_current(
+                        &request_provider,
+                        &current_request_provider,
+                        &api_key,
+                        &current_api_key,
+                        &access_key,
+                        &current_access_key,
+                    ) {
+                        status.set_text("");
+                        return;
+                    }
+
+                    let mut preview_provider = provider.clone();
+                    apply_fetched_provider_models(&mut preview_provider, models.clone());
+                    let mut applied_provider = None;
+                    state.update_provider_config(&provider_id, |provider| {
+                        apply_fetched_provider_models(provider, models.clone());
+                        applied_provider = Some(provider.clone());
                     });
-                if !model_fetch_request_is_current(
-                    &request_provider,
-                    &current_request_provider,
-                    &api_key,
-                    &current_api_key,
-                    &access_key,
-                    &current_access_key,
-                ) {
-                    status.set_text("");
-                    return;
+                    let Some(applied_provider) = applied_provider else {
+                        status.set_text("");
+                        return;
+                    };
+                    if applied_provider.models != preview_provider.models
+                        || applied_provider.model != preview_provider.model
+                        || applied_provider.image_model != preview_provider.image_model
+                    {
+                        status.set_text("");
+                        return;
+                    }
+                    models_entry.set_text(&preview_provider.models.join(" "));
+                    default_model_entry.set_text(&preview_provider.model);
+
+                    let count = models.len().to_string();
+                    status.set_text(&replace_placeholders(
+                        tr(&locale, "notice.modelsFetched"),
+                        &[("{count}", &count)],
+                    ));
                 }
-
-                let mut preview_provider = provider.clone();
-                apply_fetched_provider_models(&mut preview_provider, models.clone());
-                let mut applied_provider = None;
-                state.update_provider_config(&provider_id, |provider| {
-                    apply_fetched_provider_models(provider, models.clone());
-                    applied_provider = Some(provider.clone());
-                });
-                let Some(applied_provider) = applied_provider else {
-                    status.set_text("");
-                    return;
-                };
-                if applied_provider.models != preview_provider.models
-                    || applied_provider.model != preview_provider.model
-                    || applied_provider.image_model != preview_provider.image_model
-                {
-                    status.set_text("");
-                    return;
+                Err(message) => {
+                    let message = localize_ai_error(&locale, &message);
+                    status.set_text(&replace_placeholders(
+                        tr(&locale, "notice.modelsFetchFailed"),
+                        &[("{message}", &message)],
+                    ));
                 }
-                models_entry.set_text(&preview_provider.models.join(" "));
-                default_model_entry.set_text(&preview_provider.model);
-
-                let count = models.len().to_string();
-                status.set_text(&replace_placeholders(
-                    tr(&locale, "notice.modelsFetched"),
-                    &[("{count}", &count)],
-                ));
             }
-            Err(message) => {
-                let message = localize_ai_error(&locale, &message);
-                status.set_text(&replace_placeholders(
-                    tr(&locale, "notice.modelsFetchFailed"),
-                    &[("{message}", &message)],
-                ));
-            }
-        }
-    });
-}
-
-fn model_fetch_request_is_current(
-    requested_provider: &ProviderConfig,
-    current_provider: &ProviderConfig,
-    requested_api_key: &str,
-    current_api_key: &str,
-    requested_access_key: &str,
-    current_access_key: &str,
-) -> bool {
-    requested_provider == current_provider
-        && requested_api_key == current_api_key
-        && requested_access_key == current_access_key
+        },
+        || Err(BACKGROUND_TASK_DISCONNECTED.to_owned()),
+    );
 }
 
 #[cfg(test)]
 mod tests {
-    use super::model_fetch_request_is_current;
     use crate::defaults::default_snapshot;
+    use crate::providers::provider_request_is_current;
 
     #[test]
     fn model_fetch_result_is_owned_by_the_exact_provider_request_and_credentials() {
         let provider = default_snapshot().providers[0].clone();
 
-        assert!(model_fetch_request_is_current(
+        assert!(provider_request_is_current(
             &provider,
             &provider,
             "provider-key",
@@ -363,7 +354,7 @@ mod tests {
 
         let mut changed_provider = provider.clone();
         changed_provider.base_url.push_str("/changed");
-        assert!(!model_fetch_request_is_current(
+        assert!(!provider_request_is_current(
             &provider,
             &changed_provider,
             "provider-key",
@@ -371,7 +362,7 @@ mod tests {
             "access-key",
             "access-key",
         ));
-        assert!(!model_fetch_request_is_current(
+        assert!(!provider_request_is_current(
             &provider,
             &provider,
             "provider-key",
@@ -379,7 +370,7 @@ mod tests {
             "access-key",
             "access-key",
         ));
-        assert!(!model_fetch_request_is_current(
+        assert!(!provider_request_is_current(
             &provider,
             &provider,
             "provider-key",

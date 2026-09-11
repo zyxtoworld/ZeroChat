@@ -22,9 +22,9 @@ function optionValue(name) {
   return index >= 0 ? rawArgs[index + 1] : undefined
 }
 
-function withVisualSmokeParam(value) {
+function withBrowserSmokeParam(value) {
   const url = new URL(value)
-  url.searchParams.set('zerochat-visual-smoke', '1')
+  url.searchParams.set('app-test', '1')
   return url.href
 }
 
@@ -38,7 +38,7 @@ const autoPreviewRequested = rawArgs.includes('--auto-preview')
 const autoPreviewDisabled = rawArgs.includes('--no-auto-preview')
 const jsonOutputRequested = rawArgs.includes('--json')
 const autoPreviewEnabled = !autoPreviewDisabled && (autoPreviewRequested || explicitUrl === '')
-let appUrl = explicitUrl ? withVisualSmokeParam(new URL(explicitUrl).href) : ''
+let appUrl = explicitUrl ? new URL(explicitUrl).href : ''
 
 function assertLocalUrl(value) {
   const url = new URL(value)
@@ -181,7 +181,7 @@ function printReportSummary(report) {
     `- Preview: ${report.preview.autoStarted ? 'auto-started temporary Vite preview' : 'already-running local target'}`,
     `- Screenshots: ${report.visualAudit.screenshotCount}/${report.visualAudit.expectedScreenshotCount}`,
     `- Browser smoke: ${report.browserSmoke.passed ? 'passed' : 'failed'}`,
-    `- Sync settings click proofs: ${report.iconSyncDom.syncSettingsOpenProofCount}`,
+    `- Settings to Sync proof: ${report.iconSyncDom.syncSettingsOpened ? 'passed' : 'failed'}`,
     `- Web source digest: ${report.webSource.digest}`,
     `- Full JSON: rerun with --json or read ${path.relative(repoRoot, reportPath)}`,
   ].join('\n'))
@@ -216,9 +216,10 @@ try {
       path.join(repoRoot, 'scripts', 'web-production-build.mjs'),
     )
     preview = await startPreview(appUrl)
-    appUrl = withVisualSmokeParam(preview.server.url)
+    appUrl = preview.server.url
   }
 
+  appUrl = withBrowserSmokeParam(appUrl)
   assertLocalUrl(appUrl)
   await assertZeroChatTarget(appUrl)
 
@@ -262,11 +263,13 @@ try {
       reportEvidence: await fileEvidence(iconSyncDomReportPath),
       generatedAt: iconSyncDomReport.generatedAt,
       visibleFaviconLogoCount: iconSyncDomReport.visibleFaviconLogoCount,
-      visibleExactSyncControlCount: iconSyncDomReport.visibleExactSyncControlCount,
-      visibleExactSyncAriaCount: iconSyncDomReport.visibleExactSyncAriaCount,
-      clickableExactSyncControlCount: iconSyncDomReport.clickableExactSyncControlCount,
-      clickableExactSyncAriaCount: iconSyncDomReport.clickableExactSyncAriaCount,
-      syncSettingsOpenProofCount: iconSyncDomReport.syncSettingsOpenProofCount,
+      visibleDeprecatedSyncControlCount:
+        iconSyncDomReport.visibleDeprecatedSyncControlCount,
+      visibleDeprecatedSyncAriaCount:
+        iconSyncDomReport.visibleDeprecatedSyncAriaCount,
+      settingsEntryActionable: iconSyncDomReport.settingsEntryActionable,
+      syncSettingsOpened: iconSyncDomReport.syncSettingsOpenProof?.opened,
+      syncSettingsTabId: iconSyncDomReport.syncSettingsOpenProof?.activeTabId,
       passed: iconSyncDomReport.passed,
     },
     webSource: await webCurrentPageSourceManifest({ repoRoot }),

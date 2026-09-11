@@ -1,5 +1,6 @@
 use crate::{
     LinuxAppState,
+    atomic_file::write_private_file_atomically,
     dialogs::{RESPONSE_ACCEPT, destructive_confirmation_dialog},
     i18n::{localize_sync_error, tr},
     local_file::{
@@ -9,7 +10,6 @@ use crate::{
     set_window_content,
 };
 use adw::prelude::*;
-use std::fs;
 
 pub(crate) fn show_export_encrypted_backup_dialog(
     locale: &str,
@@ -17,13 +17,7 @@ pub(crate) fn show_export_encrypted_backup_dialog(
     state: LinuxAppState,
     status: gtk::Label,
 ) {
-    if state
-        .secrets
-        .sync_passphrase()
-        .unwrap_or_default()
-        .trim()
-        .is_empty()
-    {
+    if state.sync_passphrase().trim().is_empty() {
         status.set_text(tr(locale, "notice.backupExportNeedsPassphrase"));
         return;
     }
@@ -63,7 +57,8 @@ pub(crate) fn show_export_encrypted_backup_dialog(
                                 MAX_ENCRYPTED_BACKUP_FILE_BYTES,
                                 &too_large,
                             )?;
-                            fs::write(path, text).map_err(|error| error.to_string())
+                            write_private_file_atomically(&path, text.as_bytes())
+                                .map_err(|error| error.to_string())
                         })
                 });
 
@@ -88,13 +83,7 @@ pub(crate) fn confirm_import_encrypted_backup(
     state: LinuxAppState,
     status: gtk::Label,
 ) {
-    if state
-        .secrets
-        .sync_passphrase()
-        .unwrap_or_default()
-        .trim()
-        .is_empty()
-    {
+    if state.sync_passphrase().trim().is_empty() {
         status.set_text(tr(locale, "notice.backupImportNeedsPassphrase"));
         return;
     }
@@ -221,9 +210,9 @@ fn localize_backup_error(locale: &str, message: &str) -> String {
 }
 
 fn backup_file_name() -> String {
-    let date = glib::DateTime::now_local()
+    let date = gtk::glib::DateTime::now_local()
         .and_then(|value| value.format("%Y-%m-%d"))
         .map(|value| value.to_string())
-        .unwrap_or_else(|| "backup".to_owned());
+        .unwrap_or_else(|_| "backup".to_owned());
     format!("zerochat-encrypted-{date}.json")
 }

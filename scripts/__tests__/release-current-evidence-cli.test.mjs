@@ -6,6 +6,7 @@ import {
   currentEvidenceCliFlags,
   currentEvidenceUsage,
   parseCurrentEvidenceCliArgs,
+  shouldAllowStaleVerifyReleaseCheckpointForWriteDocs,
 } from '../release-current-evidence-cli.mjs'
 
 describe('current evidence CLI', () => {
@@ -58,6 +59,31 @@ describe('current evidence CLI', () => {
       expect(usage).toContain(flag)
     }
     expect(usage).toContain('without reading evidence or writing documents')
+  })
+
+  it('allows a stale checkpoint only for the verifier-owned write-docs bootstrap', () => {
+    expect(
+      shouldAllowStaleVerifyReleaseCheckpointForWriteDocs({
+        mode: 'write-docs',
+        environment: { ZEROCHAT_ALLOW_STALE_VERIFY_RELEASE_CHECKPOINT: '1' },
+      }),
+    ).toBe(true)
+
+    for (const [mode, value] of [
+      ['report', '1'],
+      ['check', '1'],
+      ['write-docs', undefined],
+      ['write-docs', 'true'],
+    ]) {
+      expect(
+        shouldAllowStaleVerifyReleaseCheckpointForWriteDocs({
+          mode,
+          environment: value
+            ? { ZEROCHAT_ALLOW_STALE_VERIFY_RELEASE_CHECKPOINT: value }
+            : {},
+        }),
+      ).toBe(false)
+    }
   })
 
   it('parses CLI arguments before it establishes evidence paths or document writers', async () => {

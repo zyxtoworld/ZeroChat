@@ -23,6 +23,7 @@ import {
   readSyncResponseJson,
   readSyncResponseText,
 } from './syncHttpBody'
+import { assertRemoteWriteAllowed } from './syncRemoteWriteGuard'
 
 const INCREMENTAL_HEAD_PATH = '/sync/head'
 const INCREMENTAL_OBJECT_PATH = '/sync/object'
@@ -180,7 +181,9 @@ export async function writeIncrementalObject(
   envelope: EncryptedObjectEnvelope,
   generation: string,
   signal?: AbortSignal,
+  shouldDeferRemoteWrite?: () => boolean,
 ): Promise<void> {
+  assertRemoteWriteAllowed({ shouldDeferRemoteWrite })
   const serialized = JSON.stringify(envelope)
   assertSyncTextSize(
     serialized,
@@ -216,7 +219,9 @@ export async function deleteIncrementalObject(
   key: string,
   generation: string,
   signal?: AbortSignal,
+  shouldDeferRemoteWrite?: () => boolean,
 ): Promise<void> {
+  assertRemoteWriteAllowed({ shouldDeferRemoteWrite })
   await fetchSync(
     `${endpoint}${INCREMENTAL_OBJECT_PATH}/${encodeURIComponent(key)}`,
     {
@@ -243,7 +248,9 @@ export async function deleteIncrementalHead(
   token: string,
   generation: string,
   signal?: AbortSignal,
+  shouldDeferRemoteWrite?: () => boolean,
 ): Promise<void> {
+  assertRemoteWriteAllowed({ shouldDeferRemoteWrite })
   await fetchSync(
     `${endpoint}${INCREMENTAL_HEAD_PATH}`,
     {
@@ -272,7 +279,9 @@ export async function writeIncrementalHead(
   previousHead: IncrementalSyncHead | null,
   generation: string,
   signal?: AbortSignal,
+  shouldDeferRemoteWrite?: () => boolean,
 ): Promise<void> {
+  assertRemoteWriteAllowed({ shouldDeferRemoteWrite })
   const serialized = JSON.stringify(head)
   assertSyncTextSize(
     serialized,
@@ -314,7 +323,9 @@ export async function deleteLegacySnapshot(
   token: string,
   generation: string | undefined,
   signal?: AbortSignal,
+  shouldDeferRemoteWrite?: () => boolean,
 ): Promise<void> {
+  assertRemoteWriteAllowed({ shouldDeferRemoteWrite })
   await fetchSync(
     `${endpoint}/snapshot`,
     {

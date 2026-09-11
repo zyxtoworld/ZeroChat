@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { loadLocale, setRuntimeLocale } from '../../i18n'
 import type { ProviderConfig } from '../../types'
@@ -30,6 +30,10 @@ function provider(patch: Partial<ProviderConfig> = {}): ProviderConfig {
   }
 }
 
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
 function unreadableResponse(status: number): Response {
   return new Response(
     new ReadableStream({
@@ -43,12 +47,14 @@ function unreadableResponse(status: number): Response {
 
 function stalledProviderResponse(status: number) {
   const cancel = vi.fn(() => Promise.resolve(undefined))
+  const releaseLock = vi.fn()
   const read = vi.fn(
     () => new Promise<ReadableStreamReadResult<Uint8Array>>(() => undefined),
   )
   const reader = {
     cancel,
     read,
+    releaseLock,
   } as unknown as ReadableStreamDefaultReader<Uint8Array>
   const response = {
     body: { getReader: () => reader },
@@ -57,7 +63,7 @@ function stalledProviderResponse(status: number) {
     status,
   } as unknown as Response
 
-  return { cancel, read, response }
+  return { cancel, read, releaseLock, response }
 }
 
 describe('provider error handling', () => {
@@ -353,6 +359,31 @@ describe('provider error handling', () => {
     expect(streamedCancelled).toBe(true)
   })
 
+  it('releases bounded Provider body readers after success and streamed rejection', async () => {
+    const releaseLock = vi.spyOn(
+      ReadableStreamDefaultReader.prototype,
+      'releaseLock',
+    )
+
+    await expect(
+      readProviderResponseBytes(new Response(new Uint8Array([1, 2])), 2),
+    ).resolves.toEqual(new Uint8Array([1, 2]))
+    expect(releaseLock).toHaveBeenCalledTimes(1)
+
+    let pullCount = 0
+    const oversizedBody = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pullCount += 1
+        controller.enqueue(new Uint8Array([pullCount, pullCount]))
+      },
+    })
+
+    await expect(
+      readProviderResponseBytes(new Response(oversizedBody), 3),
+    ).rejects.toBeInstanceOf(ProviderRequestError)
+    expect(releaseLock).toHaveBeenCalledTimes(2)
+  })
+
   it.each([
     {
       label: 'bounded byte',
@@ -386,6 +417,39 @@ describe('provider error handling', () => {
       controller.abort()
       await rejection
       expect(stalled.cancel).toHaveBeenCalledTimes(1)
+      expect(stalled.releaseLock).toHaveBeenCalledTimes(1)
     },
   )
+
+  it('settles a cancelled Provider body when abort-listener cleanup throws', async () => {
+    const stalled = stalledProviderResponse(200)
+    let abortListener: (() => void) | undefined
+    const signalState = {
+      aborted: false,
+      addEventListener: vi.fn((_type: string, listener: EventListener) => {
+        abortListener = listener as unknown as () => void
+      }),
+      removeEventListener: vi.fn(() => {
+        throw new Error('embedded listener teardown failed')
+      }),
+    }
+    const signal = signalState as unknown as AbortSignal
+
+    const request = readProviderResponseBytes(stalled.response, 8, signal)
+    let rejection: unknown
+    void request.catch((error: unknown) => {
+      rejection = error
+    })
+
+    await vi.waitFor(() => expect(stalled.read).toHaveBeenCalledTimes(1))
+    signalState.aborted = true
+    abortListener?.()
+    await vi.waitFor(
+      () => expect(rejection).toMatchObject({ name: 'AbortError' }),
+      { timeout: 100, interval: 0 },
+    )
+
+    expect(stalled.cancel).toHaveBeenCalledTimes(1)
+    expect(stalled.releaseLock).toHaveBeenCalledTimes(1)
+  })
 })

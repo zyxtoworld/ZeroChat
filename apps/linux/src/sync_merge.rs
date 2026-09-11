@@ -27,10 +27,13 @@ fn merge_sync_config(remote: &SyncConfig, local: &SyncConfig) -> SyncConfig {
 }
 
 pub(crate) fn merge_first_sync_vault(remote: SyncVault, local: SyncVault) -> SyncVault {
-    let conversations = merge_conversations(remote.data.conversations, local.data.conversations);
-    let providers = merge_providers(remote.data.providers, local.data.providers);
-    let skills = merge_skills(remote.data.skills, local.data.skills);
     let mut data = local.data;
+    let conversations = merge_conversations(
+        remote.data.conversations,
+        std::mem::take(&mut data.conversations),
+    );
+    let providers = merge_providers(remote.data.providers, std::mem::take(&mut data.providers));
+    let skills = merge_skills(remote.data.skills, std::mem::take(&mut data.skills));
     data.providers = providers;
     data.conversations = conversations;
     data.skills = skills;

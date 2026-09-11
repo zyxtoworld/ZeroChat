@@ -1,5 +1,8 @@
-use crate::models::{
-    ChatMessage, MessageAttachment, MessageRole, ProviderConfig, ProviderKind, SyncConfig,
+use crate::{
+    local_file::MAX_IMAGE_FILE_BYTES,
+    models::{
+        ChatMessage, MessageAttachment, MessageRole, ProviderConfig, ProviderKind, SyncConfig,
+    },
 };
 use anyhow::{Context, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
@@ -958,6 +961,20 @@ fn valid_generated_image_base64(value: &str) -> bool {
         && value.as_bytes()[body_length..]
             .iter()
             .all(|byte| *byte == b'=')
+        && decoded_base64_byte_count(value).is_some_and(|count| count <= MAX_IMAGE_FILE_BYTES)
+}
+
+fn decoded_base64_byte_count(value: &str) -> Option<usize> {
+    let padding = value.bytes().rev().take_while(|byte| *byte == b'=').count();
+    let body_length = value.len().checked_sub(padding)?;
+    let tail = match body_length % 4 {
+        0 => 0,
+        2 => 1,
+        3 => 2,
+        _ => return None,
+    };
+
+    (body_length / 4).checked_mul(3)?.checked_add(tail)
 }
 
 pub(crate) fn safe_generated_image_data_url(value: &str) -> Option<(String, String)> {
@@ -1107,22 +1124,20 @@ pub(crate) fn chat_text_from_response(text: &str) -> Option<String> {
         if let Some(content) = choice
             .get("message")
             .and_then(|message| message.get("content"))
-            .and_then(Value::as_str)
         {
-            let trimmed = content.trim();
+            let trimmed = openai_choice_content_text(content).trim().to_owned();
             if !trimmed.is_empty() {
-                return Some(trimmed.to_owned());
+                return Some(trimmed);
             }
         }
 
         if let Some(content) = choice
             .get("delta")
             .and_then(|message| message.get("content"))
-            .and_then(Value::as_str)
         {
-            let trimmed = content.trim();
+            let trimmed = openai_choice_content_text(content).trim().to_owned();
             if !trimmed.is_empty() {
-                return Some(trimmed.to_owned());
+                return Some(trimmed);
             }
         }
     }
@@ -1164,6 +1179,19 @@ pub(crate) fn chat_text_from_response(text: &str) -> Option<String> {
     }
 
     None
+}
+
+fn openai_choice_content_text(content: &Value) -> String {
+    match content {
+        Value::String(value) => value.to_owned(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<String>()
+            .to_owned(),
+        _ => String::new(),
+    }
 }
 
 pub(crate) fn process_sse_line<F>(
@@ -1353,14 +1381,15 @@ fn openai_choice_delta(value: &Value) -> Option<String> {
     choice
         .get("delta")
         .and_then(|delta| delta.get("content"))
-        .and_then(Value::as_str)
+        .map(openai_choice_content_text)
+        .filter(|text| !text.is_empty())
         .or_else(|| {
             choice
                 .get("message")
                 .and_then(|message| message.get("content"))
-                .and_then(Value::as_str)
+                .map(openai_choice_content_text)
+                .filter(|text| !text.is_empty())
         })
-        .map(ToOwned::to_owned)
 }
 
 fn responses_delta(value: &Value) -> Option<String> {
@@ -1658,9 +1687,10 @@ mod tests {
         AnthropicRequest, AudioUpload, ImageUpload, OpenAiChatRequest, OpenAiResponsesRequest,
         anthropic_chat_messages, apply_auth_headers, apply_proxy_headers, audio_speech_endpoint,
         audio_speech_request, audio_transcription_endpoint, audio_transcription_request_parts,
-        embeddings_endpoint, embeddings_request, endpoint_for, generated_image_from_json,
-        image_data_url, image_edit_upload_part, image_responses_endpoint, moderations_endpoint,
-        moderations_request, openai_chat_messages, provider_proxy_access_key, provider_request,
+        chat_text_from_response, embeddings_endpoint, embeddings_request, endpoint_for,
+        generated_image_from_json, image_data_url, image_edit_endpoint, image_edit_upload_part,
+        image_responses_endpoint, model_list_endpoint, moderations_endpoint, moderations_request,
+        openai_chat_messages, process_sse_event, provider_proxy_access_key, provider_request,
         realtime_client_secrets_endpoint, realtime_client_secrets_request, realtime_endpoint,
         realtime_request, responses_chat_messages, responses_image_edit_request,
         responses_image_generation_request, safe_generated_image_data_url,
@@ -1826,6 +1856,52 @@ mod tests {
     }
 
     #[test]
+    fn chat_text_blocks_preserve_order_and_stream_whitespace() {
+        let response = r#"{
+          "choices": [{
+            "message": {
+              "content": [
+                {"type": "text", "text": "Hello "},
+                {"type": "image_url"},
+                {"type": "text", "text": "world"}
+              ]
+            }
+          }]
+        }"#;
+        assert_eq!(
+            chat_text_from_response(response).as_deref(),
+            Some("Hello world")
+        );
+
+        let mut received = String::new();
+        let mut partials = Vec::new();
+        let mut on_partial = |partial: String| {
+            partials.push(partial);
+            true
+        };
+        let mut first_event = vec![
+            r#"{"choices":[{"delta":{"content":[{"type":"text","text":"Hello "},{"type":"image_url"}]}}]}"#
+                .to_owned(),
+        ];
+        let mut second_event = vec![
+            r#"{"choices":[{"delta":{"content":[{"type":"text","text":"world"}]}}]}"#.to_owned(),
+        ];
+
+        assert!(process_sse_event(
+            &mut first_event,
+            &mut received,
+            &mut on_partial
+        ));
+        assert!(process_sse_event(
+            &mut second_event,
+            &mut received,
+            &mut on_partial
+        ));
+        assert_eq!(received, "Hello world");
+        assert_eq!(partials, vec!["Hello ", "Hello world"]);
+    }
+
+    #[test]
     fn generated_image_safety_rejects_active_data_and_unsafe_remote_urls() {
         assert_eq!(
             safe_generated_image_data_url(" data:image/jpg;base64,YQ== "),
@@ -1856,6 +1932,14 @@ mod tests {
             let response = format!(r#"{{"data":[{{"url":"{url}"}}]}}"#);
             assert!(generated_image_from_json(&response).is_err(), "{url}");
         }
+    }
+
+    #[test]
+    fn generated_image_safety_rejects_data_urls_over_the_decoded_image_budget() {
+        let encoded_length = 4 * (MAX_IMAGE_FILE_BYTES / 3 + 1);
+        let oversized = format!("data:image/png;base64,{}", "A".repeat(encoded_length));
+
+        assert!(safe_generated_image_data_url(&oversized).is_none());
     }
 
     #[test]

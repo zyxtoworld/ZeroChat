@@ -63,8 +63,28 @@ export function providerTimeoutError(): ProviderRequestError {
   )
 }
 
+export function providerEmptyResponseError(): ProviderRequestError {
+  return new ProviderRequestError(
+    'server',
+    rt('error.apiUnavailable'),
+    { retryable: true },
+  )
+}
+
 export function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError'
+}
+
+export function cancelUnreadProviderResponse(response?: Response): void {
+  if (!response || response.bodyUsed || !response.body) {
+    return
+  }
+
+  try {
+    void response.body.cancel().catch(() => undefined)
+  } catch {
+    // Request failure owns the user-visible result; response cleanup is best-effort.
+  }
 }
 
 function providerResponseAbortError(): DOMException {
@@ -79,6 +99,16 @@ function cancelProviderResponseReader(
     void reader.cancel().catch(() => undefined)
   } catch {
     // A non-compliant reader must not replace the cancellation result.
+  }
+}
+
+function releaseProviderResponseReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): void {
+  try {
+    reader.releaseLock()
+  } catch {
+    // A reader that ignores cancellation may still have a pending read.
   }
 }
 
@@ -108,7 +138,13 @@ function readProviderResponseChunk(
 
   return new Promise((resolve, reject) => {
     let settled = false
-    const cleanup = () => signal.removeEventListener('abort', abort)
+    const cleanup = () => {
+      try {
+        signal.removeEventListener('abort', abort)
+      } catch {
+        // Host listener teardown is best-effort; it must not block settlement.
+      }
+    }
     const abort = () => {
       if (settled) {
         return
@@ -225,55 +261,59 @@ export async function readProviderResponseBytes(
   }
 
   const reader = body.getReader()
-  const chunks: Uint8Array[] = []
-  let totalBytes = 0
-
   try {
-    while (true) {
-      const { done, value } = await readProviderResponseChunk(reader, signal)
-      throwIfProviderResponseAborted(signal, reader)
+    const chunks: Uint8Array[] = []
+    let totalBytes = 0
 
-      if (done) {
-        break
+    try {
+      while (true) {
+        const { done, value } = await readProviderResponseChunk(reader, signal)
+        throwIfProviderResponseAborted(signal, reader)
+
+        if (done) {
+          break
+        }
+
+        if (!value?.byteLength) {
+          continue
+        }
+
+        totalBytes = accumulateProviderResponseBytes(
+          totalBytes,
+          value.byteLength,
+          maxBytes,
+          response.status,
+        )
+        chunks.push(value)
+      }
+    } catch (error: unknown) {
+      if (signal?.aborted) {
+        throw providerResponseAbortError()
       }
 
-      if (!value?.byteLength) {
-        continue
+      cancelProviderResponseReader(reader)
+
+      if (isAbortError(error) || error instanceof ProviderRequestError) {
+        throw error
       }
 
-      totalBytes = accumulateProviderResponseBytes(
-        totalBytes,
-        value.byteLength,
-        maxBytes,
-        response.status,
-      )
-      chunks.push(value)
-    }
-  } catch (error: unknown) {
-    if (signal?.aborted) {
-      throw providerResponseAbortError()
+      throw providerResponseReadError(response.status)
     }
 
-    cancelProviderResponseReader(reader)
+    throwIfProviderResponseAborted(signal, reader)
 
-    if (isAbortError(error) || error instanceof ProviderRequestError) {
-      throw error
+    const bytes = new Uint8Array(totalBytes)
+    let offset = 0
+
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
     }
 
-    throw providerResponseReadError(response.status)
+    return bytes
+  } finally {
+    releaseProviderResponseReader(reader)
   }
-
-  throwIfProviderResponseAborted(signal, reader)
-
-  const bytes = new Uint8Array(totalBytes)
-  let offset = 0
-
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-
-  return bytes
 }
 
 export async function readProviderResponseText(

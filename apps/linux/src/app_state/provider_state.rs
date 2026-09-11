@@ -7,7 +7,7 @@ use crate::{
         SyncSecretStore, replace_provider_keys_transactionally,
         rollback_provider_keys_after_failure, stage_provider_keys_transactionally,
     },
-    storage::SnapshotCompareAndSave,
+    storage::{SnapshotCompareAndSave, snapshot_fingerprint},
     sync::FirstSyncStrategy,
 };
 use std::collections::BTreeMap;
@@ -246,25 +246,6 @@ impl LinuxAppState {
     }
 
     pub(crate) fn save_provider_key(&self, provider_id: &str, value: &str) -> anyhow::Result<()> {
-        let normalized = value.trim();
-        if self.secrets.provider_key(provider_id)? == normalized {
-            let now = now_millis();
-            let mut snapshot = self.snapshot.borrow_mut();
-            let provider = snapshot
-                .providers
-                .iter_mut()
-                .find(|provider| provider.id == provider_id)
-                .ok_or_else(|| anyhow::anyhow!("Provider no longer exists."))?;
-            provider.updated_at = now;
-            snapshot.updated_at = now;
-            drop(snapshot);
-            self.save();
-            if let Some(message) = self.local_storage_blocker_message() {
-                anyhow::bail!(message);
-            }
-            return Ok(());
-        }
-
         let previous = self.snapshot.borrow().clone();
         let mut candidate = previous.clone();
         let now = now_millis();
@@ -297,12 +278,23 @@ impl LinuxAppState {
             .store
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Local storage is unavailable."))?;
+        let guard = store.lock_local_data_commit();
+        if store
+            .load_local_data_transition_during_local_data_commit(&guard)?
+            .is_some()
+        {
+            anyhow::bail!("A local data recovery operation is pending.");
+        }
+        let current = store.load_during_local_data_commit(&guard)?;
+        if snapshot_fingerprint(current.as_ref())? != snapshot_fingerprint(Some(previous))? {
+            anyhow::bail!("Local data changed before the Provider secret transaction started.");
+        }
         let transaction = if require_durable_secret {
             replace_provider_keys_transactionally(self.secrets.as_ref(), &replacements)?
         } else {
             stage_provider_keys_transactionally(self.secrets.as_ref(), &replacements)?
         };
-        match store.save_if_unchanged(Some(previous), &candidate) {
+        match store.save_if_unchanged_during_local_data_commit(&guard, Some(previous), &candidate) {
             Ok(SnapshotCompareAndSave::Saved) => {}
             Ok(SnapshotCompareAndSave::Changed(_)) => {
                 return Err(rollback_provider_keys_after_failure(

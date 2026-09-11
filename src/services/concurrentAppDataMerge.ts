@@ -267,6 +267,11 @@ function mergeRecordList<T extends IdentifiedRecord>(
 
     if (!remote && local) {
       if (policy.deletionWins) {
+        if (!policy.sameIncarnation || policy.sameIncarnation(base, local)) {
+          continue
+        }
+
+        merged.push(local)
         continue
       }
 
@@ -281,6 +286,11 @@ function mergeRecordList<T extends IdentifiedRecord>(
 
     if (remote && !local) {
       if (policy.deletionWins) {
+        if (!policy.sameIncarnation || policy.sameIncarnation(base, remote)) {
+          continue
+        }
+
+        merged.push(remote)
         continue
       }
 
@@ -345,6 +355,9 @@ function mergeAttachments(
         localAttachment,
         preferLocal,
       ),
+    {
+      sameIncarnation: (left, right) => left.createdAt === right.createdAt,
+    },
   ).sort(compareCreatedAtThenId)
 }
 
@@ -415,7 +428,9 @@ function mergeConversation(
     {
       deletionWins: true,
       sameIncarnation: (left, right) =>
-        left.createdAt === right.createdAt && left.role === right.role,
+        left.createdAt === right.createdAt &&
+        left.role === right.role &&
+        left.generationId === right.generationId,
     },
   ).sort(compareCreatedAtThenId)
 
@@ -540,7 +555,7 @@ export function mergeConcurrentAppData(
   mergedAt = Date.now(),
 ): AppData {
   const preferLocal = local.updatedAt >= remote.updatedAt
-  let providers = mergeRecordList(
+  const providers = mergeRecordList(
     base?.providers ?? [],
     remote.providers,
     local.providers,
@@ -548,6 +563,10 @@ export function mergeConcurrentAppData(
     local.updatedAt,
     (provider) => provider.updatedAt,
     mergeProvider,
+    {
+      deletionWins: true,
+      sameIncarnation: (left, right) => left.createdAt === right.createdAt,
+    },
   )
   let conversations = mergeRecordList(
     base?.conversations ?? [],
@@ -570,17 +589,10 @@ export function mergeConcurrentAppData(
     local.updatedAt,
     (skill) => skill.updatedAt,
     mergeSkill,
+    {
+      sameIncarnation: (left, right) => left.createdAt === right.createdAt,
+    },
   )
-
-  if (providers.length === 0) {
-    providers = [...(preferLocal ? local.providers : remote.providers)].slice(0, 1)
-  }
-
-  if (conversations.length === 0) {
-    conversations = [
-      ...(preferLocal ? local.conversations : remote.conversations),
-    ].slice(0, 1)
-  }
 
   const providerById = recordMap(providers)
   conversations = conversations.map((conversation) => {

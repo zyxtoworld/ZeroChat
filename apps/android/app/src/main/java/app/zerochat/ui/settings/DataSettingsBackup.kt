@@ -20,7 +20,6 @@ import app.zerochat.sync.CryptoEngine
 import app.zerochat.sync.InvalidSyncVaultFormatException
 import app.zerochat.ui.NativeI18n
 import app.zerochat.ui.MAX_ENCRYPTED_BACKUP_FILE_BYTES
-import app.zerochat.ui.SnapshotPersistence
 import app.zerochat.ui.assertLocalByteSize
 import app.zerochat.ui.localFileTooLargeMessage
 import app.zerochat.ui.readBoundedLocalUriText
@@ -36,13 +35,32 @@ class DataSettingsBackupController constructor(
     val importEncryptedBackup: (String) -> Unit,
 )
 
+internal enum class BackupOperation {
+    Export,
+    Import,
+}
+
+internal fun backupFailureNotice(
+    i18n: NativeI18n,
+    operation: BackupOperation,
+): String = i18n.t(
+    when (operation) {
+        BackupOperation.Export -> "notice.backupExportFailedPrefix"
+        BackupOperation.Import -> "notice.backupImportFailedPrefix"
+    },
+)
+
 internal class BackupPassphraseHandoff {
     private var exportPassphrase: String? = null
     private var importPassphrase: String? = null
 
     @Synchronized
-    fun stageExport(value: String) {
+    fun stageExport(value: String): Boolean {
+        if (exportPassphrase != null) {
+            return false
+        }
         exportPassphrase = value
+        return true
     }
 
     @Synchronized
@@ -51,8 +69,12 @@ internal class BackupPassphraseHandoff {
     }
 
     @Synchronized
-    fun stageImport(value: String) {
+    fun stageImport(value: String): Boolean {
+        if (importPassphrase != null) {
+            return false
+        }
         importPassphrase = value
+        return true
     }
 
     @Synchronized
@@ -66,12 +88,12 @@ private val backupPassphraseHandoff = BackupPassphraseHandoff()
 @Composable
 internal fun rememberDataSettingsBackupController(
     snapshot: AppSnapshot,
-    onSnapshotImport: suspend (AppSnapshot, Map<String, String>) -> Result<Unit>,
+    backupTasks: BackupTaskOwner,
     secretStore: SecretStore,
-    onNotice: (String, SettingsNoticeKind) -> Unit,
     i18n: NativeI18n,
 ): DataSettingsBackupController {
     val context = LocalContext.current
+    val appContext = context.applicationContext
     val backupJson = remember {
         Json {
             ignoreUnknownKeys = true
@@ -90,11 +112,14 @@ internal fun rememberDataSettingsBackupController(
         }
 
         if (exportPassphrase.isBlank()) {
-            onNotice(i18n.t("notice.backupExportNeedsPassphrase"), SettingsNoticeKind.Warning)
+            backupTasks.publishNotice(
+                i18n.t("notice.backupExportNeedsPassphrase"),
+                SettingsNoticeKind.Warning,
+            )
             return@rememberLauncherForActivityResult
         }
 
-        SnapshotPersistence.launch {
+        backupTasks.launch {
             val result = runCatchingPreservingCancellation {
                 withContext(Dispatchers.Default) {
                     val envelope = backupCrypto.encryptVault(
@@ -118,13 +143,23 @@ internal fun rememberDataSettingsBackupController(
                 }
             }.mapCatchingPreservingCancellation { text ->
                 withContext(Dispatchers.IO) {
-                    writeUriText(context, uri, text)
+                    writeUriText(appContext, uri, text)
                 }
             }
 
             result.fold(
-                onSuccess = { onNotice(i18n.t("notice.backupExportStarted"), SettingsNoticeKind.Success) },
-                onFailure = { onNotice(i18n.errorMessage(it.message), SettingsNoticeKind.Error) },
+                onSuccess = {
+                    backupTasks.publishNotice(
+                        i18n.t("notice.backupExportStarted"),
+                        SettingsNoticeKind.Success,
+                    )
+                },
+                onFailure = {
+                    backupTasks.publishNotice(
+                        backupFailureNotice(i18n, BackupOperation.Export),
+                        SettingsNoticeKind.Error,
+                    )
+                },
             )
         }
     }
@@ -138,15 +173,18 @@ internal fun rememberDataSettingsBackupController(
         }
 
         if (importPassphrase.isBlank()) {
-            onNotice(i18n.t("notice.backupImportNeedsPassphrase"), SettingsNoticeKind.Warning)
+            backupTasks.publishNotice(
+                i18n.t("notice.backupImportNeedsPassphrase"),
+                SettingsNoticeKind.Warning,
+            )
             return@rememberLauncherForActivityResult
         }
 
-        SnapshotPersistence.launch {
+        backupTasks.launch {
             val result = runCatchingPreservingCancellation {
                 val text = withContext(Dispatchers.IO) {
                     readBoundedLocalUriText(
-                        context,
+                        appContext,
                         uri,
                         MAX_ENCRYPTED_BACKUP_FILE_BYTES,
                         localFileTooLargeMessage(i18n, MAX_ENCRYPTED_BACKUP_FILE_BYTES),
@@ -159,20 +197,23 @@ internal fun rememberDataSettingsBackupController(
                 val vault = withContext(Dispatchers.Default) {
                     backupCrypto.decryptVault(envelope, importPassphrase)
                 }
-                onSnapshotImport(vault.data, vault.secrets.providerKeys).getOrThrow()
+                backupTasks.requestImport(vault.data, vault.secrets.providerKeys).getOrThrow()
             }
 
             result.fold(
                 onSuccess = {
-                    onNotice(i18n.t("notice.backupImported"), SettingsNoticeKind.Success)
+                    backupTasks.publishNotice(
+                        i18n.t("notice.backupImported"),
+                        SettingsNoticeKind.Success,
+                    )
                 },
                 onFailure = { error ->
                     val message = if (error is InvalidSyncVaultFormatException) {
                         i18n.t("notice.backupImportFormatInvalid")
                     } else {
-                        i18n.errorMessage(error.message)
+                        backupFailureNotice(i18n, BackupOperation.Import)
                     }
-                    onNotice(message, SettingsNoticeKind.Error)
+                    backupTasks.publishNotice(message, SettingsNoticeKind.Error)
                 },
             )
         }
@@ -181,27 +222,51 @@ internal fun rememberDataSettingsBackupController(
     return DataSettingsBackupController(
         exportEncryptedBackup = { passphrase ->
             if (passphrase.isBlank()) {
-                onNotice(i18n.t("notice.backupExportNeedsPassphrase"), SettingsNoticeKind.Warning)
+                backupTasks.publishNotice(
+                    i18n.t("notice.backupExportNeedsPassphrase"),
+                    SettingsNoticeKind.Warning,
+                )
             } else {
-                backupPassphraseHandoff.stageExport(passphrase)
-                try {
-                    exportBackupLauncher.launch(backupFileName())
-                } catch (error: Throwable) {
-                    backupPassphraseHandoff.consumeExport()
-                    onNotice(i18n.errorMessage(error.message), SettingsNoticeKind.Error)
+                if (!backupPassphraseHandoff.stageExport(passphrase)) {
+                    backupTasks.publishNotice(
+                        backupFailureNotice(i18n, BackupOperation.Export),
+                        SettingsNoticeKind.Error,
+                    )
+                } else {
+                    try {
+                        exportBackupLauncher.launch(backupFileName())
+                    } catch (error: Throwable) {
+                        backupPassphraseHandoff.consumeExport()
+                        backupTasks.publishNotice(
+                            backupFailureNotice(i18n, BackupOperation.Export),
+                            SettingsNoticeKind.Error,
+                        )
+                    }
                 }
             }
         },
         importEncryptedBackup = { passphrase ->
             if (passphrase.isBlank()) {
-                onNotice(i18n.t("notice.backupImportNeedsPassphrase"), SettingsNoticeKind.Warning)
+                backupTasks.publishNotice(
+                    i18n.t("notice.backupImportNeedsPassphrase"),
+                    SettingsNoticeKind.Warning,
+                )
             } else {
-                backupPassphraseHandoff.stageImport(passphrase)
-                try {
-                    importBackupLauncher.launch(arrayOf("application/json", "text/json", "*/*"))
-                } catch (error: Throwable) {
-                    backupPassphraseHandoff.consumeImport()
-                    onNotice(i18n.errorMessage(error.message), SettingsNoticeKind.Error)
+                if (!backupPassphraseHandoff.stageImport(passphrase)) {
+                    backupTasks.publishNotice(
+                        backupFailureNotice(i18n, BackupOperation.Import),
+                        SettingsNoticeKind.Error,
+                    )
+                } else {
+                    try {
+                        importBackupLauncher.launch(arrayOf("application/json", "text/json", "*/*"))
+                    } catch (error: Throwable) {
+                        backupPassphraseHandoff.consumeImport()
+                        backupTasks.publishNotice(
+                            backupFailureNotice(i18n, BackupOperation.Import),
+                            SettingsNoticeKind.Error,
+                        )
+                    }
                 }
             }
         },

@@ -326,7 +326,7 @@ async fn read_gist(
         return Ok(None);
     }
     if !response.status().is_success() {
-        response.error_for_status()?;
+        response.error_for_status_ref()?;
         return Ok(None);
     }
     Ok(Some(
@@ -552,7 +552,7 @@ async fn patch_gist_files(
         .send()
         .await?;
     if !response.status().is_success() {
-        response.error_for_status()?;
+        response.error_for_status_ref()?;
     }
     drain_bounded_body(response).await?;
     Ok(())

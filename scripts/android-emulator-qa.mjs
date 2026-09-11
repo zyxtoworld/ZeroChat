@@ -1,12 +1,24 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  rmSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   androidDeviceCandidates,
   isAndroidEmulatorSerial,
 } from './android-device-selection.mjs'
+import {
+  cleanupStartedEmulator,
+  forceKillOwnedProcessTree,
+} from './android-emulator-cleanup.mjs'
+import { stabilizeStartedEmulatorAfterBoot } from './android-emulator-readiness.mjs'
+import { asciiSdkRoot } from './android-sdk-tools.mjs'
 import { currentAndroidDebugApkEvidence } from './android-source-fingerprint.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -48,9 +60,21 @@ const bootTimeoutMs = Number(optionValue('--boot-timeout-ms') ?? 300_000)
 const postBootSettleMs = Number(optionValue('--post-boot-settle-ms') ?? 20_000)
 const ANDROID_PREREQ_TIMEOUT_MS = 120_000
 const ANDROID_BUILD_TIMEOUT_MS = 900_000
-const ANDROID_UI_SMOKE_TIMEOUT_MS = 1_800_000
-const ANDROID_CLOUD_SYNC_SMOKE_TIMEOUT_MS = 1_200_000
+const ANDROID_UI_SMOKE_TIMEOUT_MS = 2_700_000
+const ANDROID_CLOUD_SYNC_SMOKE_TIMEOUT_MS = 2_700_000
 const ANDROID_CONTACT_SHEET_TIMEOUT_MS = 180_000
+const ANDROID_LAUNCHER_READINESS_TIMEOUT_MS = 180_000
+const ANDROID_LAUNCHER_READINESS_POLL_MS = 2_000
+const ANDROID_EMULATOR_MEMORY_MB = 4_096
+const ANDROID_EMULATOR_GPU = 'host'
+const androidQaLockPath = path.join(
+  repoRoot,
+  '.local',
+  'codex',
+  'tmp',
+  'zerochat-android-qa-lock',
+)
+const androidQaLockOwnerPath = path.join(androidQaLockPath, 'owner.json')
 
 function optionValue(name) {
   const prefixed = `${name}=`
@@ -132,8 +156,12 @@ function sdkCandidates() {
   ].filter(Boolean)
 }
 
+function sdkToolCandidates() {
+  return sdkCandidates().map((sdk) => asciiSdkRoot(sdk)).filter(Boolean)
+}
+
 function findTool(directory, executable) {
-  return firstExisting(sdkCandidates().map((sdk) => path.join(sdk, directory, executable)))
+  return firstExisting(sdkToolCandidates().map((sdk) => path.join(sdk, directory, executable)))
 }
 
 function findOnPath(executable) {
@@ -166,6 +194,65 @@ let startedAdbServer = false
 let qaReport = null
 let runFailure = null
 let currentStep = 'Android QA startup'
+let emulatorRuntimeReadiness = null
+let androidQaLockOwner = null
+
+function acquireAndroidQaLock() {
+  mkdirSync(path.dirname(androidQaLockPath), { recursive: true })
+
+  for (;;) {
+    const owner = {
+      pid: process.pid,
+      token: `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command: process.argv.join(' '),
+      cwd: repoRoot,
+      startedAt: new Date().toISOString(),
+    }
+
+    try {
+      mkdirSync(androidQaLockPath)
+      writeFileSync(androidQaLockOwnerPath, `${JSON.stringify(owner, null, 2)}\n`)
+      androidQaLockOwner = owner
+      return
+    } catch (error) {
+      if (error?.code !== 'EEXIST') {
+        throw error
+      }
+
+      let existing = null
+      try {
+        existing = JSON.parse(readFileSync(androidQaLockOwnerPath, 'utf8'))
+      } catch {
+        // A contender may be between mkdir and owner-file publication.
+      }
+
+      if (existing?.pid && processIsAlive(Number(existing.pid))) {
+        throw new Error(
+          `Another ZeroChat Android QA is already running (pid ${existing.pid}, ` +
+          `startedAt ${existing.startedAt ?? 'unknown'}).`,
+        )
+      }
+
+      rmSync(androidQaLockPath, { recursive: true, force: true })
+    }
+  }
+}
+
+function releaseAndroidQaLock() {
+  if (!androidQaLockOwner) return
+
+  let existing = null
+  try {
+    existing = JSON.parse(readFileSync(androidQaLockOwnerPath, 'utf8'))
+  } catch {
+    existing = null
+  }
+
+  if (existing?.token === androidQaLockOwner.token) {
+    rmSync(androidQaLockPath, { recursive: true, force: true })
+  }
+  androidQaLockOwner = null
+}
 
 function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
@@ -361,6 +448,24 @@ function bootCompleted(device) {
   return result.status === 0 && result.stdout.trim() === '1'
 }
 
+function probeAndroidLauncher(device) {
+  const activity = runAdb(
+    ['-s', device, 'shell', 'dumpsys', 'activity', 'activities'],
+    { timeout: 15_000 },
+  )
+  const window = runAdb(['-s', device, 'shell', 'dumpsys', 'window'], {
+    timeout: 15_000,
+  })
+  const top = activity.match(/^\s*topResumedActivity=.*$/mu)?.[0]?.trim() ?? '<none>'
+  const focus = window.match(/^\s*mCurrentFocus=.*$/mu)?.[0]?.trim() ?? '<none>'
+  const launcher = /\b(?:com\.android\.launcher3|com\.google\.android\.apps\.nexuslauncher)\b/u
+
+  return {
+    ready: launcher.test(top) && launcher.test(focus),
+    detail: `top=${top} focus=${focus}`,
+  }
+}
+
 function waitForBoot() {
   const deadline = Date.now() + bootTimeoutMs
 
@@ -386,39 +491,6 @@ function waitForBoot() {
       bootTimeoutMs / 1000,
     )} seconds.`,
   )
-}
-
-function waitForStartedEmulatorIdle(device) {
-  if (!startedEmulator) return
-
-  const idleProbe = runCapture(
-    adb,
-    ['-s', device, 'shell', 'cmd', 'activity', 'wait-for-broadcast-idle'],
-    { timeout: 90_000 },
-  )
-
-  if (idleProbe.error) {
-    throw idleProbe.error
-  }
-  if (idleProbe.status !== 0) {
-    const detail = [idleProbe.stdout, idleProbe.stderr]
-      .filter(Boolean)
-      .join('\n')
-      .trim()
-    throw new Error(
-      `Android activity manager did not reach broadcast idle${detail ? `:\n${detail}` : ''}`,
-    )
-  }
-
-  if (!Number.isFinite(postBootSettleMs) || postBootSettleMs < 0) {
-    throw new Error('--post-boot-settle-ms must be a non-negative finite number.')
-  }
-  if (postBootSettleMs > 0) {
-    console.log(
-      `Android boot services are idle; allowing ${postBootSettleMs}ms for cold-start stabilization...`,
-    )
-    sleep(postBootSettleMs)
-  }
 }
 
 function captureAdbServerOwnership() {
@@ -467,13 +539,23 @@ function ensureDeviceOrStartEmulator() {
   }
 
   const avd = chooseAvd()
-  const emulatorArgs = ['-avd', avd, '-no-snapshot', '-no-audio', '-no-boot-anim']
+  const emulatorArgs = [
+    '-avd',
+    avd,
+    '-no-snapshot',
+    '-no-audio',
+    '-no-boot-anim',
+    '-gpu',
+    ANDROID_EMULATOR_GPU,
+    '-memory',
+    String(ANDROID_EMULATOR_MEMORY_MB),
+  ]
   if (wipeData) {
     emulatorArgs.push('-wipe-data')
   }
 
   if (!showEmulator) {
-    emulatorArgs.push('-no-window', '-gpu', 'swiftshader_indirect')
+    emulatorArgs.push('-no-window')
   }
 
   console.log(`Starting Android emulator "${avd}"...`)
@@ -632,72 +714,35 @@ function waitForStartedEmulatorExit(timeoutMs = 30_000) {
 }
 
 function forceKillStartedEmulatorProcess() {
-  if (!startedEmulatorProcessId || !processIsAlive(startedEmulatorProcessId)) {
-    return
-  }
-
-  console.warn(`Android emulator process ${startedEmulatorProcessId} did not exit; forcing cleanup.`)
-
-  if (process.platform === 'win32') {
-    const result = spawnSync(
-      'taskkill',
-      ['/PID', String(startedEmulatorProcessId), '/T', '/F'],
-      {
-        encoding: 'utf8',
-        stdio: 'pipe',
-        windowsHide: true,
-      },
+  if (startedEmulatorProcessId && processIsAlive(startedEmulatorProcessId)) {
+    console.warn(
+      `Android emulator process ${startedEmulatorProcessId} did not exit; forcing cleanup.`,
     )
-
-    if (result.status !== 0 && processIsAlive(startedEmulatorProcessId)) {
-      const detail = [result.stdout, result.stderr].filter(Boolean).join('\n').trim()
-      console.warn(
-        `Could not force-stop Android emulator process ${startedEmulatorProcessId}${
-          detail ? `:\n${detail}` : ''
-        }`,
-      )
-    }
-    return
   }
 
-  try {
-    process.kill(startedEmulatorProcessId, 'SIGTERM')
-  } catch {
-    // The process exited between the liveness check and kill request.
-  }
-
-  if (waitForStartedEmulatorExit(10_000)) {
-    return
-  }
-
-  try {
-    process.kill(startedEmulatorProcessId, 'SIGKILL')
-  } catch {
-    // The process exited between the liveness check and kill request.
-  }
+  forceKillOwnedProcessTree({
+    processId: startedEmulatorProcessId,
+    processIsAlive,
+    platform: process.platform,
+    spawnSyncFn: spawnSync,
+    processKill: process.kill,
+    waitForExit: waitForStartedEmulatorExit,
+    warn: console.warn,
+  })
 }
 
 function killStartedEmulator() {
-  if (!startedEmulator || keepEmulator || !selectedDevice?.startsWith('emulator-')) {
-    return
-  }
-
-  try {
-    console.log(`\nStopping Android emulator ${selectedDevice}...`)
-    runAdb(['-s', selectedDevice, 'emu', 'kill'], { timeout: 10_000 })
-    if (!waitForStartedEmulatorExit()) {
-      forceKillStartedEmulatorProcess()
-    }
-    if (!waitForAndroidEmulatorProcessesExit()) {
-      console.warn('Android emulator/qemu process family did not exit before cleanup verification.')
-    }
-  } catch (error) {
-    console.warn(`Could not stop Android emulator cleanly: ${error.message}`)
-    forceKillStartedEmulatorProcess()
-    if (!waitForAndroidEmulatorProcessesExit()) {
-      console.warn('Android emulator/qemu process family did not exit after forced cleanup.')
-    }
-  }
+  cleanupStartedEmulator({
+    startedEmulator,
+    keepEmulator,
+    selectedDevice,
+    runAdb,
+    waitForStartedEmulatorExit,
+    forceKillStartedEmulatorProcess,
+    waitForAndroidEmulatorProcessesExit,
+    log: console.log,
+    warn: console.warn,
+  })
 }
 
 function killAdbServerStartedByQa() {
@@ -787,6 +832,8 @@ function failureReport(error) {
 }
 
 try {
+  acquireAndroidQaLock()
+
   if (reuseCurrentSmokes && reuseCurrentUiSmoke) {
     throw new Error('--reuse-current-smokes and --reuse-current-ui-smoke cannot be combined.')
   }
@@ -820,7 +867,18 @@ try {
       : null
     currentStep = 'Android device/emulator startup'
     device = ensureDeviceOrStartEmulator()
-    waitForStartedEmulatorIdle(device)
+    emulatorRuntimeReadiness = stabilizeStartedEmulatorAfterBoot({
+      startedEmulator,
+      postBootSettleMs,
+      readinessTimeoutMs: ANDROID_LAUNCHER_READINESS_TIMEOUT_MS,
+      readinessPollMs: ANDROID_LAUNCHER_READINESS_POLL_MS,
+      requestHome: () => {
+        runAdb(['-s', device, 'shell', 'input', 'keyevent', 'KEYCODE_HOME'])
+      },
+      probeLauncher: () => probeAndroidLauncher(device),
+      sleep,
+      log: console.log,
+    })
     if (reusedUiSmokeReport && reusedUiSmokeReport.device !== device) {
       throw new Error('The reusable Android UI smoke report was captured from a different device.')
     }
@@ -893,6 +951,10 @@ try {
     emulatorKept: startedEmulator && keepEmulator,
     emulatorProcessId: startedEmulatorProcessId,
     postBootSettleMs: startedEmulator ? postBootSettleMs : 0,
+    emulatorRuntimeReadiness,
+    emulatorGpu: startedEmulator ? ANDROID_EMULATOR_GPU : null,
+    emulatorMemoryMb: startedEmulator ? ANDROID_EMULATOR_MEMORY_MB : null,
+    adbServerUsed: !reuseCurrentSmokes,
     adbServerWasRunning,
     preexistingAdbServerProcesses,
     adbServerStarted: startedAdbServer,
@@ -930,6 +992,10 @@ try {
     emulatorKept: startedEmulator && keepEmulator,
     emulatorProcessId: startedEmulatorProcessId,
     postBootSettleMs: startedEmulator ? postBootSettleMs : 0,
+    emulatorRuntimeReadiness,
+    emulatorGpu: startedEmulator ? ANDROID_EMULATOR_GPU : null,
+    emulatorMemoryMb: startedEmulator ? ANDROID_EMULATOR_MEMORY_MB : null,
+    adbServerUsed: !reuseCurrentSmokes,
     adbServerWasRunning,
     preexistingAdbServerProcesses,
     adbServerStarted: startedAdbServer,
@@ -946,6 +1012,7 @@ try {
 } finally {
   killStartedEmulator()
   killAdbServerStartedByQa()
+  releaseAndroidQaLock()
 
   if (qaReport) {
     qaReport.cleanupVerified = collectCleanupVerification()

@@ -135,6 +135,7 @@ struct ZeroChatApp: App {
                 openSettingsWindow: openSettingsWindow,
                 commandCenter: commandCenter
             )
+            .tint(ZeroChatTheme.accent)
         }
         .defaultSize(width: 1100, height: 760)
         .commands {
@@ -231,6 +232,7 @@ struct ZeroChatApp: App {
 #else
         WindowGroup {
             ChatView(model: model)
+                .tint(ZeroChatTheme.accent)
         }
 #endif
     }

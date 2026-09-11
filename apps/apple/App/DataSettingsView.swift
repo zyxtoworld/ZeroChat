@@ -8,6 +8,7 @@ struct DataSettingsView: View {
     let i18n: NativeI18n
     @State private var syncPassphraseDraft = ""
     @State private var committedSyncPassphrase = ""
+    @State private var syncPassphraseReadState = AppleSecretReadState.missing
     @State private var pendingSyncPassphrase: String?
     @State private var confirmSyncPasswordChange = false
     @State private var confirmSyncPasswordReset = false
@@ -18,18 +19,36 @@ struct DataSettingsView: View {
     @State private var backupExporterPresented = false
     @State private var backupDocument = ZeroChatBackupDocument()
     @State private var backupExportFileName = "zerochat-encrypted.json"
+    @State private var backupExportGeneration = 0
+
+    private var syncPassphraseReadable: Bool {
+        if case .failure = syncPassphraseReadState {
+            return false
+        }
+        return true
+    }
 
     var body: some View {
         Section(i18n.t("setting.dataPrivacy")) {
             Text(i18n.t("settings.syncEncryptedNote"))
                 .foregroundStyle(.secondary)
             SecureField(i18n.t("field.dataPassphrase"), text: $syncPassphraseDraft)
+                .disabled(!syncPassphraseReadable)
             VStack(alignment: .leading) {
                 Button(i18n.t("action.saveSyncPassword")) {
                     saveSyncPassphrase()
                 }
+                .disabled(!syncPassphraseReadable)
                 Button(i18n.t("action.resetSyncPassword")) {
-                    confirmSyncPasswordReset = true
+                    requestSyncPassphraseReset()
+                }
+                .disabled(!syncPassphraseReadable)
+                if !syncPassphraseReadable {
+                    Button {
+                        _ = refreshSyncPassphrase(preserveDraft: true)
+                    } label: {
+                        Label(i18n.t("button.retry"), systemImage: "arrow.clockwise")
+                    }
                 }
             }
             Text(i18n.t("message.backupEncryptedHint"))
@@ -39,11 +58,13 @@ struct DataSettingsView: View {
             } label: {
                 Label(i18n.t("action.exportEncryptedBackup"), systemImage: "square.and.arrow.up")
             }
+            .disabled(!syncPassphraseReadable)
             Button {
                 requestEncryptedBackupImport()
             } label: {
                 Label(i18n.t("action.importEncryptedBackup"), systemImage: "square.and.arrow.down")
             }
+            .disabled(!syncPassphraseReadable)
             .disabled(model.recoveringLocalSnapshot)
             Button(i18n.t("action.resetLocalData"), role: .destructive) {
                 confirmReset = true
@@ -60,6 +81,7 @@ struct DataSettingsView: View {
                         try await model.resetLocalData()
                         committedSyncPassphrase = ""
                         syncPassphraseDraft = ""
+                        syncPassphraseReadState = .missing
                         pendingSyncPassphrase = nil
                         model.settingsNotice = AppNotice(
                             message: i18n.t("message.localDataReset"),
@@ -123,8 +145,7 @@ struct DataSettingsView: View {
             Text(dangerText("danger.import", i18n))
         }
         .onAppear {
-            committedSyncPassphrase = model.secret("sync-passphrase")
-            syncPassphraseDraft = committedSyncPassphrase
+            _ = refreshSyncPassphrase(preserveDraft: false)
         }
         .fileImporter(
             isPresented: $backupImporterPresented,
@@ -149,6 +170,9 @@ struct DataSettingsView: View {
     }
 
     private func saveSyncPassphrase() {
+        guard refreshSyncPassphrase(preserveDraft: true) else {
+            return
+        }
         if syncPassphraseDraft == committedSyncPassphrase {
             model.settingsNotice = AppNotice(message: i18n.t("message.syncPasswordAlreadySaved"), kind: .success)
             return
@@ -170,22 +194,39 @@ struct DataSettingsView: View {
         message: String,
         kind: AppNotice.Kind = .success
     ) {
-        guard model.setSecret("sync-passphrase", value) else {
+        guard refreshSyncPassphrase(preserveDraft: true) else {
             return
         }
-        committedSyncPassphrase = value
-        syncPassphraseDraft = value
+        let storedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : value
+        guard model.setSecret("sync-passphrase", storedValue) else {
+            return
+        }
+        committedSyncPassphrase = storedValue
+        syncPassphraseDraft = storedValue
+        syncPassphraseReadState = storedValue.isEmpty ? .missing : .value(storedValue)
         pendingSyncPassphrase = nil
         model.settingsNotice = AppNotice(message: message, kind: kind)
     }
 
+    private func requestSyncPassphraseReset() {
+        guard refreshSyncPassphrase(preserveDraft: true) else {
+            return
+        }
+        confirmSyncPasswordReset = true
+    }
+
     private func prepareEncryptedBackupExport() {
+        guard refreshSyncPassphrase(preserveDraft: true) else {
+            return
+        }
         guard !syncPassphraseDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             model.settingsNotice = AppNotice(message: i18n.t("notice.backupExportNeedsPassphrase"), kind: .warning)
             return
         }
 
         let passphrase = syncPassphraseDraft
+        backupExportGeneration &+= 1
+        let exportGeneration = backupExportGeneration
         Task {
             do {
                 let data = try await model.exportEncryptedBackup(passphrase: passphrase)
@@ -193,16 +234,21 @@ struct DataSettingsView: View {
                     data.count,
                     maxBytes: maxEncryptedBackupFileBytes
                 )
+                guard exportGeneration == backupExportGeneration else { return }
                 backupDocument = ZeroChatBackupDocument(data: data)
                 backupExportFileName = backupFileName()
                 backupExporterPresented = true
             } catch {
+                guard exportGeneration == backupExportGeneration else { return }
                 model.settingsNotice = AppNotice(message: i18n.errorMessage(error), kind: .error)
             }
         }
     }
 
     private func requestEncryptedBackupImport() {
+        guard refreshSyncPassphrase(preserveDraft: true) else {
+            return
+        }
         guard !syncPassphraseDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             model.settingsNotice = AppNotice(message: i18n.t("notice.backupImportNeedsPassphrase"), kind: .warning)
             return
@@ -212,6 +258,9 @@ struct DataSettingsView: View {
     }
 
     private func importEncryptedBackup(_ result: Result<[URL], Error>) {
+        guard refreshSyncPassphrase(preserveDraft: true) else {
+            return
+        }
         let passphrase = syncPassphraseDraft
 
         Task {
@@ -234,5 +283,28 @@ struct DataSettingsView: View {
                 model.settingsNotice = AppNotice(message: i18n.errorMessage(error), kind: .error)
             }
         }
+    }
+
+    @discardableResult
+    private func refreshSyncPassphrase(preserveDraft: Bool) -> Bool {
+        let previousCommittedValue = committedSyncPassphrase
+        let state = model.secretReadState("sync-passphrase")
+        syncPassphraseReadState = state
+
+        let currentValue: String
+        switch state {
+        case .missing:
+            currentValue = ""
+        case .value(let value):
+            currentValue = value
+        case .failure:
+            return false
+        }
+
+        if !preserveDraft || syncPassphraseDraft == previousCommittedValue {
+            syncPassphraseDraft = currentValue
+        }
+        committedSyncPassphrase = currentValue
+        return true
     }
 }

@@ -305,7 +305,15 @@
           "type": "integer",
           "minimum": 0
         }
-      }
+      },
+      "anyOf": [
+        {
+          "required": ["dataUrl"]
+        },
+        {
+          "required": ["url"]
+        }
+      ]
     },
     "skillChunk": {
       "type": "object",

@@ -29,6 +29,7 @@ const imageModelMarkers = [
   'midjourney',
   'stable-diffusion',
 ]
+const generationOnlyImageModelMarker = 'dall-e-3'
 const nonChatModelMarkers = [
   'audio',
   'embed',
@@ -92,7 +93,7 @@ function selectableModelsForProvider(provider: ProviderConfig | null): string[] 
 
   const listedModels = uniquePresetModels(provider.models ?? [])
 
-  if (listedModels.length > 0) {
+  if (listedModels.length) {
     return listedModels
   }
 
@@ -108,7 +109,7 @@ function selectableModelsForProvider(provider: ProviderConfig | null): string[] 
 }
 
 function hasAuthoritativeModelCatalog(provider: ProviderConfig | null): boolean {
-  return uniquePresetModels(provider?.models ?? []).length > 0
+  return !!uniquePresetModels(provider?.models ?? []).length
 }
 
 export function isLikelyChatModel(model: string): boolean {
@@ -135,7 +136,8 @@ export function isLikelyImageModel(model: string): boolean {
 
 export function isLikelyImageEditingModel(model: string): boolean {
   return (
-    isLikelyImageModel(model) && !model.toLowerCase().includes('dall-e-3')
+    isLikelyImageModel(model) &&
+    !model.toLowerCase().includes(generationOnlyImageModelMarker)
   )
 }
 
@@ -266,21 +268,10 @@ export function imageEditingModelsForProvider(
 }
 
 export function preferredImageModel(models: string[]): string {
-  const preferredMarkers = [
-    'gpt-image-2',
-    'gpt-image-1',
-    'dall-e-3',
-    'dall-e-2',
-    'imagen',
-    'flux',
-  ]
-
-  return (
-    preferredMarkers
-      .map((marker) =>
-        models.find((model) => model.toLowerCase().includes(marker)),
-      )
-      .find(Boolean) ?? models[0] ?? ''
+  return preferredModelByMarkers(
+    models,
+    ['gpt-image-2', 'gpt-image-1', 'dall-e-3', 'dall-e-2', 'imagen', 'flux'],
+    isLikelyImageModel,
   )
 }
 
@@ -356,6 +347,13 @@ function standardFallbackModelsForCapability(
     return []
   }
 
+  if (hasAuthoritativeModelCatalog(provider)) {
+    return selectableModelsForProvider(provider).filter(
+      (model) =>
+        !model.toLowerCase().includes(generationOnlyImageModelMarker),
+    )
+  }
+
   switch (capability) {
     case 'embeddings':
       return standardEmbeddingModelFallbacks
@@ -372,9 +370,7 @@ function standardFallbackModelsForCapability(
         ...standardAudioTranscriptionModelFallbacks,
         ...standardAudioSpeechModelFallbacks,
       ]
-    case 'chat':
-    case 'image-editing':
-    case 'image-generation':
+    default:
       return []
   }
 }
@@ -384,7 +380,7 @@ function modelsOrDeclaredFallbacks(
   capability: ProviderModelCapability,
   models: string[],
 ): string[] {
-  if (models.length || hasAuthoritativeModelCatalog(provider)) {
+  if (models.length) {
     return models
   }
 
@@ -421,9 +417,7 @@ function configuredModelsForProviderCapability(
     case 'realtime':
       return selectableModelsForProvider(provider).filter(isLikelyRealtimeModel)
     case 'moderation':
-      return selectableModelsForProvider(provider).filter(
-        isLikelyModerationModel,
-      )
+      return selectableModelsForProvider(provider).filter(isLikelyModerationModel)
   }
 }
 
@@ -643,7 +637,13 @@ export function modelForProviderCapability(
 }
 
 function modelVersionScore(model: string, family: string): number {
-  const match = model.match(new RegExp(`${family}[-_ ]?(\\d+(?:[._-]\\d+)*)`, 'iu'))
+  const versionSource = model.replace(
+    /[-_]\d{4}[-_]\d\d[-_]\d\d/,
+    '',
+  )
+  const match = versionSource.match(
+    new RegExp(`${family}[-_ ]?(\\d+(?:[._-]\\d+)*)`, 'iu'),
+  )
 
   if (!match?.[1]) {
     return 0

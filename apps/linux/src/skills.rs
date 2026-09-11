@@ -175,6 +175,8 @@ fn build_skill_chunks(content: &str, fallback_heading: &str) -> Vec<UserSkillChu
             chunks.push(UserSkillChunk {
                 id: format!("chunk-{}", chunks.len() + 1),
                 heading: section.heading.clone(),
+                content_ref: None,
+                content_preview: None,
                 keywords: extract_keywords(&format!("{}\n{}", section.heading, part), 28),
                 token_estimate: estimate_tokens(&part),
                 content: part,
@@ -186,6 +188,8 @@ fn build_skill_chunks(content: &str, fallback_heading: &str) -> Vec<UserSkillChu
         chunks.push(UserSkillChunk {
             id: "chunk-1".to_owned(),
             heading: fallback_heading.to_owned(),
+            content_ref: None,
+            content_preview: None,
             keywords: extract_keywords(&normalized, 28),
             token_estimate: estimate_tokens(&normalized),
             content: normalized,

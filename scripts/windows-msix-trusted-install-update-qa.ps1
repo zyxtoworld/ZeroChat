@@ -1,5 +1,5 @@
 param(
-  [string] $BuildRoot = "C:\ZeroChatWindowsBuild",
+  [string] $BuildRoot = ".local\codex\artifacts\windows-build",
   [string] $Configuration = "Release",
   [string] $Platform = "x64",
   [string] $PreviousVersion = "",
@@ -13,6 +13,10 @@ param(
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+if (-not [System.IO.Path]::IsPathRooted($BuildRoot)) {
+  $BuildRoot = Join-Path $RepoRoot $BuildRoot
+}
+$BuildRoot = [System.IO.Path]::GetFullPath($BuildRoot)
 $ManualQaDir = Join-Path $RepoRoot ".manual-qa"
 $PackageScript = Join-Path $PSScriptRoot "package-windows-msix.ps1"
 $InstallQaScript = Join-Path $PSScriptRoot "windows-msix-install-qa.ps1"
@@ -1404,9 +1408,7 @@ try {
       $PreviousPackage,
       "-TrustedCertificatePath",
       $PublicCertificatePath,
-      "-TrustCertificate",
       "-TrustMachineCertificate",
-      "-TrustSigningRoot",
       "-Install"
   )
   Write-QaStage "Launching packaged app after fresh install."
@@ -1435,9 +1437,7 @@ try {
       $CurrentPackage,
       "-TrustedCertificatePath",
       $PublicCertificatePath,
-      "-RemoveTrustedCertificate",
       "-RemoveTrustedMachineCertificate",
-      "-RemoveTrustedSigningRoot",
       "-Uninstall"
   )
 

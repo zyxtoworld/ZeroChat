@@ -14,7 +14,7 @@ import app.zerochat.security.SecretStore
 import app.zerochat.ui.NativeI18n
 
 @Composable
-fun ModelSettings(
+internal fun ModelSettings(
     snapshot: AppSnapshot,
     onSnapshotChange: (AppSnapshot) -> Unit,
     onSnapshotReduce: ((AppSnapshot) -> AppSnapshot) -> Unit,

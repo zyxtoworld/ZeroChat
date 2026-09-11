@@ -10,11 +10,13 @@ import {
   accumulateProviderResponseBytes,
   assertProviderResponseContentLength,
   assertProviderResponseOk,
+  cancelUnreadProviderResponse,
   isAbortError,
   MAX_PROVIDER_IMAGE_RESPONSE_BYTES,
   MAX_PROVIDER_STREAM_RESPONSE_BYTES,
   ProviderRequestError,
   providerConnectionError,
+  providerEmptyResponseError,
   providerTimeoutError,
   readProviderJsonResponse,
 } from './providerErrors'
@@ -47,10 +49,6 @@ import { providerTimeoutSignal } from './providerTimeoutSignal'
 
 export { synthesizeSpeechAudio } from './audioSpeech'
 export { transcribeAudioFile } from './audioTranscription'
-export {
-  regenerateAssistantMessageGeneration,
-  submitEditedUserMessageGeneration,
-} from './chatGenerationMessageReruns'
 
 interface StreamOptions {
   provider: ProviderConfig
@@ -111,10 +109,11 @@ async function fetchProviderEndpoint<T>(
   timeoutMs = PROVIDER_CHAT_REQUEST_TIMEOUT_MS,
 ): Promise<T> {
   const timeoutSignal = providerTimeoutSignal(init.signal, timeoutMs)
+  let response: Response | undefined
   let responseReceived = false
 
   try {
-    const response = await fetch(url, {
+    response = await fetch(url, {
       ...init,
       redirect: 'error',
       signal: timeoutSignal.signal,
@@ -124,6 +123,8 @@ async function fetchProviderEndpoint<T>(
     timeoutSignal.signal.throwIfAborted()
     return result
   } catch (error: unknown) {
+    cancelUnreadProviderResponse(response)
+
     if (timeoutSignal.timedOut()) {
       throw providerTimeoutError()
     }
@@ -220,9 +221,26 @@ async function readProviderStreamChunk(
 
   return new Promise((resolve, reject) => {
     let settled = false
+    let timerOwner: { handle?: ReturnType<typeof setTimeout> } | null = {}
+    let abortListenerRegistered = false
     const cleanup = () => {
-      globalThis.clearTimeout(timeoutId)
-      signal.removeEventListener('abort', abort)
+      const owner = timerOwner
+      timerOwner = null
+      if (owner?.handle !== undefined) {
+        try {
+          globalThis.clearTimeout(owner.handle)
+        } catch {
+          // Timer teardown is best-effort; the settled result remains authoritative.
+        }
+      }
+      if (abortListenerRegistered) {
+        abortListenerRegistered = false
+        try {
+          signal.removeEventListener('abort', abort)
+        } catch {
+          // Host teardown is not allowed to replace the stream result.
+        }
+      }
     }
     const settle = (
       action: () => void,
@@ -244,10 +262,34 @@ async function readProviderStreamChunk(
     const abort = () => {
       settle(() => reject(new DOMException('Aborted', 'AbortError')), true)
     }
-    const timeoutId = globalThis.setTimeout(() => {
-      settle(() => reject(providerTimeoutError()), true)
-    }, timeoutMs)
 
+    const owner = timerOwner
+    try {
+      const handle = globalThis.setTimeout(() => {
+        settle(() => reject(providerTimeoutError()), true)
+      }, timeoutMs)
+      if (timerOwner !== owner) {
+        try {
+          globalThis.clearTimeout(handle)
+        } catch {
+          // A late handle cannot change the already-settled stream result.
+        }
+      } else {
+        owner.handle = handle
+      }
+    } catch (error: unknown) {
+      if (timerOwner === owner) {
+        timerOwner = null
+      }
+      settle(() => reject(error), true)
+      return
+    }
+
+    if (settled) {
+      return
+    }
+
+    abortListenerRegistered = true
     signal.addEventListener('abort', abort, { once: true })
 
     reader.read().then(
@@ -335,6 +377,10 @@ export function selectContextMessages(
   const chatMessages = messages
     .filter((message) => message.role !== 'system')
     .slice(-normalizedLimit)
+
+  if (chatMessages[0]?.role === 'assistant') {
+    chatMessages.shift()
+  }
 
   return [...systemMessages, ...chatMessages]
 }
@@ -513,7 +559,7 @@ async function editImageViaResponsesTool({
     throw new Error(rt('error.modelRequired'))
   }
 
-  const imageDataUrl = await fileToDataUrl(image)
+  const imageDataUrl = await fileToDataUrl(image, signal)
   let lastError: unknown
 
   for (const model of models) {
@@ -565,12 +611,11 @@ async function readOpenAIStream(
     const json = await readProviderJsonResponse(response, undefined, signal) as {
       choices?: Array<{ message?: { content?: unknown } }>
     }
-    signal.throwIfAborted()
-    const content = json?.choices?.[0]?.message?.content
-
-    if (typeof content === 'string') {
-      publishProviderToken(signal, onToken, content)
-    }
+    publishProviderText(
+      signal,
+      onToken,
+      json?.choices?.[0]?.message?.content,
+    )
 
     return
   }
@@ -609,11 +654,7 @@ async function readOpenAIStream(
         continue
       }
 
-      const token = json?.choices?.[0]?.delta?.content
-
-      if (typeof token === 'string') {
-        publishProviderToken(signal, onToken, token)
-      }
+      publishProviderText(signal, onToken, json?.choices?.[0]?.delta?.content)
     }
 
     return false
@@ -648,6 +689,32 @@ async function readOpenAIStream(
   }
 }
 
+function readTextContent(value: unknown): string {
+  return typeof value === 'string'
+    ? value
+    : Array.isArray(value)
+      ? value.reduce(
+          (text, part) =>
+            part?.type === 'text' && typeof part.text === 'string'
+              ? text + part.text
+              : text,
+          '',
+        )
+      : ''
+}
+
+function publishProviderText(
+  signal: AbortSignal,
+  onToken: (token: string) => void,
+  value: unknown,
+): void {
+  const text = readTextContent(value)
+
+  if (text) {
+    publishProviderToken(signal, onToken, text)
+  }
+}
+
 async function readAnthropicStream(
   response: Response,
   signal: AbortSignal,
@@ -659,7 +726,6 @@ async function readAnthropicStream(
     const json = await readProviderJsonResponse(response, undefined, signal) as {
       content?: Array<{ type?: string; text?: string }>
     }
-    signal.throwIfAborted()
     const text = json?.content
       ?.map((block: { type?: string; text?: string }) => block.text ?? '')
       .join('')
@@ -741,7 +807,7 @@ function readResponsesText(value: unknown): string {
   }
 
   if (typeof response.output_text === 'string') {
-    return response.output_text
+    return response.output_text.trim()
   }
 
   if (!Array.isArray(response.output)) {
@@ -762,10 +828,11 @@ function readResponsesText(value: unknown): string {
         return ''
       }
 
-      const text = (part as { text?: unknown }).text
-      return typeof text === 'string' ? text : ''
+      const record = part as { output_text?: unknown; text?: unknown }
+      return readTextContent(record.text ?? record.output_text).trim()
     })
-    .join('')
+    .filter(Boolean)
+    .join('\n')
 }
 
 async function readResponsesStream(
@@ -779,7 +846,6 @@ async function readResponsesStream(
     const text = readResponsesText(
       await readProviderJsonResponse(response, undefined, signal),
     )
-    signal.throwIfAborted()
     publishProviderToken(signal, onToken, text)
     return
   }
@@ -1077,6 +1143,11 @@ export async function streamChat(options: StreamOptions): Promise<void> {
     onToken,
   } = options
   const endpoint = buildProviderChatEndpoint(provider)
+  let assistantContent = ''
+  const publishToken = (token: string): void => {
+    assistantContent += token
+    publishProviderToken(signal, onToken, token)
+  }
 
   if (providerNeedsBrowserKey(provider) && !apiKey) {
     throw new Error(rt('error.providerKeyRequired'))
@@ -1110,12 +1181,8 @@ export async function streamChat(options: StreamOptions): Promise<void> {
       },
     )
 
-    await readResponsesStream(response, signal, onToken)
-    signal.throwIfAborted()
-    return
-  }
-
-  if (provider.kind === 'anthropic') {
+    await readResponsesStream(response, signal, publishToken)
+  } else if (provider.kind === 'anthropic') {
     const response = await fetchProviderStreamResponse(
       provider,
       chatConnectionTarget(),
@@ -1133,28 +1200,30 @@ export async function streamChat(options: StreamOptions): Promise<void> {
       },
     )
 
-    await readAnthropicStream(response, signal, onToken)
-    signal.throwIfAborted()
-    return
+    await readAnthropicStream(response, signal, publishToken)
+  } else {
+    const response = await fetchProviderStreamResponse(
+      provider,
+      chatConnectionTarget(),
+      endpoint,
+      {
+        method: 'POST',
+        signal,
+        headers: buildProviderChatHeaders({ provider, apiKey, proxyToken }),
+        body: JSON.stringify(
+          buildProviderOpenAIChatBody({
+            model,
+            messages: contextMessages,
+          }),
+        ),
+      },
+    )
+
+    await readOpenAIStream(response, signal, publishToken)
   }
 
-  const response = await fetchProviderStreamResponse(
-    provider,
-    chatConnectionTarget(),
-    endpoint,
-    {
-      method: 'POST',
-      signal,
-      headers: buildProviderChatHeaders({ provider, apiKey, proxyToken }),
-      body: JSON.stringify(
-        buildProviderOpenAIChatBody({
-          model,
-          messages: contextMessages,
-        }),
-      ),
-    },
-  )
-
-  await readOpenAIStream(response, signal, onToken)
   signal.throwIfAborted()
+  if (!assistantContent.trim()) {
+    throw providerEmptyResponseError()
+  }
 }

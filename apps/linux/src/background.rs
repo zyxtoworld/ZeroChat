@@ -1,6 +1,9 @@
 use crate::{
     STREAMING_UI_FRAME_MS,
-    ai::{AiClient, AiHttpFailure, AiTimeoutFailure, GeneratedImage, ImageUpload},
+    ai::{
+        AiClient, AiEmptyResponseFailure, AiHttpFailure, AiTimeoutFailure, GeneratedImage,
+        ImageUpload,
+    },
     chat_retry_policy::{ChatRequestFailureKind, should_retry_chat_request},
     models::{ChatMessage, ProviderConfig},
     sync::SyncClient,
@@ -19,6 +22,7 @@ use tokio::sync::watch;
 
 pub(crate) const MAX_CHAT_AUTO_RETRIES: u8 = 3;
 const CHAT_AUTO_RETRY_DELAYS_MS: [u64; 3] = [400, 900, 1_600];
+pub(crate) const BACKGROUND_TASK_DISCONNECTED: &str = "Background task ended unexpectedly.";
 
 #[derive(Clone)]
 pub(crate) struct AiChatRequest {
@@ -50,6 +54,9 @@ fn chat_request_failure(error: &anyhow::Error) -> ChatRequestFailureKind {
         }
         if cause.downcast_ref::<AiTimeoutFailure>().is_some() {
             return ChatRequestFailureKind::Timeout;
+        }
+        if cause.downcast_ref::<AiEmptyResponseFailure>().is_some() {
+            return ChatRequestFailureKind::EmptyResponse;
         }
         if let Some(failure) = cause.downcast_ref::<reqwest::Error>()
             && (failure.is_timeout() || failure.is_connect() || failure.is_body())
@@ -121,33 +128,63 @@ pub(crate) struct AiSpeechRequest {
     pub(crate) input: String,
 }
 
+const BACKGROUND_TASK_SPAWN_ERROR: &str = "Background task could not start.";
+
+fn deliver_background_spawn_result<T>(
+    spawn_result: std::io::Result<thread::JoinHandle<()>>,
+    sender: mpsc::Sender<T>,
+    failure_event: impl FnOnce(String) -> T,
+) {
+    if spawn_result.is_err() {
+        let _ = sender.send(failure_event(BACKGROUND_TASK_SPAWN_ERROR.to_owned()));
+    }
+}
+
+fn spawn_background_task<T: Send + 'static>(
+    name: &'static str,
+    sender: mpsc::Sender<T>,
+    task: impl FnOnce(mpsc::Sender<T>) + Send + 'static,
+    failure_event: impl FnOnce(String) -> T,
+) {
+    let task_sender = sender.clone();
+    let spawn_result = thread::Builder::new()
+        .name(name.to_owned())
+        .spawn(move || task(task_sender));
+    deliver_background_spawn_result(spawn_result, sender, failure_event);
+}
+
 pub(crate) fn spawn_ai_chat_request(
     request: AiChatRequest,
     sender: mpsc::Sender<Result<String, String>>,
 ) {
-    thread::spawn(move || {
-        let result = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| error.to_string())
-            .and_then(|runtime| {
-                runtime
-                    .block_on(async {
-                        AiClient::new()
-                            .send(
-                                &request.provider,
-                                &request.api_key,
-                                &request.model,
-                                &request.messages,
-                                request.context_message_limit,
-                                &request.access_key,
-                            )
-                            .await
-                    })
-                    .map_err(|error| error.to_string())
-            });
-        let _ = sender.send(result);
-    });
+    spawn_background_task(
+        "zerochat-ai-chat",
+        sender,
+        move |sender| {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime
+                        .block_on(async {
+                            AiClient::new()?
+                                .send(
+                                    &request.provider,
+                                    &request.api_key,
+                                    &request.model,
+                                    &request.messages,
+                                    request.context_message_limit,
+                                    &request.access_key,
+                                )
+                                .await
+                        })
+                        .map_err(|error| error.to_string())
+                });
+            let _ = sender.send(result);
+        },
+        Err,
+    );
 }
 
 pub(crate) fn spawn_ai_chat_stream_request(
@@ -156,94 +193,102 @@ pub(crate) fn spawn_ai_chat_stream_request(
     cancel: Arc<AtomicBool>,
     cancellation: watch::Receiver<bool>,
 ) {
-    thread::spawn(move || {
-        let result = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| error.to_string())
-            .and_then(|runtime| {
-                runtime
-                    .block_on(async {
-                        let mut retry_index = 0usize;
+    spawn_background_task(
+        "zerochat-ai-chat-stream",
+        sender,
+        move |sender| {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime
+                        .block_on(async {
+                            let mut retry_index = 0usize;
 
-                        loop {
-                            if cancel.load(Ordering::SeqCst) {
-                                return Err(anyhow::anyhow!("Generation stopped"));
-                            }
+                            loop {
+                                if cancel.load(Ordering::SeqCst) {
+                                    return Err(anyhow::anyhow!("Generation stopped"));
+                                }
 
-                            let sender_for_delta = sender.clone();
-                            let cancel_for_delta = cancel.clone();
-                            let partial_seen = Arc::new(AtomicBool::new(false));
-                            let partial_seen_for_delta = partial_seen.clone();
-                            let mut last_emit = Instant::now()
-                                .checked_sub(Duration::from_millis(STREAMING_UI_FRAME_MS))
-                                .unwrap_or_else(Instant::now);
+                                let sender_for_delta = sender.clone();
+                                let cancel_for_delta = cancel.clone();
+                                let partial_seen = Arc::new(AtomicBool::new(false));
+                                let partial_seen_for_delta = partial_seen.clone();
+                                let mut last_emit = Instant::now()
+                                    .checked_sub(Duration::from_millis(STREAMING_UI_FRAME_MS))
+                                    .unwrap_or_else(Instant::now);
 
-                            let result = AiClient::new()
-                                .stream(
-                                    &request.provider,
-                                    &request.api_key,
-                                    &request.model,
-                                    &request.messages,
-                                    request.context_message_limit,
-                                    &request.access_key,
-                                    cancellation.clone(),
-                                    |partial| {
-                                        if cancel_for_delta.load(Ordering::SeqCst) {
-                                            return false;
-                                        }
+                                let result = AiClient::new()?
+                                    .stream(
+                                        &request.provider,
+                                        &request.api_key,
+                                        &request.model,
+                                        &request.messages,
+                                        request.context_message_limit,
+                                        &request.access_key,
+                                        cancellation.clone(),
+                                        |partial| {
+                                            if cancel_for_delta.load(Ordering::SeqCst) {
+                                                return false;
+                                            }
 
-                                        partial_seen_for_delta.store(true, Ordering::SeqCst);
-                                        if last_emit.elapsed()
-                                            >= Duration::from_millis(STREAMING_UI_FRAME_MS)
-                                        {
-                                            last_emit = Instant::now();
-                                            let _ = sender_for_delta
-                                                .send(AiChatStreamEvent::Delta(partial));
-                                        }
+                                            if !partial.trim().is_empty() {
+                                                partial_seen_for_delta
+                                                    .store(true, Ordering::SeqCst);
+                                            }
+                                            if last_emit.elapsed()
+                                                >= Duration::from_millis(STREAMING_UI_FRAME_MS)
+                                            {
+                                                last_emit = Instant::now();
+                                                let _ = sender_for_delta
+                                                    .send(AiChatStreamEvent::Delta(partial));
+                                            }
 
-                                        !cancel_for_delta.load(Ordering::SeqCst)
-                                    },
-                                )
-                                .await;
-
-                            match result {
-                                Ok(content) => return Ok(content),
-                                Err(error) => {
-                                    let partial_seen = partial_seen.load(Ordering::SeqCst);
-                                    if cancel.load(Ordering::SeqCst)
-                                        || retry_index >= usize::from(MAX_CHAT_AUTO_RETRIES)
-                                        || !should_retry_chat_request(
-                                            chat_request_failure(&error),
-                                            partial_seen,
-                                        )
-                                    {
-                                        return Err(error);
-                                    }
-
-                                    retry_index += 1;
-                                    let _ = sender.send(AiChatStreamEvent::Retry {
-                                        attempt: retry_index as u8,
-                                        total: MAX_CHAT_AUTO_RETRIES,
-                                    });
-
-                                    if !wait_for_chat_retry(
-                                        chat_auto_retry_delay_ms(retry_index - 1),
-                                        &cancel,
+                                            !cancel_for_delta.load(Ordering::SeqCst)
+                                        },
                                     )
-                                    .await
-                                    {
-                                        return Err(anyhow::anyhow!("Generation stopped"));
+                                    .await;
+
+                                match result {
+                                    Ok(content) => return Ok(content),
+                                    Err(error) => {
+                                        let partial_seen = partial_seen.load(Ordering::SeqCst);
+                                        if cancel.load(Ordering::SeqCst)
+                                            || retry_index >= usize::from(MAX_CHAT_AUTO_RETRIES)
+                                            || !should_retry_chat_request(
+                                                chat_request_failure(&error),
+                                                partial_seen,
+                                            )
+                                        {
+                                            return Err(error);
+                                        }
+
+                                        retry_index += 1;
+                                        let _ = sender.send(AiChatStreamEvent::Retry {
+                                            attempt: retry_index as u8,
+                                            total: MAX_CHAT_AUTO_RETRIES,
+                                        });
+
+                                        if !wait_for_chat_retry(
+                                            chat_auto_retry_delay_ms(retry_index - 1),
+                                            &cancel,
+                                        )
+                                        .await
+                                        {
+                                            return Err(anyhow::anyhow!("Generation stopped"));
+                                        }
                                     }
                                 }
                             }
-                        }
-                    })
-                    .map_err(|error| error.to_string())
-            });
+                        })
+                        .map_err(|error| error.to_string())
+                });
 
-        let _ = sender.send(AiChatStreamEvent::Done(result));
-    });
+            let _ = sender.send(AiChatStreamEvent::Done(result));
+        },
+        |message| AiChatStreamEvent::Done(Err(message)),
+    );
 }
 
 pub(crate) fn spawn_ai_image_request(
@@ -252,66 +297,76 @@ pub(crate) fn spawn_ai_image_request(
     cancel: Arc<AtomicBool>,
     mut cancellation: watch::Receiver<bool>,
 ) {
-    thread::spawn(move || {
-        let result = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| error.to_string())
-            .and_then(|runtime| {
-                runtime
-                    .block_on(async {
-                        if cancel.load(Ordering::SeqCst) || *cancellation.borrow() {
-                            return Err(anyhow::anyhow!("Generation stopped"));
-                        }
-
-                        tokio::select! {
-                            _ = wait_for_generation_cancellation(&mut cancellation) => {
-                                Err(anyhow::anyhow!("Generation stopped"))
+    spawn_background_task(
+        "zerochat-ai-image",
+        sender,
+        move |sender| {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime
+                        .block_on(async {
+                            if cancel.load(Ordering::SeqCst) || *cancellation.borrow() {
+                                return Err(anyhow::anyhow!("Generation stopped"));
                             }
-                            result = run_ai_image_request_once(&request) => result,
-                        }
-                    })
-                    .map_err(|error| error.to_string())
-            });
-        let _ = sender.send(AiImageRequestEvent::Done(result));
-    });
+
+                            tokio::select! {
+                                _ = wait_for_generation_cancellation(&mut cancellation) => {
+                                    Err(anyhow::anyhow!("Generation stopped"))
+                                }
+                                result = run_ai_image_request_once(&request) => result,
+                            }
+                        })
+                        .map_err(|error| error.to_string())
+                });
+            let _ = sender.send(AiImageRequestEvent::Done(result));
+        },
+        |message| AiImageRequestEvent::Done(Err(message)),
+    );
 }
 
 pub(crate) fn spawn_ai_speech_request(
     request: AiSpeechRequest,
     sender: mpsc::Sender<Result<Vec<u8>, String>>,
 ) {
-    thread::spawn(move || {
-        let result = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| error.to_string())
-            .and_then(|runtime| {
-                runtime
-                    .block_on(async {
-                        AiClient::new()
-                            .create_speech(
-                                &request.provider,
-                                &request.api_key,
-                                &request.access_key,
-                                &request.model,
-                                &request.input,
-                                Some("alloy"),
-                                Some("mp3"),
-                                None,
-                            )
-                            .await
-                    })
-                    .map_err(|error| error.to_string())
-            });
-        let _ = sender.send(result);
-    });
+    spawn_background_task(
+        "zerochat-ai-speech",
+        sender,
+        move |sender| {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime
+                        .block_on(async {
+                            AiClient::new()?
+                                .create_speech(
+                                    &request.provider,
+                                    &request.api_key,
+                                    &request.access_key,
+                                    &request.model,
+                                    &request.input,
+                                    Some("alloy"),
+                                    Some("mp3"),
+                                    None,
+                                )
+                                .await
+                        })
+                        .map_err(|error| error.to_string())
+                });
+            let _ = sender.send(result);
+        },
+        Err,
+    );
 }
 
 async fn run_ai_image_request_once(request: &AiImageRequest) -> anyhow::Result<GeneratedImage> {
     match &request.kind {
         AiImageRequestKind::Generate => {
-            AiClient::new()
+            AiClient::new()?
                 .generate_image(
                     &request.provider,
                     &request.api_key,
@@ -324,7 +379,7 @@ async fn run_ai_image_request_once(request: &AiImageRequest) -> anyhow::Result<G
                 .await
         }
         AiImageRequestKind::Edit { source } => {
-            AiClient::new()
+            AiClient::new()?
                 .edit_image(
                     &request.provider,
                     &request.api_key,
@@ -339,7 +394,7 @@ async fn run_ai_image_request_once(request: &AiImageRequest) -> anyhow::Result<G
                 .await
         }
         AiImageRequestKind::Inpaint { source, mask } => {
-            AiClient::new()
+            AiClient::new()?
                 .edit_image(
                     &request.provider,
                     &request.api_key,
@@ -362,22 +417,27 @@ pub(crate) fn spawn_model_list_request(
     access_key: String,
     sender: mpsc::Sender<Result<Vec<String>, String>>,
 ) {
-    thread::spawn(move || {
-        let result = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| error.to_string())
-            .and_then(|runtime| {
-                runtime
-                    .block_on(async {
-                        AiClient::new()
-                            .list_models(&provider, &api_key, &access_key)
-                            .await
-                    })
-                    .map_err(|error| error.to_string())
-            });
-        let _ = sender.send(result);
-    });
+    spawn_background_task(
+        "zerochat-ai-models",
+        sender,
+        move |sender| {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime
+                        .block_on(async {
+                            AiClient::new()?
+                                .list_models(&provider, &api_key, &access_key)
+                                .await
+                        })
+                        .map_err(|error| error.to_string())
+                });
+            let _ = sender.send(result);
+        },
+        Err,
+    );
 }
 
 pub(crate) fn spawn_cloudflare_clear_request(
@@ -385,22 +445,27 @@ pub(crate) fn spawn_cloudflare_clear_request(
     token: String,
     sender: mpsc::Sender<Result<(), String>>,
 ) {
-    thread::spawn(move || {
-        let result = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| error.to_string())
-            .and_then(|runtime| {
-                runtime
-                    .block_on(async {
-                        SyncClient::new()
-                            .clear_cloudflare(&worker_endpoint, &token)
-                            .await
-                    })
-                    .map_err(|error| error.to_string())
-            });
-        let _ = sender.send(result);
-    });
+    spawn_background_task(
+        "zerochat-cloudflare-clear",
+        sender,
+        move |sender| {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime
+                        .block_on(async {
+                            SyncClient::new()?
+                                .clear_cloudflare(&worker_endpoint, &token)
+                                .await
+                        })
+                        .map_err(|error| error.to_string())
+                });
+            let _ = sender.send(result);
+        },
+        Err,
+    );
 }
 
 pub(crate) fn spawn_gist_clear_request(
@@ -409,28 +474,35 @@ pub(crate) fn spawn_gist_clear_request(
     token: String,
     sender: mpsc::Sender<Result<(), String>>,
 ) {
-    thread::spawn(move || {
-        let result = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| error.to_string())
-            .and_then(|runtime| {
-                runtime
-                    .block_on(async {
-                        SyncClient::new()
-                            .clear_gist(&gist_id, &gist_file, &token)
-                            .await
-                    })
-                    .map_err(|error| error.to_string())
-            });
-        let _ = sender.send(result);
-    });
+    spawn_background_task(
+        "zerochat-gist-clear",
+        sender,
+        move |sender| {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime
+                        .block_on(async {
+                            SyncClient::new()?
+                                .clear_gist(&gist_id, &gist_file, &token)
+                                .await
+                        })
+                        .map_err(|error| error.to_string())
+                });
+            let _ = sender.send(result);
+        },
+        Err,
+    );
 }
 
 pub(crate) fn poll_background_result<T: 'static>(
     receiver: mpsc::Receiver<T>,
     mut on_result: impl FnMut(T) + 'static,
+    on_disconnect: impl FnOnce() -> T + 'static,
 ) {
+    let mut on_disconnect = Some(on_disconnect);
     glib::timeout_add_local(Duration::from_millis(80), move || {
         match receiver.try_recv() {
             Ok(result) => {
@@ -438,7 +510,12 @@ pub(crate) fn poll_background_result<T: 'static>(
                 glib::ControlFlow::Break
             }
             Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-            Err(mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                if let Some(result) = on_disconnect.take() {
+                    on_result(result());
+                }
+                glib::ControlFlow::Break
+            }
         }
     });
 }
@@ -446,7 +523,9 @@ pub(crate) fn poll_background_result<T: 'static>(
 pub(crate) fn poll_chat_stream(
     receiver: mpsc::Receiver<AiChatStreamEvent>,
     mut on_event: impl FnMut(AiChatStreamEvent) + 'static,
+    on_disconnect: impl FnOnce() -> AiChatStreamEvent + 'static,
 ) {
+    let mut on_disconnect = Some(on_disconnect);
     glib::timeout_add_local(Duration::from_millis(STREAMING_UI_FRAME_MS), move || {
         loop {
             match receiver.try_recv() {
@@ -461,7 +540,12 @@ pub(crate) fn poll_chat_stream(
                     return glib::ControlFlow::Break;
                 }
                 Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
-                Err(mpsc::TryRecvError::Disconnected) => return glib::ControlFlow::Break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    if let Some(event) = on_disconnect.take() {
+                        on_event(event());
+                    }
+                    return glib::ControlFlow::Break;
+                }
             }
         }
     });
@@ -470,7 +554,9 @@ pub(crate) fn poll_chat_stream(
 pub(crate) fn poll_ai_image_request(
     receiver: mpsc::Receiver<AiImageRequestEvent>,
     mut on_event: impl FnMut(AiImageRequestEvent) + 'static,
+    on_disconnect: impl FnOnce() -> AiImageRequestEvent + 'static,
 ) {
+    let mut on_disconnect = Some(on_disconnect);
     glib::timeout_add_local(Duration::from_millis(80), move || {
         loop {
             match receiver.try_recv() {
@@ -479,7 +565,12 @@ pub(crate) fn poll_ai_image_request(
                     return glib::ControlFlow::Break;
                 }
                 Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
-                Err(mpsc::TryRecvError::Disconnected) => return glib::ControlFlow::Break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    if let Some(event) = on_disconnect.take() {
+                        on_event(event());
+                    }
+                    return glib::ControlFlow::Break;
+                }
             }
         }
     });
@@ -488,12 +579,15 @@ pub(crate) fn poll_ai_image_request(
 #[cfg(test)]
 mod tests {
     use super::{
-        AiImageRequestEvent, MAX_CHAT_AUTO_RETRIES, chat_auto_retry_delay_ms, chat_request_failure,
+        AiChatStreamEvent, AiImageRequestEvent, BACKGROUND_TASK_DISCONNECTED,
+        MAX_CHAT_AUTO_RETRIES, chat_auto_retry_delay_ms, chat_request_failure,
+        deliver_background_spawn_result, poll_ai_image_request, poll_chat_stream,
     };
     use crate::{
-        ai::{AiHttpFailure, AiTimeoutFailure},
+        ai::{AiEmptyResponseFailure, AiHttpFailure, AiTimeoutFailure},
         chat_retry_policy::ChatRequestFailureKind,
     };
+    use std::{cell::Cell, rc::Rc, sync::mpsc, time::Duration};
 
     #[test]
     fn chat_retry_budget_matches_web_generation_retry_budget() {
@@ -509,6 +603,7 @@ mod tests {
         let http: anyhow::Error =
             AiHttpFailure::new(503, "opaque provider failure".to_owned()).into();
         let timeout: anyhow::Error = AiTimeoutFailure::new("opaque timeout").into();
+        let empty: anyhow::Error = AiEmptyResponseFailure::new().into();
         let transport = anyhow::Error::new(std::io::Error::new(
             std::io::ErrorKind::ConnectionReset,
             "opaque transport failure",
@@ -522,6 +617,10 @@ mod tests {
         assert_eq!(
             chat_request_failure(&timeout),
             ChatRequestFailureKind::Timeout
+        );
+        assert_eq!(
+            chat_request_failure(&empty),
+            ChatRequestFailureKind::EmptyResponse
         );
         assert_eq!(
             chat_request_failure(&transport),
@@ -540,6 +639,78 @@ mod tests {
         assert_eq!(
             result.expect_err("the event should retain the failure"),
             "request failed"
+        );
+    }
+
+    #[test]
+    fn background_spawn_failure_is_delivered_to_the_ui_channel() {
+        let (sender, receiver) = std::sync::mpsc::channel::<Result<(), String>>();
+        let spawn_result = Err(std::io::Error::other("thread limit reached"));
+
+        deliver_background_spawn_result(spawn_result, sender, Err);
+
+        assert_eq!(
+            receiver.recv().expect("failure event should be delivered"),
+            Err("Background task could not start.".to_owned())
+        );
+    }
+
+    #[test]
+    fn disconnected_chat_and_image_workers_deliver_terminal_failures() {
+        let context = glib::MainContext::default();
+
+        let (chat_sender, chat_receiver) = mpsc::channel();
+        drop(chat_sender);
+        let chat_loop = glib::MainLoop::new(Some(&context), false);
+        let chat_terminal = Rc::new(Cell::new(false));
+        let chat_terminal_for_callback = chat_terminal.clone();
+        let chat_loop_for_callback = chat_loop.clone();
+        poll_chat_stream(
+            chat_receiver,
+            move |event| {
+                if matches!(event, AiChatStreamEvent::Done(Err(_))) {
+                    chat_terminal_for_callback.set(true);
+                }
+                chat_loop_for_callback.quit();
+            },
+            || AiChatStreamEvent::Done(Err(BACKGROUND_TASK_DISCONNECTED.to_owned())),
+        );
+        let chat_loop_for_timeout = chat_loop.clone();
+        glib::timeout_add_local(Duration::from_millis(300), move || {
+            chat_loop_for_timeout.quit();
+            glib::ControlFlow::Break
+        });
+        chat_loop.run();
+        assert!(
+            chat_terminal.get(),
+            "a disconnected chat worker must terminalize the active generation"
+        );
+
+        let (image_sender, image_receiver) = mpsc::channel();
+        drop(image_sender);
+        let image_loop = glib::MainLoop::new(Some(&context), false);
+        let image_terminal = Rc::new(Cell::new(false));
+        let image_terminal_for_callback = image_terminal.clone();
+        let image_loop_for_callback = image_loop.clone();
+        poll_ai_image_request(
+            image_receiver,
+            move |event| {
+                if matches!(event, AiImageRequestEvent::Done(Err(_))) {
+                    image_terminal_for_callback.set(true);
+                }
+                image_loop_for_callback.quit();
+            },
+            || AiImageRequestEvent::Done(Err(BACKGROUND_TASK_DISCONNECTED.to_owned())),
+        );
+        let image_loop_for_timeout = image_loop.clone();
+        glib::timeout_add_local(Duration::from_millis(300), move || {
+            image_loop_for_timeout.quit();
+            glib::ControlFlow::Break
+        });
+        image_loop.run();
+        assert!(
+            image_terminal.get(),
+            "a disconnected image worker must terminalize the active generation"
         );
     }
 }

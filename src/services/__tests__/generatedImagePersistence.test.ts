@@ -94,6 +94,33 @@ describe('generated image persistence', () => {
     ).rejects.toThrow()
   })
 
+  it('cancels an unread remote image body when the final URL changes', async () => {
+    const cancel = vi.fn()
+    const response = new Response(
+      new ReadableStream<Uint8Array>({ cancel }),
+      {
+        status: 200,
+        headers: { 'content-type': 'image/png' },
+      },
+    )
+    Object.defineProperty(response, 'url', {
+      value: 'https://other.example.test/generated.png',
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => response))
+
+    await expect(
+      materializeGeneratedImage(
+        {
+          mimeType: 'image/png',
+          url: 'https://cdn.example.test/generated.png?token=temporary',
+        },
+        new AbortController().signal,
+        1_000,
+      ),
+    ).rejects.toThrow()
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledTimes(1))
+  })
+
   it('rejects declared oversized remote images before buffering the body', async () => {
     const cancel = vi.fn()
     const response = new Response(

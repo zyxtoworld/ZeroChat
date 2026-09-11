@@ -15,7 +15,7 @@ interface MarkdownWorkerResponse {
 interface PendingRender {
   reject(error: Error): void
   resolve(html: string): void
-  timeout: number
+  timeout?: number
 }
 
 const markdownWorkerTimeoutMs = 8000
@@ -37,13 +37,28 @@ function renderPlainTextFallback(content: string): string {
   return `<p>${escapeHtml(content).replace(/\n/g, '<br>')}</p>`
 }
 
-function rejectPendingRenders(error: Error): void {
-  for (const pending of pendingRenders.values()) {
-    window.clearTimeout(pending.timeout)
-    pending.reject(error)
+function clearPendingRenderTimeout(pending: PendingRender): void {
+  const timeout = pending.timeout
+  pending.timeout = undefined
+  if (timeout === undefined) {
+    return
   }
 
+  try {
+    window.clearTimeout(timeout)
+  } catch {
+    // The pending render still owns settlement when timer cleanup fails.
+  }
+}
+
+function rejectPendingRenders(error: Error): void {
+  const pending = [...pendingRenders.values()]
   pendingRenders.clear()
+
+  for (const render of pending) {
+    clearPendingRenderTimeout(render)
+    render.reject(error)
+  }
 }
 
 function handleWorkerMessage(event: MessageEvent<MarkdownWorkerResponse>): void {
@@ -53,8 +68,8 @@ function handleWorkerMessage(event: MessageEvent<MarkdownWorkerResponse>): void 
     return
   }
 
-  window.clearTimeout(pending.timeout)
   pendingRenders.delete(event.data.id)
+  clearPendingRenderTimeout(pending)
 
   if (event.data.html !== undefined) {
     pending.resolve(event.data.html)
@@ -77,14 +92,15 @@ export function terminateMarkdownWorker(worker: Worker | null): boolean {
   }
 }
 
-function failMarkdownWorker(message: string): void {
+function failMarkdownWorker(worker: Worker, message: string): void {
+  if (markdownWorker !== worker) return
   rejectPendingRenders(new Error(message))
-  terminateMarkdownWorker(markdownWorker)
+  terminateMarkdownWorker(worker)
   markdownWorker = null
 }
 
-function handleWorkerFailure(): void {
-  failMarkdownWorker('Markdown worker failed.')
+function handleWorkerFailure(worker: Worker): void {
+  failMarkdownWorker(worker, 'Markdown worker failed.')
 }
 
 function getMarkdownWorker(): Worker | null {
@@ -93,13 +109,19 @@ function getMarkdownWorker(): Worker | null {
   }
 
   if (!markdownWorker) {
-    markdownWorker = new Worker(new URL('../workers/markdown.worker.ts', import.meta.url), {
+    const worker = new Worker(new URL('../workers/markdown.worker.ts', import.meta.url), {
       name: 'zerochat-markdown-renderer',
       type: 'module',
     })
-    markdownWorker.addEventListener('message', handleWorkerMessage)
-    markdownWorker.addEventListener('error', handleWorkerFailure)
-    markdownWorker.addEventListener('messageerror', handleWorkerFailure)
+    try {
+      worker.addEventListener('message', handleWorkerMessage)
+      worker.addEventListener('error', () => handleWorkerFailure(worker))
+      worker.addEventListener('messageerror', () => handleWorkerFailure(worker))
+    } catch {
+      terminateMarkdownWorker(worker)
+      return null
+    }
+    markdownWorker = worker
   }
 
   return markdownWorker
@@ -119,17 +141,30 @@ function renderMarkdownInWorker(
   nextRequestId += 1
 
   return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(() => {
-      failMarkdownWorker('Markdown worker timed out.')
-    }, markdownWorkerTimeoutMs)
+    const pending: PendingRender = { reject, resolve }
+    pendingRenders.set(id, pending)
 
-    pendingRenders.set(id, { reject, resolve, timeout })
+    let timeout: number
+    try {
+      timeout = window.setTimeout(() => {
+        failMarkdownWorker(worker, 'Markdown worker timed out.')
+      }, markdownWorkerTimeoutMs)
+    } catch {
+      failMarkdownWorker(worker, 'Markdown worker timeout setup failed.')
+      return
+    }
+
+    pending.timeout = timeout
+    if (pendingRenders.get(id) !== pending) {
+      clearPendingRenderTimeout(pending)
+      return
+    }
 
     const request: MarkdownWorkerRequest = { content, id, labels }
     try {
       worker.postMessage(request)
     } catch {
-      failMarkdownWorker('Markdown worker postMessage failed.')
+      failMarkdownWorker(worker, 'Markdown worker postMessage failed.')
     }
   })
 }

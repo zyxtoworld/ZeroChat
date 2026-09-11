@@ -49,7 +49,7 @@ func appleCompletedGeneratedImageMessage(
     now: Int64
 ) -> ChatMessage {
     var completed = assistant
-    completed.content = image.revisedPrompt?.isEmpty == false ? image.revisedPrompt! : request.prompt
+    completed.content = image.revisedPrompt.flatMap { $0.isEmpty ? nil : $0 } ?? request.prompt
     completed.status = "done"
     completed.attachments = [
         MessageAttachment(

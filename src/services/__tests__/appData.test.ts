@@ -27,6 +27,7 @@ import {
 } from '../appData'
 import { providerFromPreset, providerPresets } from '../../data/presets'
 import type { AppData } from '../../types'
+import { createUserSkillFromContent } from '../skills'
 
 declare const process: {
   getBuiltinModule(name: 'node:fs'): {
@@ -583,7 +584,7 @@ describe('appData normalization', () => {
 
     const skill = normalized.skills[0]
 
-    expect(skill.id).toMatch(/^skill-/)
+    expect(skill.id).toMatch(/^[A-Za-z0-9_-]+$/)
     expect(skill).toMatchObject({
       name: 'fallback-name.md',
       description: '',
@@ -606,6 +607,46 @@ describe('appData normalization', () => {
     })
     expect(skill.chunks[0].keywords).toHaveLength(32)
     expect(skill.chunks[0].keywords[0]).toBe('chunk-keep')
+  })
+
+  it('reserves restored entity ids before generating missing Skill ids', () => {
+    const originalCrypto = globalThis.crypto
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0)
+    vi.stubGlobal('crypto', { randomUUID: () => 'skill-0' })
+
+    try {
+      const normalized = normalizeAppData(
+        appData({
+          conversations: [
+            {
+              ...appData().conversations[0],
+              id: 'skill-0',
+            },
+          ],
+          skills: [
+            {
+              name: 'First missing id',
+              chunks: [{ content: 'first skill content' }],
+            },
+            {
+              name: 'Second missing id',
+              chunks: [{ content: 'second skill content' }],
+            },
+          ] as unknown as AppData['skills'],
+        } as AppData),
+      )
+      const ids = [
+        ...normalized.conversations.map(({ id }) => id),
+        ...normalized.skills.map(({ id }) => id),
+      ]
+
+      expect(new Set(ids).size).toBe(ids.length)
+      expect(ids.every((id) => /^[A-Za-z0-9_-]+$/.test(id))).toBe(true)
+      expect(normalized.skills.map(({ id }) => id)).not.toContain('skill-0')
+    } finally {
+      randomSpy.mockRestore()
+      vi.stubGlobal('crypto', originalCrypto)
+    }
   })
 
   it('creates a safe empty chat when a provider-backed snapshot has no conversations', () => {
@@ -640,6 +681,42 @@ describe('appData normalization', () => {
     expect(normalized.preferences.activeConversationId).toBe(
       normalized.conversations[0].id,
     )
+  })
+
+  it('keeps fallback conversation creation safe when WebCrypto id generation fails', () => {
+    const provider = providerFromPreset(providerPresets[0])
+    const originalCrypto = globalThis.crypto
+    vi.stubGlobal('crypto', {
+      randomUUID: () => {
+        throw new Error('randomUUID unavailable')
+      },
+    })
+
+    try {
+      const normalized = normalizeAppData({
+        version: 1,
+        providers: [provider],
+        conversations: [],
+        skills: [],
+        skillSettings: defaultSkillSettings(),
+        sync: {
+          mode: 'local',
+          autoSync: false,
+          encryptionEnabled: true,
+        },
+        preferences: {
+          firstRunDone: true,
+          theme: 'system',
+          language: 'system',
+          compactMode: false,
+        },
+        updatedAt: 1,
+      } satisfies AppData)
+
+      expect(normalized.conversations[0]?.id).toMatch(/^conversation-/)
+    } finally {
+      vi.stubGlobal('crypto', originalCrypto)
+    }
   })
 
   it('keeps fallback conversation ids unique when WebCrypto is unavailable', () => {
@@ -681,6 +758,69 @@ describe('appData normalization', () => {
     } finally {
       vi.unstubAllGlobals()
       vi.restoreAllMocks()
+    }
+  })
+
+  it('does not reuse a restored Skill id for a later Skill creation', async () => {
+    const provider = providerFromPreset(providerPresets[0])
+    const restoredId = 'restored-skill-id'
+    const normalized = normalizeAppData({
+      version: 1,
+      providers: [provider],
+      conversations: [],
+      skills: [
+        {
+          id: restoredId,
+          name: 'Restored Skill',
+          description: 'Restored content',
+          contentType: 'markdown',
+          sourceSize: 16,
+          contentHash: 'restored-hash',
+          keywords: [],
+          fixed: false,
+          enabled: true,
+          autoMatch: true,
+          chunks: [
+            {
+              id: 'restored-skill-chunk',
+              heading: 'Restored',
+              content: 'restored content',
+              keywords: [],
+              tokenEstimate: 4,
+            },
+          ],
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      skillSettings: defaultSkillSettings(),
+      sync: {
+        mode: 'local',
+        autoSync: false,
+        encryptionEnabled: true,
+      },
+      preferences: {
+        firstRunDone: true,
+        theme: 'system',
+        language: 'system',
+        compactMode: false,
+      },
+      updatedAt: 1,
+    })
+    const originalCrypto = globalThis.crypto
+    vi.stubGlobal('crypto', {
+      subtle: originalCrypto?.subtle,
+      randomUUID: () => restoredId,
+    })
+
+    try {
+      expect(normalized.skills[0]?.id).toBe(restoredId)
+      const created = await createUserSkillFromContent('New Skill', 'new content')
+
+      expect(created.id).not.toBe(restoredId)
+      expect(created.id).toMatch(/^skill-/)
+    } finally {
+      vi.stubGlobal('crypto', originalCrypto)
     }
   })
 

@@ -64,7 +64,7 @@ class LocalResetTransactionTest {
         }
 
         assertTrue(thrown === failure)
-        assertEquals(listOf("stage", "snapshot", "restore"), events)
+        assertEquals(listOf("stage", "snapshot", "snapshot"), events)
     }
 
     @Test
@@ -192,6 +192,51 @@ class LocalResetTransactionTest {
             }
         }
         assertEquals(listOf("stage", "save", "finish"), finishEvents)
+    }
+
+    @Test
+    fun snapshotFailureAfterDurableWriteRestoresStagedCredentialsAndSnapshot() {
+        val source = snapshot(1)
+        val candidate = snapshot(2)
+        val failure = IllegalStateException("snapshot response lost")
+        var durableSnapshot = source
+        var storedCredential = "old-credential"
+        var compareCalls = 0
+
+        val thrown = runCatching {
+            runBlocking {
+                commitLocalResetTransaction(
+                    source = source,
+                    candidate = candidate,
+                    sourceRevision = 1,
+                    currentRevision = { 1 },
+                    stageCredentials = { storedCredential = "new-credential" },
+                    finishCredentials = {},
+                    restoreCredentials = { storedCredential = "old-credential" },
+                    compareAndSetSnapshot = { expected, replacement ->
+                        compareCalls += 1
+                        if (compareCalls == 1) {
+                            assertEquals(source, expected)
+                            durableSnapshot = replacement
+                            throw failure
+                        }
+
+                        assertEquals(candidate, expected)
+                        durableSnapshot = replacement
+                        SnapshotCompareAndSetResult(
+                            snapshot = replacement,
+                            revision = 2,
+                            committed = true,
+                        )
+                    },
+                )
+            }
+        }.exceptionOrNull()
+
+        assertTrue(thrown === failure)
+        assertEquals(source, durableSnapshot)
+        assertEquals("old-credential", storedCredential)
+        assertEquals(2, compareCalls)
     }
 
     private suspend fun transaction(

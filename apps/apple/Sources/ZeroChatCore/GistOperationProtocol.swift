@@ -1144,7 +1144,7 @@ private func mergeGistMessage(
         local: local.attachments ?? [],
         remoteBranchUpdatedAt: remoteUpdatedAt,
         localBranchUpdatedAt: localUpdatedAt,
-        itemUpdatedAt: { $0.createdAt },
+        itemUpdatedAt: { value, _ in value.createdAt },
         mergeSameId: { try mergeGistAttachment(base: $0, remote: $1, local: $2, preferLocal: preferLocal) }
     ).sorted {
         $0.createdAt != $1.createdAt
@@ -1367,7 +1367,7 @@ private func mergeConcurrentGistAppData(
         local: local.providers,
         remoteBranchUpdatedAt: remote.updatedAt,
         localBranchUpdatedAt: local.updatedAt,
-        itemUpdatedAt: { $0.updatedAt },
+        itemUpdatedAt: { value, _ in value.updatedAt },
         mergeSameId: mergeGistProvider
     )
     var conversations = try mergeGistRecords(
@@ -1376,7 +1376,7 @@ private func mergeConcurrentGistAppData(
         local: local.conversations,
         remoteBranchUpdatedAt: remote.updatedAt,
         localBranchUpdatedAt: local.updatedAt,
-        itemUpdatedAt: { $0.updatedAt },
+        itemUpdatedAt: { value, _ in value.updatedAt },
         mergeSameId: mergeGistConversation
     )
     let skills = try mergeGistRecords(
@@ -1385,7 +1385,7 @@ private func mergeConcurrentGistAppData(
         local: local.skills ?? [],
         remoteBranchUpdatedAt: remote.updatedAt,
         localBranchUpdatedAt: local.updatedAt,
-        itemUpdatedAt: { $0.updatedAt },
+        itemUpdatedAt: { value, _ in value.updatedAt },
         mergeSameId: mergeGistSkill
     )
     if providers.isEmpty { providers = Array((preferLocal ? local.providers : remote.providers).prefix(1)) }

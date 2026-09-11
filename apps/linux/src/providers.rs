@@ -17,6 +17,19 @@ pub(crate) fn provider_display_name(locale: &str, provider: &ProviderConfig) -> 
     provider.name.clone()
 }
 
+pub(crate) fn provider_request_is_current(
+    requested_provider: &ProviderConfig,
+    current_provider: &ProviderConfig,
+    requested_api_key: &str,
+    current_api_key: &str,
+    requested_access_key: &str,
+    current_access_key: &str,
+) -> bool {
+    requested_provider == current_provider
+        && requested_api_key == current_api_key
+        && requested_access_key == current_access_key
+}
+
 #[derive(Clone)]
 pub(crate) struct ProviderModelOption {
     pub(crate) label: String,
@@ -35,37 +48,49 @@ pub(crate) enum ProviderModelCapability {
     Moderation,
 }
 
+const GENERATION_ONLY_IMAGE_MODEL_MARKER: &str = "dall-e-3";
+const STANDARD_EMBEDDING_MODEL_FALLBACKS: &[&str] =
+    &["text-embedding-3-large", "text-embedding-3-small"];
+const STANDARD_AUDIO_SPEECH_MODEL_FALLBACKS: &[&str] = &["gpt-4o-mini-tts", "tts-1-hd", "tts-1"];
+const STANDARD_AUDIO_TRANSCRIPTION_MODEL_FALLBACKS: &[&str] =
+    &["gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper-1"];
+const STANDARD_REALTIME_MODEL_FALLBACKS: &[&str] = &[
+    "gpt-realtime-2",
+    "gpt-audio-1.5",
+    "gpt-realtime",
+    "gpt-audio-mini",
+    "gpt-realtime-mini",
+    "gpt-4o-realtime-preview",
+    "gpt-4o-realtime",
+];
+const STANDARD_MODERATION_MODEL_FALLBACKS: &[&str] = &[
+    "omni-moderation-latest",
+    "omni-moderation",
+    "moderation-latest",
+];
+
 pub(crate) fn provider_model_options(
     locale: &str,
     state: &LinuxAppState,
 ) -> (Vec<ProviderModelOption>, u32) {
-    let snapshot = state.snapshot.borrow();
-    let active_conversation = snapshot
-        .preferences
-        .active_conversation_id
-        .as_deref()
-        .and_then(|id| {
-            snapshot
-                .conversations
-                .iter()
-                .find(|conversation| conversation.id == id)
-        });
+    let providers = state.providers();
+    let active_conversation = state.active_conversation();
     let target_provider = active_conversation
+        .as_ref()
         .and_then(|conversation| {
-            snapshot
-                .providers
+            providers
                 .iter()
                 .find(|provider| provider.id == conversation.provider_id && provider.enabled)
         })
         .or_else(|| {
-            snapshot
-                .providers
+            providers
                 .iter()
                 .find(|provider| provider.enabled)
-                .or_else(|| snapshot.providers.first())
+                .or_else(|| providers.first())
         });
     let target = target_provider.map(|provider| {
         let conversation_model = active_conversation
+            .as_ref()
             .filter(|conversation| conversation.provider_id == provider.id)
             .map(|conversation| conversation.model.as_str());
         (
@@ -78,13 +103,12 @@ pub(crate) fn provider_model_options(
     let mut selected = 0_u32;
     let mut found_selected = false;
 
-    let enabled_providers = snapshot
-        .providers
+    let enabled_providers = providers
         .iter()
         .filter(|provider| provider.enabled)
         .collect::<Vec<_>>();
     let visible_providers = if enabled_providers.is_empty() {
-        snapshot.providers.iter().take(1).collect::<Vec<_>>()
+        providers.iter().take(1).collect::<Vec<_>>()
     } else {
         enabled_providers
     };
@@ -243,6 +267,8 @@ pub(crate) fn chat_models_for_provider(provider: &ProviderConfig) -> Vec<String>
 }
 
 fn model_version_score(model: &str, family: &str) -> i32 {
+    let model = strip_model_date_token(model);
+    let model = model.as_str();
     let Some(start) = model.find(family) else {
         return 0;
     };
@@ -294,9 +320,42 @@ fn model_version_score(model: &str, family: &str) -> i32 {
         })
 }
 
+fn strip_model_date_token(model: &str) -> String {
+    const DATE_TOKEN_LENGTH: usize = 11;
+
+    let bytes = model.as_bytes();
+    if bytes.len() < DATE_TOKEN_LENGTH {
+        return model.to_owned();
+    }
+
+    let is_digit = |index: usize| bytes.get(index).is_some_and(u8::is_ascii_digit);
+    let is_separator = |index: usize| matches!(bytes.get(index), Some(b'-') | Some(b'_'));
+
+    for index in 0..=bytes.len() - DATE_TOKEN_LENGTH {
+        if !is_separator(index)
+            || !(1..=4).all(|offset| is_digit(index + offset))
+            || !is_separator(index + 5)
+            || !is_digit(index + 6)
+            || !is_digit(index + 7)
+            || !is_separator(index + 8)
+            || !is_digit(index + 9)
+            || !is_digit(index + 10)
+        {
+            continue;
+        }
+
+        let mut stripped = String::with_capacity(model.len() - DATE_TOKEN_LENGTH);
+        stripped.push_str(&model[..index]);
+        stripped.push_str(&model[index + DATE_TOKEN_LENGTH..]);
+        return stripped;
+    }
+
+    model.to_owned()
+}
+
 fn model_variant_preference_score(model: &str) -> i32 {
-    let variants: Vec<&str> = model
-        .to_ascii_lowercase()
+    let normalized = model.to_ascii_lowercase();
+    let variants: Vec<&str> = normalized
         .split(|character: char| !character.is_ascii_alphanumeric())
         .filter(|variant| !variant.is_empty())
         .collect();
@@ -459,6 +518,148 @@ fn chat_model_for_conversation(
     default_chat_model_for_provider(provider)
 }
 
+fn provider_declares_capability(
+    provider: &ProviderConfig,
+    capability: ProviderModelCapability,
+) -> bool {
+    if matches!(&provider.kind, ProviderKind::Anthropic) {
+        return false;
+    }
+
+    let contains = |name: &str| {
+        if provider.capabilities.is_empty() {
+            match &provider.kind {
+                ProviderKind::Anthropic => {
+                    matches!(name, "chat" | "vision" | "tools" | "model-list")
+                }
+                ProviderKind::OpenaiResponses => matches!(
+                    name,
+                    "chat"
+                        | "vision"
+                        | "tools"
+                        | "image-generation"
+                        | "image-editing"
+                        | "model-list"
+                ),
+                ProviderKind::OpenaiCompatible => {
+                    matches!(
+                        name,
+                        "chat" | "vision" | "tools" | "embeddings" | "model-list"
+                    )
+                }
+            }
+        } else {
+            provider
+                .capabilities
+                .iter()
+                .any(|capability| capability == name)
+        }
+    };
+
+    match capability {
+        ProviderModelCapability::Chat => contains("chat"),
+        ProviderModelCapability::ImageGeneration => contains("image-generation"),
+        ProviderModelCapability::ImageEditing => contains("image-editing"),
+        ProviderModelCapability::Embeddings => contains("embeddings"),
+        ProviderModelCapability::Audio => contains("audio"),
+        ProviderModelCapability::Realtime => contains("realtime"),
+        ProviderModelCapability::Moderation => contains("moderation"),
+    }
+}
+
+fn has_authoritative_model_catalog(provider: &ProviderConfig) -> bool {
+    !unique_models(provider.models.clone()).is_empty()
+}
+
+fn standard_fallback_models_for_capability(
+    provider: &ProviderConfig,
+    capability: ProviderModelCapability,
+    models: Vec<String>,
+) -> Vec<String> {
+    if !models.is_empty() {
+        return models;
+    }
+
+    if !provider_declares_capability(provider, capability) {
+        return Vec::new();
+    }
+
+    if has_authoritative_model_catalog(provider) {
+        return selectable_models_for_provider(provider)
+            .into_iter()
+            .filter(|model| {
+                !model
+                    .to_lowercase()
+                    .contains(GENERATION_ONLY_IMAGE_MODEL_MARKER)
+            })
+            .collect();
+    }
+
+    match capability {
+        ProviderModelCapability::Embeddings => STANDARD_EMBEDDING_MODEL_FALLBACKS
+            .iter()
+            .map(|model| (*model).to_owned())
+            .collect(),
+        ProviderModelCapability::Audio => STANDARD_AUDIO_TRANSCRIPTION_MODEL_FALLBACKS
+            .iter()
+            .chain(STANDARD_AUDIO_SPEECH_MODEL_FALLBACKS.iter())
+            .map(|model| (*model).to_owned())
+            .collect(),
+        ProviderModelCapability::Realtime => STANDARD_REALTIME_MODEL_FALLBACKS
+            .iter()
+            .map(|model| (*model).to_owned())
+            .collect(),
+        ProviderModelCapability::Moderation => STANDARD_MODERATION_MODEL_FALLBACKS
+            .iter()
+            .map(|model| (*model).to_owned())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn audio_models_for_provider(provider: &ProviderConfig, transcription: bool) -> Vec<String> {
+    let models = selectable_models_for_provider(provider)
+        .into_iter()
+        .filter(|model| {
+            if transcription {
+                is_likely_audio_transcription_model(model)
+            } else {
+                is_likely_audio_speech_model(model)
+            }
+        })
+        .collect::<Vec<_>>();
+    if !models.is_empty() {
+        return models;
+    }
+
+    if !provider_declares_capability(provider, ProviderModelCapability::Audio) {
+        return Vec::new();
+    }
+
+    if has_authoritative_model_catalog(provider) {
+        return selectable_models_for_provider(provider)
+            .into_iter()
+            .filter(|model| {
+                !model
+                    .to_lowercase()
+                    .contains(GENERATION_ONLY_IMAGE_MODEL_MARKER)
+            })
+            .collect();
+    }
+
+    if transcription {
+        STANDARD_AUDIO_TRANSCRIPTION_MODEL_FALLBACKS
+            .iter()
+            .map(|model| (*model).to_owned())
+            .collect()
+    } else {
+        STANDARD_AUDIO_SPEECH_MODEL_FALLBACKS
+            .iter()
+            .map(|model| (*model).to_owned())
+            .collect()
+    }
+}
+
 pub(crate) fn preferred_image_model(models: &[String]) -> String {
     for marker in [
         "gpt-image-2",
@@ -476,7 +677,11 @@ pub(crate) fn preferred_image_model(models: &[String]) -> String {
         }
     }
 
-    models.first().cloned().unwrap_or_default()
+    models
+        .iter()
+        .find(|model| is_likely_image_model(model))
+        .cloned()
+        .unwrap_or_default()
 }
 
 pub(crate) fn is_likely_embedding_model(model: &str) -> bool {
@@ -622,10 +827,7 @@ pub(crate) fn preferred_audio_model(models: &[String]) -> String {
 }
 
 pub(crate) fn model_for_provider_audio_speech(provider: &ProviderConfig) -> String {
-    let models = selectable_models_for_provider(provider)
-        .into_iter()
-        .filter(|model| is_likely_audio_speech_model(model))
-        .collect::<Vec<_>>();
+    let models = audio_models_for_provider(provider, false);
 
     if let Some(configured) = provider
         .audio_speech_model
@@ -640,10 +842,7 @@ pub(crate) fn model_for_provider_audio_speech(provider: &ProviderConfig) -> Stri
 }
 
 pub(crate) fn model_for_provider_audio_transcription(provider: &ProviderConfig) -> String {
-    let models = selectable_models_for_provider(provider)
-        .into_iter()
-        .filter(|model| is_likely_audio_transcription_model(model))
-        .collect::<Vec<_>>();
+    let models = audio_models_for_provider(provider, true);
 
     if let Some(configured) = provider
         .audio_transcription_model
@@ -690,7 +889,7 @@ pub(crate) fn models_for_provider_capability(
     provider: &ProviderConfig,
     capability: ProviderModelCapability,
 ) -> Vec<String> {
-    match capability {
+    let models = match capability {
         ProviderModelCapability::Chat => chat_models_for_provider(provider),
         ProviderModelCapability::ImageGeneration => selectable_models_for_provider(provider)
             .into_iter()
@@ -716,7 +915,9 @@ pub(crate) fn models_for_provider_capability(
             .into_iter()
             .filter(|model| is_likely_moderation_model(model))
             .collect(),
-    }
+    };
+
+    standard_fallback_models_for_capability(provider, capability, models)
 }
 
 pub(crate) fn preferred_model_for_capability(
@@ -1435,6 +1636,14 @@ mod tests {
             chat_model_preference_score("gpt-4.2")
                 > chat_model_preference_score("gpt-4.1-2025-04-14")
         );
+        assert_eq!(
+            preferred_chat_model(&["gpt-5.5".to_owned(), "gpt-5-2025-08-07".to_owned(),]),
+            "gpt-5.5"
+        );
+        assert!(
+            chat_model_preference_score("gpt-5.5")
+                > chat_model_preference_score("gpt-5-2025-08-07")
+        );
     }
 
     #[test]
@@ -1756,6 +1965,87 @@ mod tests {
     }
 
     #[test]
+    fn opaque_catalog_models_remain_selectable_for_declared_capabilities() {
+        let catalog = [
+            "vendor-chat-v4",
+            "vendor-vector-v7",
+            "vendor-vision-v2",
+            "vendor-voice-v1",
+            "vendor-listen-v1",
+            "vendor-filter-v1",
+            "vendor-session-v1",
+        ];
+        let mut provider = provider("gpt-5.5", Some("vendor-vision-v2"), &catalog);
+        provider.capabilities = vec![
+            "chat".to_owned(),
+            "audio".to_owned(),
+            "embeddings".to_owned(),
+            "image-generation".to_owned(),
+            "image-editing".to_owned(),
+            "moderation".to_owned(),
+            "realtime".to_owned(),
+            "model-list".to_owned(),
+        ];
+        provider.audio_speech_model = Some("vendor-voice-v1".to_owned());
+        provider.audio_transcription_model = Some("vendor-listen-v1".to_owned());
+        provider.embedding_model = Some("vendor-vector-v7".to_owned());
+        provider.moderation_model = Some("vendor-filter-v1".to_owned());
+        provider.realtime_model = Some("vendor-session-v1".to_owned());
+
+        assert_eq!(
+            models_for_provider_capability(&provider, ProviderModelCapability::Embeddings),
+            provider.models
+        );
+        assert_eq!(
+            model_for_provider_capability(&provider, ProviderModelCapability::Embeddings),
+            "vendor-vector-v7"
+        );
+        assert_eq!(
+            models_for_provider_capability(&provider, ProviderModelCapability::ImageGeneration),
+            provider.models
+        );
+        assert_eq!(image_model_for_provider(&provider, ""), "vendor-vision-v2");
+        assert_eq!(
+            model_for_provider_audio_speech(&provider),
+            "vendor-voice-v1"
+        );
+        assert_eq!(
+            model_for_provider_audio_transcription(&provider),
+            "vendor-listen-v1"
+        );
+        assert_eq!(
+            model_for_provider_capability(&provider, ProviderModelCapability::Moderation),
+            "vendor-filter-v1"
+        );
+        assert_eq!(
+            model_for_provider_capability(&provider, ProviderModelCapability::Realtime),
+            "vendor-session-v1"
+        );
+
+        provider.image_model = None;
+        provider.audio_speech_model = None;
+        provider.audio_transcription_model = None;
+        provider.embedding_model = None;
+        provider.moderation_model = None;
+        provider.realtime_model = None;
+        assert_eq!(
+            model_for_provider_capability(&provider, ProviderModelCapability::Embeddings),
+            ""
+        );
+        assert_eq!(image_model_for_provider(&provider, ""), "");
+        assert_eq!(model_for_provider_audio_speech(&provider), "");
+        assert_eq!(model_for_provider_audio_transcription(&provider), "");
+        assert_eq!(
+            model_for_provider_capability(&provider, ProviderModelCapability::Moderation),
+            ""
+        );
+        assert_eq!(
+            model_for_provider_capability(&provider, ProviderModelCapability::Realtime),
+            ""
+        );
+    }
+
+    #[test]
     fn explicit_capability_models_override_catalog_preferences() {
         let mut provider = provider(
             "gpt-5.5",
@@ -1844,7 +2134,7 @@ mod tests {
         assert!(!is_likely_image_editing_model("dall-e-3"));
         assert!(is_likely_image_editing_model("gpt-image-1"));
         assert_eq!(
-            image_editing_models_for_provider(&provider),
+            models_for_provider_capability(&provider, ProviderModelCapability::ImageEditing),
             vec!["gpt-image-1"]
         );
         assert_eq!(

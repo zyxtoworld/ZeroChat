@@ -2,9 +2,18 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { loadLocale, setRuntimeLocale } from '../../i18n'
 import {
+  reloadRuntimePage,
   reportStartupRenderFailure,
   runtimeFailureCopy,
 } from '../startupFatalError'
+
+function diagnosticText(calls: unknown[][]): string {
+  return calls
+    .flatMap((args) =>
+      args.map((value) => (value instanceof Error ? value.message : String(value))),
+    )
+    .join(' ')
+}
 
 class FakeElement {
   attributes = new Map<string, string>()
@@ -92,10 +101,8 @@ describe('reportStartupRenderFailure', () => {
     const fallback = doc.root?.children[0]
     const reloadButton = fallback?.children[2]
     const copy = runtimeFailureCopy()
-    expect(logger.error).toHaveBeenCalledWith(
-      'ZeroChat startup failed.',
-      expect.any(Error),
-    )
+    expect(logger.error).toHaveBeenCalledWith('ZeroChat startup failed.')
+    expect(diagnosticText(logger.error.mock.calls)).not.toContain('sk-secret')
     expect(fallback?.tagName).toBe('main')
     expect(fallback?.className).toContain('startup-failure-state')
     expect(fallback?.attributes.get('role')).toBe('alert')
@@ -154,20 +161,39 @@ describe('reportStartupRenderFailure', () => {
   it('contains reload failures without destroying the recovery state', () => {
     const doc = new FakeDocument()
     const logger = { error: vi.fn() }
+    const sentinel = 'C:\\private\\reload.log api_key=sk-reload-secret'
 
     reportStartupRenderFailure(new Error('startup failed'), {
       doc: doc as unknown as Document,
       logger,
       reloadPage: () => {
-        throw new Error('reload unavailable')
+        throw new Error(sentinel)
       },
     })
 
     const reloadButton = doc.root?.children[0]?.children[2]
     expect(() => reloadButton?.click()).not.toThrow()
+    expect(logger.error).toHaveBeenLastCalledWith(
+      'ZeroChat startup recovery reload failed.',
+    )
+    expect(diagnosticText(logger.error.mock.calls)).not.toContain(sentinel)
+  })
+
+  it('contains direct runtime reload failures behind the same fixed diagnostic', () => {
+    const logger = { error: vi.fn() }
+    const sentinel = '/home/alice/private/reload api_key=sk-runtime-secret'
+
+    expect(
+      reloadRuntimePage(
+        () => {
+          throw new Error(sentinel)
+        },
+        logger,
+      ),
+    ).toBe(false)
     expect(logger.error).toHaveBeenCalledWith(
       'ZeroChat startup recovery reload failed.',
-      expect.any(Error),
     )
+    expect(diagnosticText(logger.error.mock.calls)).not.toContain(sentinel)
   })
 })

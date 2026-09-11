@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { runInNewContext } from 'node:vm'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -72,9 +73,9 @@ describe('service worker finalization', () => {
     expect(changedAsset).not.toBe(initial)
   })
 
-  it('replaces minified quote styles and rejects ambiguous templates', () => {
+  it('replaces minified array placeholders and rejects ambiguous templates', () => {
     const template =
-      'const cache=`zerochat-shell-__ZEROCHAT_CACHE_VERSION__`,assets=JSON.parse(`__ZEROCHAT_STATIC_ASSET_PATHS__`)'
+      'const cache=`zerochat-shell-__ZEROCHAT_CACHE_VERSION__`,assets=[`__ZEROCHAT_STATIC_ASSET_PATHS__`]'
     const finalized = finalizeServiceWorkerTemplate(
       template,
       ['assets/app.js', 'index.html'],
@@ -82,7 +83,8 @@ describe('service worker finalization', () => {
     )
 
     expect(finalized).toContain('zerochat-shell-0123456789abcdef')
-    expect(finalized).toContain('assets/app.js')
+    expect(finalized).toContain('assets=["assets/app.js","index.html"]')
+    expect(finalized).not.toContain('JSON.parse')
     expect(finalized).not.toContain('__ZEROCHAT_')
     expect(() =>
       finalizeServiceWorkerTemplate(
@@ -97,7 +99,7 @@ describe('service worker finalization', () => {
     const directory = await createBuildDirectory()
     await writeFile(
       path.join(directory, 'sw.js'),
-      'const cache="zerochat-shell-__ZEROCHAT_CACHE_VERSION__",assets=JSON.parse("__ZEROCHAT_STATIC_ASSET_PATHS__")',
+      'const cache="zerochat-shell-__ZEROCHAT_CACHE_VERSION__",assets=["__ZEROCHAT_STATIC_ASSET_PATHS__"]',
     )
 
     const result = await finalizeServiceWorkerBuild(directory)
@@ -110,6 +112,78 @@ describe('service worker finalization', () => {
     ])
     expect(result.cacheVersion).toMatch(/^[a-f0-9]{16}$/)
     expect(worker).toContain(`zerochat-shell-${result.cacheVersion}`)
+    expect(worker).toContain('assets=["assets/app-hash.css","assets/app-hash.js","index.html"]')
+    expect(worker).not.toContain('JSON.parse')
     expect(worker).not.toContain('__ZEROCHAT_')
+  })
+
+  it('reports fixed install and runtime cache labels without leaking errors', async () => {
+    const source = await readFile('scripts/service-worker-source.js', 'utf8')
+    const handlers = new Map()
+    const warnings = []
+    const waits = []
+    const installError = new Error('install-secret-sentinel')
+    const runtimeError = new Error('runtime-secret-sentinel')
+    const response = {
+      ok: true,
+      clone() {
+        return this
+      },
+    }
+    const cache = {
+      addAll: async () => {
+        throw installError
+      },
+      delete: async () => true,
+      keys: async () => [],
+      match: async () => undefined,
+      put: async () => {
+        throw runtimeError
+      },
+    }
+    const context = {
+      URL,
+      addEventListener(type, handler) {
+        handlers.set(type, handler)
+      },
+      caches: {
+        keys: async () => [
+          'zerochat-shell-__ZEROCHAT_CACHE_VERSION__',
+        ],
+        open: async () => cache,
+      },
+      clients: { claim: async () => undefined },
+      console: { warn: (...args) => warnings.push(args) },
+      fetch: async () => response,
+      location: { origin: 'https://zerochat.test' },
+      self: { registration: { scope: 'https://zerochat.test/' } },
+      skipWaiting: () => undefined,
+    }
+    runInNewContext(source, context)
+
+    handlers.get('install')({ waitUntil: (promise) => waits.push(promise) })
+    await expect(waits.at(-1)).rejects.toBe(installError)
+    expect(warnings).toEqual([['ZeroChat cache failed.', 'install-shell']])
+    expect(warnings.flat().join(' ')).not.toContain('secret-sentinel')
+
+    warnings.length = 0
+    waits.length = 0
+    let responsePromise
+    handlers.get('fetch')({
+      request: {
+        destination: 'script',
+        method: 'GET',
+        mode: 'cors',
+        url: 'https://zerochat.test/assets/runtime.js',
+      },
+      respondWith: (promise) => {
+        responsePromise = promise
+      },
+      waitUntil: (promise) => waits.push(promise),
+    })
+    await expect(responsePromise).resolves.toBe(response)
+    await Promise.all(waits)
+    expect(warnings).toEqual([['ZeroChat cache failed.', 'runtime-cache']])
+    expect(warnings.flat().join(' ')).not.toContain('secret-sentinel')
   })
 })

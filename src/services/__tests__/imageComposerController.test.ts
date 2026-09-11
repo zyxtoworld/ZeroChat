@@ -6,6 +6,8 @@ import {
   acceptedImageSourceFromPicker,
   clampMaskKeyboardRatio,
   imageDataHasMaskPaint,
+  imagePreviewBelongsToSource,
+  imagePreviewBelongsToCurrentSource,
   imageSourceDragStateForGeneration,
   imageSourcePickerSelection,
   imageSourcePreviewUrl,
@@ -176,6 +178,48 @@ describe('image composer controller helpers', () => {
       active: true,
       rejected: false,
     })
+  })
+
+  it('accepts preview events only from the current image source', () => {
+    expect(
+      imagePreviewBelongsToSource(
+        { currentSrc: 'blob:current-image', src: 'blob:current-image' },
+        'blob:current-image',
+      ),
+    ).toBe(true)
+    expect(
+      imagePreviewBelongsToSource(
+        { currentSrc: 'blob:old-image', src: 'blob:old-image' },
+        'blob:current-image',
+      ),
+    ).toBe(false)
+    expect(
+      imagePreviewBelongsToSource(
+        { currentSrc: '', src: 'blob:current-image' },
+        'blob:current-image',
+      ),
+    ).toBe(true)
+    expect(
+      imagePreviewBelongsToSource(
+        { currentSrc: 'blob:current-image', src: 'blob:current-image' },
+        '',
+      ),
+    ).toBe(false)
+  })
+
+  it('rejects a late preview event after the source owner changes', () => {
+    const oldImage = {
+      currentSrc: 'blob:old-image',
+      src: 'blob:old-image',
+    }
+
+    expect(
+      imagePreviewBelongsToCurrentSource(
+        oldImage,
+        'blob:old-image',
+        'blob:new-image',
+      ),
+    ).toBe(false)
   })
 
   it('reports unsupported picker selections only when generation is idle', () => {

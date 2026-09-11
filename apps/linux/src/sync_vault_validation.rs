@@ -166,12 +166,47 @@ fn array_objects<'a>(
 fn is_canonical_app_snapshot(data: &AppSnapshot) -> bool {
     data.version == 1
         && data.updated_at >= 0
+        && has_unique_snapshot_record_ids(data)
         && data.providers.iter().all(is_canonical_provider)
         && data.conversations.iter().all(is_canonical_conversation)
         && data.skills.iter().all(is_canonical_skill)
         && is_canonical_skill_settings(&data.skill_settings)
         && is_canonical_sync_config(&data.sync)
         && is_canonical_preferences(&data.preferences)
+}
+
+fn unique_ids<'a>(ids: impl IntoIterator<Item = &'a str>) -> bool {
+    let mut seen = BTreeSet::new();
+    ids.into_iter().all(|id| seen.insert(id))
+}
+
+pub(crate) fn has_unique_snapshot_record_ids(data: &AppSnapshot) -> bool {
+    unique_ids(data.providers.iter().map(|provider| provider.id.as_str()))
+        && unique_ids(
+            data.conversations
+                .iter()
+                .map(|conversation| conversation.id.as_str()),
+        )
+        && data.conversations.iter().all(|conversation| {
+            unique_ids(
+                conversation
+                    .messages
+                    .iter()
+                    .map(|message| message.id.as_str()),
+            ) && conversation.messages.iter().all(|message| {
+                unique_ids(
+                    message
+                        .attachments
+                        .iter()
+                        .map(|attachment| attachment.id.as_str()),
+                )
+            })
+        })
+        && unique_ids(data.skills.iter().map(|skill| skill.id.as_str()))
+        && data
+            .skills
+            .iter()
+            .all(|skill| unique_ids(skill.chunks.iter().map(|chunk| chunk.id.as_str())))
 }
 
 fn is_canonical_provider(provider: &ProviderConfig) -> bool {
@@ -575,6 +610,30 @@ mod tests {
         let mut value = serde_json::to_value(canonical_vault()).unwrap();
         value["data"]["providers"][0]["unexpected"] = json!(true);
         assert!(decode_validated_sync_vault(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
+
+    #[test]
+    fn canonical_vault_rejects_duplicate_record_ids() {
+        let mut duplicate_provider = serde_json::to_value(canonical_vault()).unwrap();
+        let provider = duplicate_provider["data"]["providers"][0].clone();
+        duplicate_provider["data"]["providers"]
+            .as_array_mut()
+            .unwrap()
+            .push(provider);
+        assert!(
+            decode_validated_sync_vault(&serde_json::to_vec(&duplicate_provider).unwrap()).is_err()
+        );
+
+        let mut duplicate_conversation = queued_vault(None);
+        let conversation = duplicate_conversation["data"]["conversations"][0].clone();
+        duplicate_conversation["data"]["conversations"]
+            .as_array_mut()
+            .unwrap()
+            .push(conversation);
+        assert!(
+            decode_validated_sync_vault(&serde_json::to_vec(&duplicate_conversation).unwrap())
+                .is_err()
+        );
     }
 
     #[test]

@@ -194,6 +194,41 @@ class AiHttpBodyTest {
     }
 
     @Test
+    fun aiClientSuccessfulEmptyStreamIsTypedRetryableProviderFailure() {
+        val provider = provider()
+        val failure = assertThrows(AiProviderHttpException::class.java) {
+            runBlocking {
+                HttpClient(
+                    MockEngine {
+                        respond(
+                            content = ByteReadChannel(
+                                """data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n""" +
+                                    """data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n""" +
+                                    "data: [DONE]\n\n",
+                            ),
+                            status = HttpStatusCode.OK,
+                            headers = headersOf(HttpHeaders.ContentType, "text/event-stream"),
+                        )
+                    },
+                ).use { client ->
+                    AiClient(client).stream(
+                        provider = provider,
+                        apiKey = "provider-key",
+                        model = provider.model,
+                        messages = emptyList(),
+                        onDelta = {},
+                    )
+                }
+            }
+        }
+
+        assertEquals(200, failure.status)
+        assertEquals(AiProviderErrorCode.Server, failure.code)
+        assertTrue(failure.retryable)
+        assertTrue(isRetryableChatGenerationError(failure, ""))
+    }
+
+    @Test
     fun aiClient401And429KeepClassificationMetadata() {
         val unauthorized = aiClientFailure(
             status = HttpStatusCode.Unauthorized,

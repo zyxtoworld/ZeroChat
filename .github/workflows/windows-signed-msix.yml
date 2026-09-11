@@ -26,7 +26,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - uses: microsoft/setup-msbuild@v2
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --prod=false
+      - run: pnpm run check:project-local-boundary
       - name: Check Windows packaging guards
         run: |
           pnpm run check:windows-shell
@@ -46,14 +47,17 @@ jobs:
             throw "Set WINDOWS_SIGNING_PFX_BASE64 as a repository secret before running this workflow."
           }
 
-          $certificatePath = Join-Path $env:RUNNER_TEMP "ZeroChat.Signing.pfx"
+          $privateDirectory = Join-Path $env:GITHUB_WORKSPACE ".local\codex\private"
+          New-Item -ItemType Directory -Force -Path $privateDirectory | Out-Null
+          icacls $privateDirectory /inheritance:r /grant:r "$env:USERNAME`:(OI)(CI)F" | Out-Null
+          $certificatePath = Join-Path $privateDirectory "ZeroChat.Signing.pfx"
           [System.IO.File]::WriteAllBytes(
             $certificatePath,
             [System.Convert]::FromBase64String($env:WINDOWS_SIGNING_PFX_BASE64)
           )
 
           $signArgs = @(
-            "-BuildRoot", "C:\ZeroChatWindowsBuild",
+            "-BuildRoot", ".local\codex\artifacts\windows-build",
             "-Configuration", "Release",
             "-Platform", "x64",
             "-CertificatePath", $certificatePath
@@ -75,8 +79,10 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $certificatePath = Join-Path $env:RUNNER_TEMP "ZeroChat.Signing.pfx"
-          Remove-Item -LiteralPath $certificatePath -Force -ErrorAction SilentlyContinue
+          $certificatePath = Join-Path $env:GITHUB_WORKSPACE ".local\codex\private\ZeroChat.Signing.pfx"
+          if (Test-Path -LiteralPath $certificatePath) {
+            [System.IO.File]::Delete($certificatePath)
+          }
           if (Test-Path -LiteralPath $certificatePath) {
             throw "Temporary signing certificate cleanup failed."
           }

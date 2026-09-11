@@ -2,24 +2,49 @@ import type { Translator } from '../i18n'
 import type { Conversation } from '../types'
 
 export const CONVERSATION_TITLE_MAX_LENGTH = 80
+export const AUTO_CONVERSATION_TITLE_MAX_LENGTH = 28
+export const CONVERSATION_PLACEHOLDER_TITLE = 'conversation.newTitle'
 
 const defaultConversationTitles = new Set([
-  '新建对话',
-  'New chat',
-  'Nuevo chat',
-  'नई चैट',
-  'محادثة جديدة',
-  'Nova conversa',
-  'Новый чат',
-  '新しいチャット',
-  '새 대화',
-  'Nouveau chat',
+  CONVERSATION_PLACEHOLDER_TITLE,
 ])
 
+function splitConversationGraphemes(value: string): string[] {
+  if (
+    typeof Intl !== 'undefined' &&
+    typeof Intl.Segmenter === 'function'
+  ) {
+    return Array.from(
+      new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(value),
+      ({ segment }) => segment,
+    )
+  }
+
+  return Array.from(value)
+}
+
+export function truncateConversationGraphemes(
+  value: string,
+  maxLength: number,
+): string {
+  return splitConversationGraphemes(value).slice(0, maxLength).join('')
+}
+
+export function normalizeConversationTitleText(text: string): string {
+  return text
+    .replace(/\p{Cc}/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 export function cleanConversationTitle(text: string, t: Translator): string {
-  const title = text.replace(/\s+/g, ' ').trim()
-  return title.length > 28
-    ? `${title.slice(0, 28)}...`
+  const title = normalizeConversationTitleText(text)
+  const truncated = truncateConversationGraphemes(
+    title,
+    AUTO_CONVERSATION_TITLE_MAX_LENGTH,
+  )
+  return truncated !== title
+    ? `${truncated}...`
     : title || t('conversation.newTitle')
 }
 
@@ -31,13 +56,12 @@ export function displayConversationTitle(title: string, t: Translator): string {
 
 export function normalizeConversationTitleDraft(
   value: string,
-  t: Translator,
 ): string {
   return (
-    value
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, CONVERSATION_TITLE_MAX_LENGTH) || t('conversation.newTitle')
+    truncateConversationGraphemes(
+      normalizeConversationTitleText(value),
+      CONVERSATION_TITLE_MAX_LENGTH,
+    ) || CONVERSATION_PLACEHOLDER_TITLE
   )
 }
 
@@ -45,7 +69,7 @@ export function normalizeConversationSearchValue(value: string): string {
   return value
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
-    .toLocaleLowerCase()
+    .toLowerCase()
 }
 
 export function conversationMatchesSearch(

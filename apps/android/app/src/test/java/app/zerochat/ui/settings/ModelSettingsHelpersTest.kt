@@ -3,13 +3,34 @@ package app.zerochat.ui.settings
 import app.zerochat.data.AppSnapshot
 import app.zerochat.data.ProviderConfig
 import app.zerochat.data.ProviderKind
+import app.zerochat.ui.NativeI18n
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ModelSettingsHelpersTest {
+    @Test
+    fun modelsFetchFailureNoticeDoesNotExposeRawExceptionText() {
+        val sentinel =
+            "C:\\private\\models\\secret.json /home/runner/.config/token " +
+                "https://provider.invalid/v1 sk-test-not-a-real-key"
+
+        val notice = modelsFetchFailureNotice(
+            NativeI18n.forMode("en-US"),
+            IllegalStateException(sentinel),
+        )
+
+        assertFalse(notice.contains(sentinel))
+        assertFalse(notice.contains("C:\\private"))
+        assertFalse(notice.contains("/home/runner"))
+        assertFalse(notice.contains("provider.invalid"))
+        assertFalse(notice.contains("sk-test-not-a-real-key"))
+    }
+
     @Test
     fun modelSettingsManualModelsSplitsWhitespaceAndDropsEmptyEntries() {
         assertEquals(
@@ -230,7 +251,7 @@ class ModelSettingsHelpersTest {
     }
 
     @Test
-    fun modelSettingsApplyFetchedModelsToSnapshotUsesTheLatestProviderRecord() {
+    fun modelSettingsApplyFetchedModelsToSnapshotRejectsResultAfterProviderEndpointReplacement() {
         val fetchedFor = provider(
             "openai",
             model = "legacy-model",
@@ -244,11 +265,55 @@ class ModelSettingsHelpersTest {
             providerId = fetchedFor.id,
             models = listOf("gpt-5.5"),
             now = 46,
+            expectedOwner = ModelSettingsFetchOwner(fetchedFor, "old-key", "old-proxy"),
+            currentOwner = ModelSettingsFetchOwner(latest, "old-key", "old-proxy"),
         )
 
-        assertEquals("https://edited.example/v1", updated.providers.single().baseUrl)
-        assertEquals(listOf("gpt-5.5"), updated.providers.single().models)
-        assertEquals(46, updated.providers.single().updatedAt)
+        assertEquals(current, updated)
+    }
+
+    @Test
+    fun modelSettingsFetchOwnerRejectsCredentialRotation() {
+        val provider = provider("openai", model = "legacy-model")
+        val owner = ModelSettingsFetchOwner(provider, "old-key", "old-proxy")
+
+        assertFalse(
+            modelSettingsFetchOwnerMatches(
+                owner,
+                owner.copy(apiKey = "new-key"),
+            ),
+        )
+        assertFalse(
+            modelSettingsFetchOwnerMatches(
+                owner,
+                owner.copy(proxyToken = "new-proxy"),
+            ),
+        )
+    }
+
+    @Test
+    fun modelSettingsFetchOwnerRejectsSameIdProviderRecreationButIgnoresDisplayOnlyEdits() {
+        val provider = provider("openai", model = "legacy-model")
+        val owner = ModelSettingsFetchOwner(provider, "key", "proxy")
+
+        assertFalse(
+            modelSettingsFetchOwnerMatches(
+                owner,
+                owner.copy(requestProvider = provider.copy(createdAt = 2)),
+            ),
+        )
+        assertTrue(
+            modelSettingsFetchOwnerMatches(
+                owner,
+                owner.copy(
+                    requestProvider = provider.copy(
+                        name = "Renamed",
+                        model = "new-selection",
+                        updatedAt = provider.updatedAt + 1,
+                    ),
+                ),
+            ),
+        )
     }
 
     @Test

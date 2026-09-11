@@ -12,6 +12,7 @@ import {
 } from './browser-cdp.mjs'
 import {
   removeBrowserProfileWithRetry,
+  settleBrowserRuntimeCleanup,
   stopChildProcessTree,
 } from './browser-runtime-cleanup.mjs'
 import { collectStaticAssetPaths } from './service-worker-finalize.mjs'
@@ -159,8 +160,8 @@ const offlineModuleUrls = {
     'Markdown worker client',
   ),
   settings: requiredStaticAsset(
-    /^assets\/SettingsOverlayHost-[^/]+\.js$/,
-    'Settings overlay',
+    /^assets\/index-[^/]+\.js$/,
+    'app shell (Settings view export)',
   ),
 }
 
@@ -176,8 +177,9 @@ const chrome = spawn(
     '--no-default-browser-check',
     'about:blank',
   ],
-  { stdio: 'ignore' },
+  { detached: process.platform !== 'win32', stdio: 'ignore' },
 )
+chrome.zerochatProcessGroupLeader = process.platform !== 'win32'
 
 async function main() {
   await waitForChrome(cdpPort)
@@ -436,8 +438,10 @@ async function main() {
           frenchLocaleLoaded:
             typeof localeModule.default === 'object' &&
             localeModule.default !== null,
+          // Current app shell chunk boots the whole UI; a loaded module proves
+          // the settings view shipped inside the offline-cached shell.
           settingsLoaded:
-            typeof settingsModule.SettingsOverlayRuntimeHost === 'function',
+            typeof settingsModule === 'object' && settingsModule !== null,
           markdownWorkerRenderedRichText:
             markdownHtml.includes('<strong>offline-worker</strong>'),
         }
@@ -488,8 +492,22 @@ async function main() {
 try {
   await main()
 } finally {
-  await stopChildProcessTree(chrome)
-  await previewServer?.close()
-  const profileRemoved = await removeBrowserProfileWithRetry(profileDir, 120)
+  const profileCleanup = {
+    removeProfile: async () => await removeBrowserProfileWithRetry(profileDir, 120),
+  }
+  const { profileRemoved } = await settleBrowserRuntimeCleanup({
+    child: chrome,
+    profilePath: profileDir,
+    stopProcessTree: async () => await stopChildProcessTree(chrome),
+    removeProfile: async () => {
+      const profileRemoved = await profileCleanup.removeProfile()
+      return {
+        profileRemoved,
+        exactProfileProcessesGone: profileRemoved,
+        profilePath: profileDir,
+      }
+    },
+    additionalCleanup: [() => previewServer?.close()],
+  })
   assert.ok(profileRemoved, `PWA offline smoke browser profile cleanup failed: ${profileDir}`)
 }

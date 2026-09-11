@@ -4,6 +4,7 @@ import app.zerochat.data.ChatMessage
 import app.zerochat.data.MessageRole
 import app.zerochat.data.ProviderConfig
 import app.zerochat.data.ProviderKind
+import app.zerochat.ui.MAX_IMAGE_FILE_BYTES
 import io.ktor.client.request.forms.MultiPartFormDataContent
 import io.ktor.client.request.forms.formData
 import io.ktor.client.request.HttpRequestBuilder
@@ -766,6 +767,23 @@ private fun imageMimeTypeFromFormat(value: String?): String = when (value?.trim(
     }
 }
 
+private fun decodedBase64ByteCount(payload: String): Long? {
+    val padding = payload.takeLastWhile { it == '=' }.length
+    if (padding > 2) return null
+
+    val bodyLength = payload.length - padding
+    if (bodyLength % 4 == 1 || (padding > 0 && payload.length % 4 != 0)) {
+        return null
+    }
+
+    return bodyLength.toLong() / 4 * 3 + when (bodyLength % 4) {
+        0 -> 0
+        2 -> 1
+        3 -> 2
+        else -> return null
+    }
+}
+
 internal fun safeGeneratedImageDataUrl(value: String): Pair<String, String>? {
     val trimmed = value.trim()
     if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() || it.isISOControl() }) {
@@ -784,6 +802,8 @@ internal fun safeGeneratedImageDataUrl(value: String): Pair<String, String>? {
     ).matchEntire(metadata) ?: return null
     val mimeType = imageMimeTypeFromFormat(match.groupValues[1])
     val payload = trimmed.substring(separator + 1)
+    val decodedByteCount = decodedBase64ByteCount(payload) ?: return null
+    if (decodedByteCount > MAX_IMAGE_FILE_BYTES) return null
     val decoded = runCatching { Base64.getDecoder().decode(payload) }.getOrNull()
 
     if (payload.isEmpty() || decoded == null || decoded.isEmpty()) {
@@ -1065,8 +1085,8 @@ private fun readOpenAiChoiceDelta(root: JsonObject): String {
     val delta = choice["delta"] as? JsonObject
     val message = choice["message"] as? JsonObject
 
-    return primitiveText(delta?.get("content"))
-        .ifEmpty { primitiveText(message?.get("content")) }
+    return openAiContentText(delta?.get("content"))
+        .ifEmpty { openAiContentText(message?.get("content")) }
 }
 
 private fun readResponsesDelta(root: JsonObject): String {
@@ -1091,6 +1111,18 @@ private fun readAnthropicDelta(root: JsonObject): String {
 
 private fun primitiveText(element: JsonElement?): String =
     (element as? JsonPrimitive)?.contentOrNull.orEmpty()
+
+private fun openAiContentText(element: JsonElement?): String = when (element) {
+    is JsonPrimitive -> element.contentOrNull.orEmpty()
+    is JsonArray -> element.joinToString("") { part ->
+        val record = part as? JsonObject ?: return@joinToString ""
+        if (primitiveText(record["type"]) != "text") {
+            return@joinToString ""
+        }
+        primitiveText(record["text"])
+    }
+    else -> ""
+}
 
 private fun normalizeChatContextMessageLimit(value: Int): Int =
     (if (value <= 0) DEFAULT_CHAT_CONTEXT_MESSAGE_LIMIT else value)
@@ -1154,18 +1186,13 @@ private fun readOpenAiChoice(root: JsonObject): String {
         ?.firstOrNull() as? JsonObject
         ?: return ""
     val message = choice["message"] as? JsonObject
-    val direct = (message?.get("content") as? JsonPrimitive)
-        ?.contentOrNull
-        ?.trim()
-        .orEmpty()
+    val direct = openAiContentText(message?.get("content")).trim()
     if (direct.isNotEmpty()) {
         return direct
     }
 
-    return ((choice["delta"] as? JsonObject)?.get("content") as? JsonPrimitive)
-        ?.contentOrNull
-        ?.trim()
-        .orEmpty()
+    return openAiContentText((choice["delta"] as? JsonObject)?.get("content"))
+        .trim()
 }
 
 private fun readResponsesOutput(root: JsonObject): String {

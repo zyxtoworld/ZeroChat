@@ -60,7 +60,8 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --prod=false
+      - run: pnpm run check:project-local-boundary
       - name: Check live drill safety guards
         run: |
           node scripts/live-provider-smoke-check.mjs

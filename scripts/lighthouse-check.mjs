@@ -10,6 +10,7 @@ import { resolveFetchSafeLoopbackPort } from './fetch-safe-loopback-port.mjs'
 import { startVitePreviewLoopbackServer } from './vite-loopback-server.mjs'
 import {
   removeBrowserProfileWithRetry,
+  settleBrowserRuntimeCleanup,
   stopChildProcessTree,
 } from './browser-runtime-cleanup.mjs'
 
@@ -159,10 +160,12 @@ const chrome = spawn(
     'about:blank',
   ],
   {
+    detached: process.platform !== 'win32',
     stdio: 'ignore',
     windowsHide: true,
   },
 )
+chrome.zerochatProcessGroupLeader = process.platform !== 'win32'
 
 try {
   await waitForCdpChrome(chromePort, { childProcess: chrome })
@@ -268,8 +271,22 @@ try {
       .join(', ')}]`,
   )
 } finally {
-  await preview.close()
-  await stopChildProcessTree(chrome)
-  const profileRemoved = await removeBrowserProfileWithRetry(chromeProfileDir, 40)
+  const profileCleanup = {
+    removeProfile: async () => await removeBrowserProfileWithRetry(chromeProfileDir, 40),
+  }
+  const { profileRemoved } = await settleBrowserRuntimeCleanup({
+    child: chrome,
+    profilePath: chromeProfileDir,
+    stopProcessTree: async () => await stopChildProcessTree(chrome),
+    removeProfile: async () => {
+      const profileRemoved = await profileCleanup.removeProfile()
+      return {
+        profileRemoved,
+        exactProfileProcessesGone: profileRemoved,
+        profilePath: chromeProfileDir,
+      }
+    },
+    additionalCleanup: [() => preview.close()],
+  })
   assert.ok(profileRemoved, `Lighthouse browser profile cleanup failed: ${chromeProfileDir}`)
 }

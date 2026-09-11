@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'vite'
+import { createBoundedViteSsrModuleRunner } from './vite-ssr-module-runner.mjs'
 
 const DEFAULT_GIST_FILE = 'zerochat-sync.json'
 const githubToken = 'gist-sync-e2e-disposable-token'
@@ -212,11 +213,12 @@ const server = await createServer({
     },
   },
 })
+const moduleRunner = createBoundedViteSsrModuleRunner(server)
 
 try {
-  const sync = await server.ssrLoadModule('/src/services/sync.ts')
-  const gistProtocol = await server.ssrLoadModule('/src/services/syncGistProtocol.ts')
-  const skills = await server.ssrLoadModule('/src/services/skills.ts')
+  const sync = await moduleRunner.import('/src/services/sync.ts')
+  const gistProtocol = await moduleRunner.import('/src/services/syncGistProtocol.ts')
+  const skills = await moduleRunner.import('/src/services/skills.ts')
   const store = createGistStore()
   const restoreFetch = installGistFetch(store)
 
@@ -476,5 +478,9 @@ try {
 
   console.log('Gist sync E2E check passed')
 } finally {
-  await server.close()
+  try {
+    await moduleRunner.close()
+  } finally {
+    await server.close()
+  }
 }

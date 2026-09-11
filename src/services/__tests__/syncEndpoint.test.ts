@@ -57,4 +57,17 @@ describe('sync endpoint safety', () => {
       rt('error.urlQuery', { label: rt('field.workerEndpoint') }),
     )
   })
+
+  it('rejects unsafe HTTPS loopback and private Worker endpoints', () => {
+    for (const endpoint of [
+      'https://127.0.0.1:8443',
+      'https://[::1]:8443',
+      'https://192.168.1.10',
+      'https://[fd00::1]',
+    ]) {
+      expect(() => normalizeWorkerEndpoint(endpoint), endpoint).toThrow(
+        rt('error.urlLocalNetwork', { label: rt('field.workerEndpoint') }),
+      )
+    }
+  })
 })

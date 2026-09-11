@@ -6,6 +6,7 @@ import {
 } from './localCrypto'
 import { AppDataWriteConflictError } from './appDataWriteConflict'
 import { abortIndexedDbTransactionOrReject } from './indexedDbAbortFailure'
+import { openIndexedDb } from './indexedDbOpen'
 import { rt } from '../i18n'
 import type { AppData } from '../types'
 import {
@@ -51,6 +52,7 @@ const APP_DATA_KEY = 'app'
 const APP_DATA_NAMESPACE = 'app-data'
 const SECRET_DELETED_KIND = 'zerochat.secretDeleted'
 let secretMutationTail: Promise<void> = Promise.resolve()
+let windowsSecretMigrationTail: Promise<void> = Promise.resolve()
 let loadedSecretStoreRevision: string | null | undefined
 let secretRevisionFactory: IDBFactory | null = null
 let loadedWindowsSecretRevision: string | null | undefined
@@ -335,20 +337,15 @@ export function clearPendingProviderSecretCleanupById(
 }
 
 function openSecretDatabase(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(SECRET_DB_NAME, SECRET_DB_VERSION)
-
-    request.onupgradeneeded = () => {
-      const db = request.result
-
-      if (!db.objectStoreNames.contains(SECRET_STORE)) {
-        db.createObjectStore(SECRET_STORE)
+  return openIndexedDb(
+    SECRET_DB_NAME,
+    SECRET_DB_VERSION,
+    (database) => {
+      if (!database.objectStoreNames.contains(SECRET_STORE)) {
+        database.createObjectStore(SECRET_STORE)
       }
-    }
-
-    request.onerror = () => reject(request.error)
-    request.onsuccess = () => resolve(request.result)
-  })
+    },
+  )
 }
 
 function secretTransaction<T>(
@@ -411,6 +408,7 @@ function secretBatchTransaction(
     store: IDBObjectStore,
     abortWith: (error: unknown) => void,
   ) => void,
+  afterComplete?: () => void | PromiseLike<void>,
 ): Promise<void> {
   return openSecretDatabase().then(
     (db) =>
@@ -441,9 +439,27 @@ function secretBatchTransaction(
               return
             }
 
-            completed = true
-            db.close()
-            resolve()
+            if (!afterComplete) {
+              completed = true
+              db.close()
+              resolve()
+              return
+            }
+
+            void Promise.resolve()
+              .then(() => afterComplete())
+              .then(
+                () => {
+                  if (completed) {
+                    return
+                  }
+
+                  completed = true
+                  db.close()
+                  resolve()
+                },
+                (error: unknown) => rejectOnce(error),
+              )
           }
           tx.onerror = () => rejectOnce(operationError ?? tx?.error)
           tx.onabort = () => rejectOnce(operationError ?? tx?.error)
@@ -625,12 +641,11 @@ function readZeroChatAppDataTransitionState(): Promise<
 }
 
 async function readPersistedAppDataJson(): Promise<string | null> {
-  const db = await new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(APP_DATA_DB_NAME, APP_DATA_DB_VERSION)
-
-    request.onerror = () => reject(request.error)
-    request.onsuccess = () => resolve(request.result)
-  })
+  const db = await openIndexedDb(
+    APP_DATA_DB_NAME,
+    APP_DATA_DB_VERSION,
+    () => undefined,
+  )
 
   const stored = await new Promise<unknown | null>((resolve, reject) => {
     let completed = false
@@ -682,7 +697,10 @@ async function readPersistedAppDataJson(): Promise<string | null> {
   return JSON.stringify(stored)
 }
 
-async function getSecret(name: string): Promise<string> {
+async function getSecret(
+  name: string,
+  persistLegacyMode: 'queued' | 'owned' = 'queued',
+): Promise<string> {
   const record = await secretTransaction<StoredSecretRecord | undefined>(
     'readonly',
     (store) => store.get(secretRecordKey(name)),
@@ -706,7 +724,9 @@ async function getSecret(name: string): Promise<string> {
     return ''
   }
 
-  await setSecret(name, legacy)
+  await (persistLegacyMode === 'queued'
+    ? setSecret(name, legacy)
+    : setSecretNow(name, legacy))
   return legacy
 }
 
@@ -736,7 +756,9 @@ async function withSecretMutationLock<T>(
 }
 
 function runSecretMutation<T>(mutation: () => Promise<T>): Promise<T> {
-  const result = secretMutationTail.then(() => withSecretMutationLock(mutation))
+  const result = secretMutationTail
+    .then(() => windowsSecretMigrationTail)
+    .then(() => withSecretMutationLock(mutation))
   secretMutationTail = result.then(
     () => undefined,
     () => undefined,
@@ -1678,6 +1700,12 @@ function resetWindowsSecretStateForCurrentBridge(): void {
   windowsSecretInitialization = undefined
 }
 
+function assertWindowsSecretMigrationOwner(identity: unknown): void {
+  if (identity !== currentWindowsSecretBridgeIdentity()) {
+    throw new WindowsSecretBridgeError('bridge-unavailable')
+  }
+}
+
 function translateWindowsSecretError(error: unknown): never {
   if (
     error instanceof WindowsSecretBridgeError &&
@@ -1713,7 +1741,7 @@ async function readBrowserMigrationEntries(): Promise<WindowsSecretEntry[]> {
     await Promise.all(
       [...names].map(async (name) => ({
         name,
-        value: await getSecret(name),
+        value: await getSecret(name, 'owned'),
       })),
     )
   ).filter(({ value }) => value.length > 0)
@@ -1729,12 +1757,112 @@ async function readBrowserMigrationEntries(): Promise<WindowsSecretEntry[]> {
   return entries
 }
 
-async function clearBrowserSecretsAfterWindowsMigration(): Promise<void> {
-  await secretBatchTransaction('readwrite', (store, abortWith) => {
-    const request = store.clear()
-    request.onerror = () => abortWith(request.error)
-  })
+interface BrowserSecretRecordSnapshot {
+  key: IDBValidKey
+  value: unknown
+}
 
+async function readBrowserSecretRecordSnapshot(): Promise<
+  BrowserSecretRecordSnapshot[]
+> {
+  const keys = (
+    await secretTransaction<IDBValidKey[]>('readonly', (store) =>
+      store.getAllKeys(),
+    )
+  ).filter(
+    (key): key is string =>
+      typeof key === 'string' && key.startsWith('secret:'),
+  )
+  const values = await Promise.all(
+    keys.map((key) =>
+      secretTransaction<unknown>('readonly', (store) => store.get(key)),
+    ),
+  )
+
+  return keys.map((key, index) => ({
+    key,
+    value: values[index],
+  }))
+}
+
+async function restoreMissingBrowserSecretSnapshotRecords(
+  snapshot: BrowserSecretRecordSnapshot[],
+  bridgeIdentity: unknown,
+): Promise<void> {
+  if (snapshot.length === 0) {
+    return
+  }
+
+  await secretBatchTransaction('readwrite', (store, abortWith) => {
+    for (const record of snapshot) {
+      const request = store.get(record.key)
+      request.onerror = () => abortWith(request.error)
+      request.onsuccess = () => {
+        if (request.result !== undefined) {
+          return
+        }
+
+        try {
+          assertWindowsSecretMigrationOwner(bridgeIdentity)
+          const put = store.put(record.value, record.key)
+          put.onerror = () => abortWith(put.error)
+        } catch (error: unknown) {
+          abortWith(error)
+        }
+      }
+    }
+  })
+}
+
+async function clearBrowserSecretsAfterWindowsMigration(
+  migrationBridgeIdentity: unknown,
+): Promise<void> {
+  const snapshot = await readBrowserSecretRecordSnapshot()
+
+  await secretBatchTransaction(
+    'readwrite',
+    (store, abortWith) => {
+      const keysRequest = store.getAllKeys()
+      keysRequest.onerror = () => abortWith(keysRequest.error)
+      keysRequest.onsuccess = () => {
+        const secretKeys = keysRequest.result.filter(
+          (key): key is string =>
+            typeof key === 'string' && key.startsWith('secret:'),
+        )
+
+        for (const key of secretKeys) {
+          try {
+            assertWindowsSecretMigrationOwner(migrationBridgeIdentity)
+            const request = store.delete(key)
+            request.onerror = () => abortWith(request.error)
+          } catch (error: unknown) {
+            abortWith(error)
+          }
+        }
+      }
+    },
+    async () => {
+      try {
+        assertWindowsSecretMigrationOwner(migrationBridgeIdentity)
+      } catch (error: unknown) {
+        try {
+          await restoreMissingBrowserSecretSnapshotRecords(
+            snapshot,
+            currentWindowsSecretBridgeIdentity(),
+          )
+        } catch (restoreError: unknown) {
+          throw new AggregateError(
+            [error, restoreError],
+            'Windows browser secret cleanup could not be compensated.',
+            { cause: restoreError },
+          )
+        }
+        throw error
+      }
+    },
+  )
+
+  assertWindowsSecretMigrationOwner(migrationBridgeIdentity)
   const legacyKeys: string[] = []
 
   for (let index = 0; index < localStorage.length; index += 1) {
@@ -1752,6 +1880,8 @@ async function clearBrowserSecretsAfterWindowsMigration(): Promise<void> {
   for (const key of legacyKeys) {
     localStorage.removeItem(key)
   }
+
+  assertWindowsSecretMigrationOwner(migrationBridgeIdentity)
   sessionStorage.removeItem(SYNC_PASSPHRASE_KEY)
   loadedSecretStoreRevision = undefined
 }
@@ -1782,6 +1912,9 @@ async function mutateWindowsSecretStore(
   migrationState: WindowsSecretMigrationState | null = null,
   expectedRevision = loadedWindowsSecretRevision ?? null,
 ): Promise<WindowsSecretProbeResult> {
+  const bridgeIdentity = currentWindowsSecretBridgeIdentity()
+  const revisionGeneration = windowsSecretRevisionGeneration
+
   try {
     const result = await mutateWindowsSecrets({
       changes,
@@ -1789,8 +1922,13 @@ async function mutateWindowsSecretStore(
       expectedRevision,
       migrationState,
     })
-    windowsSecretRevisionGeneration += 1
-    loadedWindowsSecretRevision = result.revision
+    if (
+      bridgeIdentity === currentWindowsSecretBridgeIdentity() &&
+      revisionGeneration === windowsSecretRevisionGeneration
+    ) {
+      windowsSecretRevisionGeneration += 1
+      loadedWindowsSecretRevision = result.revision
+    }
     return result
   } catch (error: unknown) {
     translateWindowsSecretError(error)
@@ -1798,6 +1936,7 @@ async function mutateWindowsSecretStore(
 }
 
 async function runWindowsSecretMigration(): Promise<void> {
+  const migrationBridgeIdentity = currentWindowsSecretBridgeIdentity()
   let current: WindowsSecretProbeResult
 
   try {
@@ -1805,17 +1944,24 @@ async function runWindowsSecretMigration(): Promise<void> {
   } catch (error: unknown) {
     translateWindowsSecretError(error)
   }
+  assertWindowsSecretMigrationOwner(migrationBridgeIdentity)
   loadedWindowsSecretRevision = current.revision
 
   if (current.migrationState === 'complete') {
+    await clearBrowserSecretsAfterWindowsMigration(migrationBridgeIdentity)
+    assertWindowsSecretMigrationOwner(migrationBridgeIdentity)
     return
   }
 
   const browserEntries = await readBrowserMigrationEntries()
+  assertWindowsSecretMigrationOwner(migrationBridgeIdentity)
   const names = browserEntries.map(({ name }) => name)
   let locker = await readWindowsSecretSnapshot(names)
+  assertWindowsSecretMigrationOwner(migrationBridgeIdentity)
 
   if (locker.migrationState === 'complete') {
+    await clearBrowserSecretsAfterWindowsMigration(migrationBridgeIdentity)
+    assertWindowsSecretMigrationOwner(migrationBridgeIdentity)
     return
   }
 
@@ -1828,6 +1974,7 @@ async function runWindowsSecretMigration(): Promise<void> {
     locker.migrationState !== 'locker-written' ||
     missingEntries.length > 0
   ) {
+    assertWindowsSecretMigrationOwner(migrationBridgeIdentity)
     await mutateWindowsSecretStore(
       missingEntries,
       'none',
@@ -1835,6 +1982,7 @@ async function runWindowsSecretMigration(): Promise<void> {
       locker.revision,
     )
     locker = await readWindowsSecretSnapshot(names)
+    assertWindowsSecretMigrationOwner(migrationBridgeIdentity)
 
     const verified = entryMap(locker.entries)
     const migrationVerified =
@@ -1845,6 +1993,7 @@ async function runWindowsSecretMigration(): Promise<void> {
 
     if (!migrationVerified) {
       try {
+        assertWindowsSecretMigrationOwner(migrationBridgeIdentity)
         await mutateWindowsSecretStore(
           missingEntries.map(({ name }) => ({ name, value: null })),
           'none',
@@ -1858,13 +2007,16 @@ async function runWindowsSecretMigration(): Promise<void> {
     }
   }
 
-  await clearBrowserSecretsAfterWindowsMigration()
+  assertWindowsSecretMigrationOwner(migrationBridgeIdentity)
   await mutateWindowsSecretStore(
     [],
     'none',
     'complete',
     loadedWindowsSecretRevision ?? null,
   )
+  assertWindowsSecretMigrationOwner(migrationBridgeIdentity)
+  await clearBrowserSecretsAfterWindowsMigration(migrationBridgeIdentity)
+  assertWindowsSecretMigrationOwner(migrationBridgeIdentity)
 }
 
 function ensureWindowsSecretStoreInitialized(): Promise<void> {
@@ -1874,7 +2026,13 @@ function ensureWindowsSecretStoreInitialized(): Promise<void> {
     return windowsSecretInitialization
   }
 
-  const initialization = runWindowsSecretMigration()
+  const initialization = windowsSecretMigrationTail.then(() =>
+    withSecretMutationLock(runWindowsSecretMigration),
+  )
+  windowsSecretMigrationTail = initialization.then(
+    () => undefined,
+    () => undefined,
+  )
   windowsSecretInitialization = initialization
   void initialization.catch(() => {
     if (windowsSecretInitialization === initialization) {
@@ -1942,7 +2100,6 @@ async function recoverPendingProviderSecretAppDataTransitionNow(): Promise<void>
   }
 
   if (isWindowsWebViewOrigin()) {
-    await ensureWindowsSecretStoreInitialized()
     await rollbackWindowsProviderAppDataTransition(state.record, payload)
     return
   }
@@ -1951,9 +2108,12 @@ async function recoverPendingProviderSecretAppDataTransitionNow(): Promise<void>
 }
 
 export function recoverPendingProviderSecretAppDataTransition(): Promise<void> {
-  return withSecretMutationLock(
-    recoverPendingProviderSecretAppDataTransitionNow,
-  )
+  return (async () => {
+    if (isWindowsWebViewOrigin()) {
+      await ensureWindowsSecretStoreInitialized()
+    }
+    await withSecretMutationLock(recoverPendingProviderSecretAppDataTransitionNow)
+  })()
 }
 
 async function recoverPendingZeroChatSecretAppDataTransitionNow(): Promise<void> {
@@ -1972,7 +2132,6 @@ async function recoverPendingZeroChatSecretAppDataTransitionNow(): Promise<void>
   }
 
   if (isWindowsWebViewOrigin()) {
-    await ensureWindowsSecretStoreInitialized()
     await rollbackWindowsZeroChatAppDataTransition(state.record, payload)
     return
   }
@@ -1981,9 +2140,12 @@ async function recoverPendingZeroChatSecretAppDataTransitionNow(): Promise<void>
 }
 
 export function recoverPendingZeroChatSecretAppDataTransition(): Promise<void> {
-  return withSecretMutationLock(
-    recoverPendingZeroChatSecretAppDataTransitionNow,
-  )
+  return (async () => {
+    if (isWindowsWebViewOrigin()) {
+      await ensureWindowsSecretStoreInitialized()
+    }
+    await withSecretMutationLock(recoverPendingZeroChatSecretAppDataTransitionNow)
+  })()
 }
 
 async function commitAppDataWithSecretTransition<RecordType>(
@@ -2112,6 +2274,10 @@ export async function commitZeroChatSecretSnapshotWithAppData(
 export async function loadZeroChatSecrets(
   providerIds: string[],
 ): Promise<StoredSecrets> {
+  if (isWindowsWebViewOrigin()) {
+    await ensureWindowsSecretStoreInitialized()
+  }
+
   await runSecretMutation(async () => {
     await recoverPendingZeroChatSecretAppDataTransitionNow()
     await recoverPendingProviderSecretAppDataTransitionNow()

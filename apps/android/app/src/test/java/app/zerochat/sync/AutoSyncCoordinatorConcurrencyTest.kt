@@ -13,10 +13,12 @@ import app.zerochat.security.SecretStore
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -29,6 +31,20 @@ import java.util.concurrent.atomic.AtomicInteger
 class AutoSyncCoordinatorConcurrencyTest {
     @TempDir
     lateinit var tempDir: Path
+
+    @Test
+    fun closeReleasesTheOwnedSyncClient() {
+        val syncClient = mockk<SyncClient>(relaxed = true)
+        val coordinator = AutoSyncCoordinator(
+            repository = mockk(relaxed = true),
+            secretStore = mockk(relaxed = true),
+            syncClient = syncClient,
+        )
+
+        coordinator.close()
+
+        verify(exactly = 1) { syncClient.close() }
+    }
 
     @Test
     fun manualSyncPreservesConcurrentCommitAndConsumesPendingAutoSync() = runBlocking {
@@ -73,16 +89,21 @@ class AutoSyncCoordinatorConcurrencyTest {
                 local
             }
         }
-        val coordinator = AutoSyncCoordinator(repository, secrets, syncClient)
         val callbacks = mutableListOf<AppSnapshot>()
+        val coordinator = AutoSyncCoordinator(
+            repository,
+            secrets,
+            syncClient,
+            onSynced = { _, commit -> callbacks += commit.snapshot },
+        )
 
         val manual = async(start = CoroutineStart.UNDISPATCHED) {
-            coordinator.syncNow(source) { _, commit -> callbacks += commit.snapshot }
+            coordinator.syncNow(source)
         }
         firstStarted.await()
         repository.save(concurrent)
         val pending = async(start = CoroutineStart.UNDISPATCHED) {
-            coordinator.enqueue(concurrent) { _, commit -> callbacks += commit.snapshot }
+            coordinator.enqueue(concurrent)
         }
         releaseFirst.complete(Unit)
 
@@ -97,6 +118,114 @@ class AutoSyncCoordinatorConcurrencyTest {
         assertEquals(2, calls.get())
         assertEquals(listOf(committed), callbacks)
         assertFalse("stale-key" in storedKeys.values)
+    }
+
+    @Test
+    fun manualSyncQueuedBehindSnapshotReplacementIsDroppedBeforeProviderRequest() = runBlocking {
+        val repository = repository()
+        val source = snapshot(updatedAt = 100, theme = "light", autoSync = false)
+        repository.save(source)
+
+        val replacementStarted = CompletableDeferred<Unit>()
+        val releaseReplacement = CompletableDeferred<Unit>()
+        val providerCalls = AtomicInteger()
+        val syncClient = mockk<SyncClient>()
+        coEvery {
+            syncClient.syncGistVault(
+                vault = any(),
+                passphrase = any(),
+                gistId = any(),
+                gistFile = any(),
+                token = any(),
+                firstSyncStrategy = any(),
+                hasCompletedSync = any(),
+                hasLocalUserContent = any(),
+                hasUnsyncedLocalChanges = any(),
+            )
+        } coAnswers {
+            providerCalls.incrementAndGet()
+            SyncVault(data = source)
+        }
+        val coordinator = AutoSyncCoordinator(
+            repository = repository,
+            secretStore = secrets(),
+            syncClient = syncClient,
+        )
+
+        val replacement = async(start = CoroutineStart.UNDISPATCHED) {
+            coordinator.runExclusiveSnapshotReplacement {
+                replacementStarted.complete(Unit)
+                releaseReplacement.await()
+            }
+        }
+        replacementStarted.await()
+
+        val manual = async(start = CoroutineStart.UNDISPATCHED) {
+            coordinator.syncNow(source)
+        }
+        releaseReplacement.complete(Unit)
+
+        replacement.await()
+        assertNull(manual.await())
+        assertEquals(0, providerCalls.get())
+    }
+
+    @Test
+    fun autoSyncEnqueuedDuringSnapshotReplacementSurvivesReplacementCleanup() = runBlocking {
+        val source = snapshot(updatedAt = 100, theme = "light", autoSync = true)
+        val newer = snapshot(updatedAt = 200, theme = "dark", autoSync = true)
+        val requestStarted = CompletableDeferred<AppSnapshot>()
+        val replacementStarted = CompletableDeferred<Unit>()
+        val releaseReplacement = CompletableDeferred<Unit>()
+        val syncClient = mockk<SyncClient>()
+        coEvery {
+            syncClient.syncGistVault(
+                vault = any(),
+                passphrase = any(),
+                gistId = any(),
+                gistFile = any(),
+                token = any(),
+                firstSyncStrategy = any(),
+                hasCompletedSync = any(),
+                hasLocalUserContent = any(),
+                hasUnsyncedLocalChanges = any(),
+            )
+        } coAnswers {
+            val local = firstArg<SyncVault>()
+            requestStarted.complete(local.data)
+            local
+        }
+        val repository = mockk<ZeroChatRepository>()
+        coEvery { repository.compareAndSet(any(), any()) } coAnswers {
+            SnapshotCompareAndSetResult(
+                snapshot = secondArg(),
+                revision = 1,
+                committed = true,
+            )
+        }
+        val coordinator = AutoSyncCoordinator(
+            repository = repository,
+            secretStore = secrets(),
+            syncClient = syncClient,
+        )
+
+        val replacement = async(start = CoroutineStart.UNDISPATCHED) {
+            coordinator.runExclusiveSnapshotReplacement {
+                replacementStarted.complete(Unit)
+                releaseReplacement.await()
+            }
+        }
+        replacementStarted.await()
+
+        val pending = async(start = CoroutineStart.UNDISPATCHED) {
+            coordinator.enqueue(newer)
+        }
+        releaseReplacement.complete(Unit)
+        replacement.await()
+        pending.await()
+
+        val observed = withTimeout(2_000) { requestStarted.await() }
+        assertEquals("dark", observed.preferences.theme)
     }
 
     @Test
@@ -131,11 +260,16 @@ class AutoSyncCoordinatorConcurrencyTest {
                 ),
             )
         }
-        val coordinator = AutoSyncCoordinator(repository, secrets(), syncClient)
         val callbacks = mutableListOf<AppSnapshot>()
+        val coordinator = AutoSyncCoordinator(
+            repository,
+            secrets(),
+            syncClient,
+            onSynced = { _, commit -> callbacks += commit.snapshot },
+        )
 
         val sync = async(start = CoroutineStart.UNDISPATCHED) {
-            coordinator.enqueue(source) { _, commit -> callbacks += commit.snapshot }
+            coordinator.enqueue(source)
         }
         requestStarted.await()
         repository.save(concurrent)
@@ -144,6 +278,52 @@ class AutoSyncCoordinatorConcurrencyTest {
 
         assertEquals(concurrent, repository.load())
         assertEquals(emptyList<AppSnapshot>(), callbacks)
+    }
+
+    @Test
+    fun autoSyncCommitFailureIsReportedWithoutEscapingTheCoordinator() = runBlocking {
+        val source = snapshot(updatedAt = 100, theme = "light", autoSync = true)
+        val failure = IllegalStateException("snapshot disk full")
+        val repository = mockk<ZeroChatRepository>()
+        coEvery { repository.compareAndSet(any(), any()) } throws failure
+        val syncClient = mockk<SyncClient>()
+        coEvery {
+            syncClient.syncGistVault(
+                vault = any(),
+                passphrase = any(),
+                gistId = any(),
+                gistFile = any(),
+                token = any(),
+                firstSyncStrategy = any(),
+                hasCompletedSync = any(),
+                hasLocalUserContent = any(),
+                hasUnsyncedLocalChanges = any(),
+            )
+        } returns SyncVault(data = source.copy(updatedAt = 150))
+        val notices = mutableListOf<Pair<String, Boolean>>()
+        val notifier = object : SyncStatusNotifier {
+            override fun ensureChannel() = Unit
+            override fun showStatus(message: String, completed: Boolean) {
+                notices += message to completed
+            }
+            override fun clear() = Unit
+        }
+        val callbacks = mutableListOf<AppSnapshot>()
+        val coordinator = AutoSyncCoordinator(
+            repository = repository,
+            secretStore = secrets(),
+            syncClient = syncClient,
+            statusNotifier = notifier,
+            onSynced = { _, commit -> callbacks += commit.snapshot },
+        )
+
+        val result = runCatching {
+            coordinator.enqueue(source)
+        }
+
+        assertTrue(result.isSuccess)
+        assertEquals(emptyList<AppSnapshot>(), callbacks)
+        assertEquals(listOf("snapshot disk full" to false), notices)
     }
 
     @Test
@@ -182,10 +362,11 @@ class AutoSyncCoordinatorConcurrencyTest {
             repository,
             secrets(storedKeys, secretWriteBatches),
             syncClient,
+            onSynced = { _, _ -> error("Stale sync must not publish a callback") },
         )
 
         val sync = async(start = CoroutineStart.UNDISPATCHED) {
-            coordinator.syncNow(source) { _, _ -> error("Stale sync must not publish a callback") }
+            coordinator.syncNow(source)
         }
         requestStarted.await()
         repository.save(concurrent)

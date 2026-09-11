@@ -435,12 +435,14 @@ async function createGist(
     fileName,
     rt('sync.status.complete'),
   )
+  assertRemoteWriteAllowed(context)
   await storeGistCursor(
     gistId,
     fileName,
     [operation.id],
     resultVault.data,
     resultVault,
+    context.shouldDeferRemoteWrite,
   )
 
   return {
@@ -640,12 +642,14 @@ async function syncExistingGist(
     fileName,
     message,
   )
+  assertRemoteWriteAllowed(context)
   await storeGistCursor(
     gistId,
     fileName,
     heads,
     resultVault.data,
     resultVault,
+    context.shouldDeferRemoteWrite,
   )
 
   return {
@@ -767,6 +771,7 @@ export async function clearWithGist(
 
   assertRemoteWriteAllowed(context)
   await patchGistFiles(data.sync.gistId, token, files, context.signal)
+  assertRemoteWriteAllowed(context)
   clearGistCursor(data.sync.gistId, fileName)
   const cleared = markRemoteCleared(data, rt('sync.status.remoteCleared'))
 

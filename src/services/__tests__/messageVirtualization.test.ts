@@ -8,13 +8,11 @@ import {
   calculateMessageVirtualRange,
   deriveResolvedMessageVirtualRange,
   emptyMessageVirtualRange,
+  installMessageVirtualResizeObserver,
+  scrollMessagesElementToLatest,
   sumMessageVirtualHeights,
   virtualizedLatestAssistantAnnouncement,
 } from '../messageVirtualization'
-import {
-  installMessageVirtualResizeObserver,
-  scrollMessagesElementToLatest,
-} from '../messageVirtualizationController'
 import type { ChatMessage } from '../../types'
 
 function message(id: string): ChatMessage {
@@ -199,6 +197,54 @@ describe('message virtualization', () => {
 
     cleanup()
     expect(disconnect).toHaveBeenCalledOnce()
+  })
+
+  it('ignores a late resize callback after the message effect cleanup', () => {
+    const messageList = {
+      querySelectorAll: vi.fn(() => []),
+    } as unknown as HTMLElement
+    const onResize = vi.fn()
+    let notifyResize: (() => void) | undefined
+
+    const cleanup = installMessageVirtualResizeObserver(
+      messageList,
+      onResize,
+      (callback) => {
+        notifyResize = callback
+        return { disconnect: vi.fn(), observe: vi.fn() }
+      },
+    )
+
+    notifyResize?.()
+    expect(onResize).toHaveBeenCalledOnce()
+
+    cleanup()
+    notifyResize?.()
+
+    expect(onResize).toHaveBeenCalledOnce()
+  })
+
+  it('uses the browser ResizeObserver factory when available', () => {
+    const observe = vi.fn()
+    const disconnect = vi.fn()
+    class FakeResizeObserver {
+      observe = observe
+      disconnect = disconnect
+    }
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver)
+    const messageList = {
+      querySelectorAll: vi.fn(() => []),
+    } as unknown as HTMLElement
+
+    const cleanup = installMessageVirtualResizeObserver(
+      messageList,
+      vi.fn(),
+    )
+
+    expect(observe).toHaveBeenCalledWith(messageList, { box: 'border-box' })
+    cleanup()
+    expect(disconnect).toHaveBeenCalledOnce()
+    vi.unstubAllGlobals()
   })
 
   it('keeps virtualization usable when resize observation is unavailable', () => {

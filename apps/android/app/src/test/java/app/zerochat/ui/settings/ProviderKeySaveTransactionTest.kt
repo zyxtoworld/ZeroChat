@@ -2,141 +2,167 @@ package app.zerochat.ui.settings
 
 import app.zerochat.data.AppSnapshot
 import app.zerochat.data.SnapshotCompareAndSetResult
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ProviderKeySaveTransactionTest {
     @Test
-    fun writesProviderKeyOnlyAfterSnapshotCas() = runBlocking {
+    fun stagesProviderKeyBeforeSnapshotAndFinishesIntent() = runBlocking {
         val source = AppSnapshot(updatedAt = 1)
         val candidate = AppSnapshot(updatedAt = 2)
         val events = mutableListOf<String>()
 
-        val commit = commitProviderKeySaveTransaction(
+        val commit = commitProviderKeySnapshotSaveTransaction(
             source = source,
             candidate = candidate,
             sourceRevision = 3,
             currentRevision = { 3 },
-            writeProviderKey = { events += "key" },
+            stageProviderKey = { events += "stage" },
+            finishProviderKey = { events += "finish" },
+            restoreProviderKey = { events += "restore" },
             compareAndSetSnapshot = { _, replacement ->
                 events += "snapshot"
                 SnapshotCompareAndSetResult(replacement, 8, committed = true)
             },
         )
 
-        assertEquals(listOf("snapshot", "key"), events)
+        assertEquals(listOf("stage", "snapshot", "finish"), events)
         assertEquals(candidate, commit.snapshot)
         assertEquals(8, commit.revision)
     }
 
     @Test
-    fun staleSnapshotNeverWritesProviderKey() {
-        val source = AppSnapshot(updatedAt = 1)
-        val candidate = AppSnapshot(updatedAt = 2)
-        var keyWritten = false
+    fun snapshotCasRejectRestoresStagedProviderKey() {
+        val events = mutableListOf<String>()
 
-        assertThrows(ProviderDeletionConflictException::class.java) {
+        assertThrows(ProviderKeySaveConflictException::class.java) {
             runBlocking {
-                commitProviderKeySaveTransaction(
-                    source = source,
-                    candidate = candidate,
+                commitProviderKeySnapshotSaveTransaction(
+                    source = AppSnapshot(updatedAt = 1),
+                    candidate = AppSnapshot(updatedAt = 2),
                     sourceRevision = 1,
                     currentRevision = { 1 },
-                    writeProviderKey = { keyWritten = true },
+                    stageProviderKey = { events += "stage" },
+                    finishProviderKey = { events += "finish" },
+                    restoreProviderKey = { events += "restore" },
                     compareAndSetSnapshot = { _, _ ->
-                        SnapshotCompareAndSetResult(source, 2, committed = false)
+                        events += "snapshot"
+                        SnapshotCompareAndSetResult(AppSnapshot(updatedAt = 3), 2, committed = false)
                     },
                 )
             }
         }
 
-        assertFalse(keyWritten)
+        assertEquals(listOf("stage", "snapshot", "restore"), events)
     }
 
     @Test
-    fun visibleRevisionDriftRollsSnapshotBackBeforeKeyWrite() {
+    fun snapshotCasFailureAfterDurableWriteRestoresStagedProviderKey() {
         val source = AppSnapshot(updatedAt = 1)
         val candidate = AppSnapshot(updatedAt = 2)
-        val replacements = mutableListOf<AppSnapshot>()
-        var keyWritten = false
+        val failure = IllegalStateException("snapshot response lost")
+        val events = mutableListOf<String>()
+        var durableSnapshot = source
+        var compareCalls = 0
 
-        assertThrows(ProviderDeletionConflictException::class.java) {
+        val thrown = assertThrows(IllegalStateException::class.java) {
             runBlocking {
-                commitProviderKeySaveTransaction(
+                commitProviderKeySnapshotSaveTransaction(
                     source = source,
                     candidate = candidate,
                     sourceRevision = 1,
-                    currentRevision = { 2 },
-                    writeProviderKey = { keyWritten = true },
+                    currentRevision = { 1 },
+                    stageProviderKey = { events += "stage" },
+                    finishProviderKey = { events += "finish" },
+                    restoreProviderKey = { events += "restore" },
+                    compareAndSetSnapshot = { expected, replacement ->
+                        compareCalls += 1
+                        if (compareCalls == 1) {
+                            durableSnapshot = replacement
+                            events += "snapshot"
+                            throw failure
+                        }
+                        assertEquals(candidate, expected)
+                        durableSnapshot = source
+                        events += "rollback"
+                        SnapshotCompareAndSetResult(source, 3, committed = true)
+                    },
+                )
+            }
+        }
+
+        assertTrue(thrown === failure)
+        assertEquals(source, durableSnapshot)
+        assertEquals(listOf("stage", "snapshot", "rollback", "restore"), events)
+    }
+
+    @Test
+    fun processStopAfterSnapshotCasLeavesPendingIntentForStartupRecovery() {
+        val source = AppSnapshot(updatedAt = 1)
+        val candidate = AppSnapshot(updatedAt = 2)
+        val events = mutableListOf<String>()
+        var pendingIntent = false
+
+        assertThrows(ProcessStopped::class.java) {
+            runBlocking {
+                commitProviderKeySnapshotSaveTransaction(
+                    source = source,
+                    candidate = candidate,
+                    sourceRevision = 1,
+                    currentRevision = { throw ProcessStopped() },
+                    stageProviderKey = {
+                        pendingIntent = true
+                        events += "stage"
+                    },
+                    finishProviderKey = { pendingIntent = false; events += "finish" },
+                    restoreProviderKey = { pendingIntent = false; events += "restore" },
                     compareAndSetSnapshot = { _, replacement ->
-                        replacements += replacement
+                        events += "snapshot"
                         SnapshotCompareAndSetResult(replacement, 2, committed = true)
                     },
                 )
             }
         }
 
-        assertEquals(listOf(candidate, source), replacements)
-        assertFalse(keyWritten)
+        assertTrue(pendingIntent)
+        assertEquals(listOf("stage", "snapshot"), events)
     }
 
     @Test
-    fun keyStoreFailureRollsSnapshotBack() {
+    fun finishFailureRollsSnapshotBackAndRestoresStagedProviderKey() {
         val source = AppSnapshot(updatedAt = 1)
         val candidate = AppSnapshot(updatedAt = 2)
-        val replacements = mutableListOf<AppSnapshot>()
+        val events = mutableListOf<String>()
+        var calls = 0
 
         val failure = assertThrows(IllegalStateException::class.java) {
             runBlocking {
-                commitProviderKeySaveTransaction(
+                commitProviderKeySnapshotSaveTransaction(
                     source = source,
                     candidate = candidate,
                     sourceRevision = 1,
                     currentRevision = { 1 },
-                    writeProviderKey = { throw IllegalStateException("key store failed") },
+                    stageProviderKey = { events += "stage" },
+                    finishProviderKey = {
+                        events += "finish"
+                        error("finish unavailable")
+                    },
+                    restoreProviderKey = { events += "restore" },
                     compareAndSetSnapshot = { _, replacement ->
-                        replacements += replacement
-                        SnapshotCompareAndSetResult(replacement, 2, committed = true)
+                        calls += 1
+                        events += if (calls == 1) "snapshot" else "rollback"
+                        SnapshotCompareAndSetResult(replacement, calls.toLong(), committed = true)
                     },
                 )
             }
         }
 
-        assertEquals("key store failed", failure.message)
-        assertEquals(listOf(candidate, source), replacements)
+        assertEquals("finish unavailable", failure.message)
+        assertEquals(listOf("stage", "snapshot", "finish", "rollback", "restore"), events)
     }
 
-    @Test
-    fun rollbackCancellationRemainsPrimary() {
-        val source = AppSnapshot(updatedAt = 1)
-        val candidate = AppSnapshot(updatedAt = 2)
-        var call = 0
-
-        val cancellation = assertThrows(CancellationException::class.java) {
-            runBlocking {
-                commitProviderKeySaveTransaction(
-                    source = source,
-                    candidate = candidate,
-                    sourceRevision = 1,
-                    currentRevision = { 2 },
-                    writeProviderKey = {},
-                    compareAndSetSnapshot = { _, replacement ->
-                        call += 1
-                        if (call == 2) {
-                            throw CancellationException("cancel rollback")
-                        }
-                        SnapshotCompareAndSetResult(replacement, 2, committed = true)
-                    },
-                )
-            }
-        }
-
-        assertEquals("cancel rollback", cancellation.message)
-        assertTrue(cancellation.suppressed.single() is ProviderDeletionConflictException)
-    }
+    private class ProcessStopped : RuntimeException()
 }

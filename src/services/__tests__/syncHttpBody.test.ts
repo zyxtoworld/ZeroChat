@@ -297,6 +297,22 @@ describe('sync HTTP body limits', () => {
     expect(readerCancel).toHaveBeenCalled()
   })
 
+  it('does not start fetch when the caller is already cancelled', async () => {
+    const source = new AbortController()
+    source.abort()
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+
+    await expect(
+      fetchSync(
+        'https://sync.example.test/snapshot',
+        { signal: source.signal },
+        async () => 'unreachable',
+      ),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('rejects a late consumer result after caller cancellation', async () => {
     vi.useFakeTimers()
     const source = new AbortController()

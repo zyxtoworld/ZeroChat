@@ -27,6 +27,21 @@ function chunkContent(_skill: UserSkill, chunk: UserSkillChunk): Promise<string>
   return Promise.resolve(chunk.content ?? chunk.contentPreview ?? '')
 }
 
+function hasUnpairedSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index)
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (next < 0xdc00 || next > 0xdfff) return true
+      index += 1
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return true
+    }
+  }
+
+  return false
+}
+
 describe('skills service', () => {
   it('builds bounded chunks with localized fallback headings', async () => {
     const chunks = await buildSkillChunks(
@@ -72,6 +87,53 @@ describe('skills service', () => {
     }
   })
 
+  it('falls back to a timer when requestIdleCallback throws synchronously', async () => {
+    const originalRequestIdleCallback = globalThis.requestIdleCallback
+
+    vi.stubGlobal('requestIdleCallback', () => {
+      throw new Error('embedded idle scheduler is unavailable')
+    })
+
+    try {
+      const chunks = await buildSkillChunks(
+        Array.from(
+          { length: 7 },
+          (_, index) => `# Section ${index + 1}\n${'chunking guidance '.repeat(180)}`,
+        ).join('\n\n'),
+      )
+
+      expect(chunks.length).toBeGreaterThanOrEqual(6)
+    } finally {
+      vi.stubGlobal('requestIdleCallback', originalRequestIdleCallback)
+    }
+  })
+
+  it('settles chunking when both idle scheduling paths throw synchronously', async () => {
+    const originalRequestIdleCallback = globalThis.requestIdleCallback
+    const originalSetTimeout = globalThis.setTimeout
+
+    vi.stubGlobal('requestIdleCallback', () => {
+      throw new Error('embedded idle scheduler is unavailable')
+    })
+    vi.stubGlobal('setTimeout', () => {
+      throw new Error('embedded timer is unavailable')
+    })
+
+    try {
+      const chunks = await buildSkillChunks(
+        Array.from(
+          { length: 7 },
+          (_, index) => `# Section ${index + 1}\n${'chunking guidance '.repeat(180)}`,
+        ).join('\n\n'),
+      )
+
+      expect(chunks.length).toBeGreaterThan(0)
+    } finally {
+      vi.stubGlobal('requestIdleCallback', originalRequestIdleCallback)
+      vi.stubGlobal('setTimeout', originalSetTimeout)
+    }
+  })
+
   it('prefers paragraph soft breaks when splitting long Skill sections', async () => {
     const chunks = await buildSkillChunks(
       `# Soft Breaks\n${'alpha '.repeat(130)}\n\n${'beta '.repeat(520)}`,
@@ -80,6 +142,42 @@ describe('skills service', () => {
     expect(chunks.length).toBeGreaterThan(1)
     expect(chunks[0]?.content).toBe('alpha '.repeat(130).trim())
     expect(chunks[1]?.content?.startsWith('beta beta')).toBe(true)
+  })
+
+  it('does not split a Unicode surrogate pair at a chunk boundary', async () => {
+    const emoji = '😀'
+    const chunks = await buildSkillChunks(
+      `# Unicode boundary\n${'a'.repeat(2599)}${emoji}tail`,
+    )
+
+    expect(chunks).toHaveLength(2)
+    expect(chunks.every((chunk) => !hasUnpairedSurrogate(chunk.content ?? ''))).toBe(
+      true,
+    )
+    expect(chunks.map((chunk) => chunk.content ?? '').join('')).toContain(emoji)
+  })
+
+  it('does not split a Unicode surrogate pair while trimming Skill context', async () => {
+    const fixed = {
+      ...(await skill('Unicode policy', 'Keep this policy pinned.')),
+      fixed: true,
+    }
+    const emoji = '😀'
+    const content = `${'a'.repeat(379)}${emoji}tail`
+
+    const message = await buildSkillSystemMessage(
+      [fixed],
+      {
+        autoMatch: false,
+        contextBudget: 100,
+        maxAutoSkills: 1,
+      },
+      '',
+      async () => content,
+    )
+
+    expect(hasUnpairedSurrogate(message)).toBe(false)
+    expect(message).toContain(emoji)
   })
 
   it('creates stable searchable metadata from pasted Skill content', async () => {
@@ -135,6 +233,24 @@ describe('skills service', () => {
     } finally {
       vi.stubGlobal('crypto', originalCrypto)
       vi.restoreAllMocks()
+    }
+  })
+
+  it('keeps skill creation usable when WebCrypto id generation fails', async () => {
+    const originalCrypto = globalThis.crypto
+    vi.stubGlobal('crypto', {
+      subtle: originalCrypto?.subtle,
+      randomUUID: () => {
+        throw new Error('randomUUID unavailable')
+      },
+    })
+
+    try {
+      const created = await skill('Fallback skill id', 'alpha guidance')
+
+      expect(created.id).toMatch(/^skill-/)
+    } finally {
+      vi.stubGlobal('crypto', originalCrypto)
     }
   })
 

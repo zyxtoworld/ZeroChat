@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { loadLocale, rt, setRuntimeLocale } from '../../i18n'
 import type {
@@ -437,6 +437,23 @@ function appData(patch: Partial<AppData> = {}): AppData {
   }
 }
 
+function provider(id: string): AppData['providers'][number] {
+  return {
+    baseUrl: 'https://api.example.dev/v1',
+    clientRequestMode: true,
+    createdAt: 1,
+    enabled: true,
+    id,
+    imageModel: 'gpt-image-1',
+    kind: 'openai-compatible',
+    model: 'gpt-5',
+    models: ['gpt-5'],
+    needsApiKey: true,
+    name: id,
+    updatedAt: 2,
+  }
+}
+
 function syncContext(patch: Partial<SyncContext> = {}): SyncContext {
   return {
     encryptionPassphrase: passphrase,
@@ -456,6 +473,35 @@ async function createInstalledStore() {
 }
 
 describe('Cloudflare sync transport', () => {
+  it('rejects unsafe HTTPS Worker endpoints before remote sync starts', async () => {
+    const originalFetch = globalThis.fetch
+    let fetchCalls = 0
+    globalThis.fetch = async () => {
+      fetchCalls += 1
+      throw new Error('remote fetch must not start')
+    }
+    restoreFetch = () => {
+      globalThis.fetch = originalFetch
+    }
+
+    await expect(
+      syncWithCloudflare(
+        appData({
+          sync: {
+            autoSync: true,
+            encryptionEnabled: true,
+            mode: 'cloudflare',
+            workerEndpoint: 'https://127.0.0.1:8443',
+          },
+        }),
+        syncContext(),
+      ),
+    ).rejects.toThrow(
+      rt('error.urlLocalNetwork', { label: rt('field.workerEndpoint') }),
+    )
+    expect(fetchCalls).toBe(0)
+  })
+
   it('forwards runtime cancellation to the active Cloudflare request', async () => {
     const originalFetch = globalThis.fetch
     const source = new AbortController()
@@ -519,6 +565,282 @@ describe('Cloudflare sync transport', () => {
     ).toBe(false)
   })
 
+  it('waits for all parallel chunk writes before rolling back a failed upload', async () => {
+    const store = await createInstalledStore()
+    const workerFetch = globalThis.fetch
+    let firstObjectPut = true
+    let secondObjectPut = true
+    let markBlockedPutStarted = (): void => undefined
+    const blockedPutStarted = new Promise<void>((resolve) => {
+      markBlockedPutStarted = resolve
+    })
+    let blockedPutAborted = false
+    let blockedPutSettled = false
+    let releaseBlockedPut: (() => Promise<void>) | undefined
+
+    globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init)
+      const url = new URL(request.url)
+
+      if (
+        request.method === 'PUT' &&
+        url.pathname.startsWith('/sync/object/')
+      ) {
+        if (firstObjectPut) {
+          firstObjectPut = false
+          await workerFetch(request)
+          markBlockedPutStarted()
+
+          return new Promise<Response>((_resolve, reject) => {
+            const abort = (): void => {
+              blockedPutAborted = true
+              request.signal.removeEventListener('abort', abort)
+            }
+
+            releaseBlockedPut = async () => {
+              if (blockedPutSettled) return
+              blockedPutSettled = true
+              request.signal.removeEventListener('abort', abort)
+              reject(new DOMException('Aborted', 'AbortError'))
+            }
+
+            if (request.signal.aborted) {
+              abort()
+              return
+            }
+            request.signal.addEventListener('abort', abort, { once: true })
+          })
+        }
+
+        if (secondObjectPut) {
+          secondObjectPut = false
+          return textResponse('chunk upload failed', 500)
+        }
+      }
+
+      return workerFetch(request)
+    }
+
+    const operation = syncWithCloudflare(
+      appData({
+        conversations: [
+          {
+            createdAt: 1,
+            id: 'conversation-1',
+            messages: [
+              {
+                content: 'first chunk',
+                createdAt: 1,
+                id: 'message-1',
+                role: 'user',
+                status: 'done',
+              },
+            ],
+            model: 'gpt-5',
+            providerId: 'provider-1',
+            title: 'First',
+            updatedAt: 1,
+          },
+          {
+            createdAt: 2,
+            id: 'conversation-2',
+            messages: [
+              {
+                content: 'second chunk',
+                createdAt: 2,
+                id: 'message-2',
+                role: 'user',
+                status: 'done',
+              },
+            ],
+            model: 'gpt-5',
+            providerId: 'provider-1',
+            title: 'Second',
+            updatedAt: 2,
+          },
+        ],
+      }),
+      syncContext(),
+    )
+    let operationSettled = false
+    const operationOutcome = operation.then(
+      () => {
+        operationSettled = true
+        return { kind: 'resolved' as const }
+      },
+      (error: unknown) => {
+        operationSettled = true
+        return { error, kind: 'rejected' as const }
+      },
+    )
+
+    await blockedPutStarted
+    await vi.waitFor(() => expect(blockedPutAborted).toBe(true))
+    expect(operationSettled).toBe(false)
+    expect(store.objectCount()).toBe(1)
+    expect(
+      store
+        .calls()
+        .some((call) => call.startsWith('DELETE /sync/object/')),
+    ).toBe(false)
+
+    await releaseBlockedPut?.()
+
+    const outcome = await operationOutcome
+    expect(outcome.kind).toBe('rejected')
+    if (outcome.kind === 'rejected') {
+      expect(outcome.error).toMatchObject({ message: 'chunk upload failed' })
+    }
+
+    expect(store.objectCount()).toBe(0)
+  })
+
+  it('drains delayed chunk writes after external cancellation before preserving AbortError', async () => {
+    const store = await createInstalledStore()
+    const workerFetch = globalThis.fetch
+    const source = new AbortController()
+    let firstObjectPut = true
+    let objectPutCount = 0
+    let markBlockedPutStarted = (): void => undefined
+    const blockedPutStarted = new Promise<void>((resolve) => {
+      markBlockedPutStarted = resolve
+    })
+    let blockedPutAborted = false
+    let siblingPutAborted = false
+    let releaseBlockedPut: (() => void) | undefined
+
+    globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init)
+      const url = new URL(request.url)
+
+      if (
+        request.method === 'PUT' &&
+        url.pathname.startsWith('/sync/object/')
+      ) {
+        objectPutCount += 1
+        if (firstObjectPut) {
+          firstObjectPut = false
+          await workerFetch(request)
+          markBlockedPutStarted()
+
+          return new Promise<Response>((_resolve, reject) => {
+            const abort = (): void => {
+              blockedPutAborted = true
+              request.signal.removeEventListener('abort', abort)
+            }
+
+            releaseBlockedPut = () => {
+              request.signal.removeEventListener('abort', abort)
+              reject(new DOMException('Aborted', 'AbortError'))
+            }
+
+            if (request.signal.aborted) {
+              abort()
+              return
+            }
+            request.signal.addEventListener('abort', abort, { once: true })
+          })
+        }
+
+        return new Promise<Response>((_resolve, reject) => {
+          const abort = (): void => {
+            siblingPutAborted = true
+            request.signal.removeEventListener('abort', abort)
+            reject(new DOMException('Aborted', 'AbortError'))
+          }
+
+          if (request.signal.aborted) {
+            abort()
+            return
+          }
+          request.signal.addEventListener('abort', abort, { once: true })
+        })
+      }
+
+      return workerFetch(request)
+    }
+
+    const operation = syncWithCloudflare(
+      appData({
+        conversations: [
+          {
+            createdAt: 1,
+            id: 'conversation-1',
+            messages: [
+              {
+                content: 'first chunk',
+                createdAt: 1,
+                id: 'message-1',
+                role: 'user',
+                status: 'done',
+              },
+            ],
+            model: 'gpt-5',
+            providerId: 'provider-1',
+            title: 'First',
+            updatedAt: 1,
+          },
+          {
+            createdAt: 2,
+            id: 'conversation-2',
+            messages: [
+              {
+                content: 'second chunk',
+                createdAt: 2,
+                id: 'message-2',
+                role: 'user',
+                status: 'done',
+              },
+            ],
+            model: 'gpt-5',
+            providerId: 'provider-1',
+            title: 'Second',
+            updatedAt: 2,
+          },
+        ],
+      }),
+      syncContext({ signal: source.signal }),
+    )
+    let operationSettled = false
+    const operationOutcome = operation.then(
+      () => {
+        operationSettled = true
+        return { kind: 'resolved' as const }
+      },
+      (error: unknown) => {
+        operationSettled = true
+        return { error, kind: 'rejected' as const }
+      },
+    )
+
+    await blockedPutStarted
+    expect(objectPutCount).toBe(2)
+    source.abort()
+    await vi.waitFor(() => expect(blockedPutAborted).toBe(true))
+    expect(siblingPutAborted).toBe(true)
+    expect(operationSettled).toBe(false)
+    expect(store.objectCount()).toBe(1)
+    expect(
+      store
+        .calls()
+        .some((call) => call.startsWith('DELETE /sync/object/')),
+    ).toBe(false)
+
+    releaseBlockedPut?.()
+
+    const outcome = await operationOutcome
+    expect(outcome.kind).toBe('rejected')
+    if (outcome.kind === 'rejected') {
+      expect(outcome.error).toMatchObject({ name: 'AbortError' })
+    }
+    expect(store.objectCount()).toBe(1)
+    expect(
+      store
+        .calls()
+        .some((call) => call.startsWith('DELETE /sync/object/')),
+    ).toBe(false)
+  })
+
   it('drains empty legacy snapshot 404 bodies before first incremental upload', async () => {
     const store = await createInstalledStore()
 
@@ -552,6 +874,75 @@ describe('Cloudflare sync transport', () => {
     expect(store.calls()).toEqual(['GET /sync/head', 'GET /snapshot'])
     expect(store.head()).toBeNull()
     expect(store.objectCount()).toBe(0)
+  })
+
+  it('defers an incremental upload if its owner changes after the initial guard', async () => {
+    const store = await createInstalledStore()
+    let firstGuard = true
+
+    await expect(
+      syncWithCloudflare(
+        appData(),
+        syncContext({
+          shouldDeferRemoteWrite: () => {
+            if (firstGuard) {
+              firstGuard = false
+              return false
+            }
+
+            return true
+          },
+        }),
+      ),
+    ).rejects.toSatisfy((error: unknown) =>
+      isSyncRemoteWriteDeferredError(error),
+    )
+
+    expect(store.calls()).toEqual(['GET /sync/head', 'GET /snapshot'])
+    expect(store.head()).toBeNull()
+    expect(store.objectCount()).toBe(0)
+  })
+
+  it('defers a legacy snapshot upload if its owner changes after the initial guard', async () => {
+    const store = await createInstalledStore()
+    store.setIncrementalUnsupported(true)
+    store.seedSnapshot(
+      await serializeVault(
+        appData({ updatedAt: 5 }),
+        { providerKeys: {} },
+        passphrase,
+      ),
+    )
+    let firstGuard = true
+
+    await expect(
+      syncWithCloudflare(
+        appData({
+          preferences: {
+            compactMode: false,
+            firstRunDone: true,
+            language: 'system',
+            theme: 'dark',
+          },
+        }),
+        syncContext({
+          firstSyncStrategy: 'use-local',
+          shouldDeferRemoteWrite: () => {
+            if (firstGuard) {
+              firstGuard = false
+              return false
+            }
+
+            return true
+          },
+        }),
+      ),
+    ).rejects.toSatisfy((error: unknown) =>
+      isSyncRemoteWriteDeferredError(error),
+    )
+
+    expect(store.calls()).toEqual(['GET /sync/head', 'GET /snapshot'])
+    expect(store.snapshot()).toBeDefined()
   })
 
   it('uploads encrypted incremental manifests and clears legacy snapshots', async () => {
@@ -864,7 +1255,7 @@ describe('Cloudflare sync transport', () => {
     ).rejects.toThrow(rt('error.remoteUpdated'))
 
     expect(store.calls().filter((call) => call === 'GET /sync/head')).toHaveLength(2)
-  })
+  }, 15_000)
 
   it('clears Cloudflare data through the Worker bulk clear endpoint', async () => {
     const store = await createInstalledStore()
@@ -879,6 +1270,104 @@ describe('Cloudflare sync transport', () => {
     expect(store.objectCount()).toBe(0)
     expect(store.snapshot()).toBeUndefined()
     expect(store.calls()).toEqual(['DELETE /sync/clear'])
+  })
+
+  it('defers Cloudflare bulk clear before the destructive request', async () => {
+    const store = await createInstalledStore()
+    let caught: unknown
+
+    try {
+      await clearWithCloudflare(
+        appData(),
+        syncContext({ shouldDeferRemoteWrite: () => true }),
+      )
+    } catch (error: unknown) {
+      caught = error
+    }
+
+    expect(isSyncRemoteWriteDeferredError(caught)).toBe(true)
+    expect(store.calls()).toEqual([])
+  })
+
+  it('defers passphrase-rotation cleanup when the sync owner is stale', async () => {
+    const store = await createInstalledStore()
+    let caught: unknown
+
+    try {
+      await syncWithCloudflare(
+        appData(),
+        syncContext({
+          allowPassphraseRotation: true,
+          shouldDeferRemoteWrite: () => true,
+        }),
+      )
+    } catch (error: unknown) {
+      caught = error
+    }
+
+    expect(isSyncRemoteWriteDeferredError(caught)).toBe(true)
+    expect(store.calls()).toEqual([])
+  })
+
+  it('does not run incremental cleanup after the sync owner changes', async () => {
+    const store = await createInstalledStore()
+    const firstData = appData({
+      conversations: [
+        {
+          createdAt: 1,
+          id: 'cleanup-conversation',
+          messages: [
+            {
+              attachments: [],
+              content: 'old remote content',
+              createdAt: 1,
+              id: 'cleanup-message',
+              role: 'user',
+              status: 'done',
+            },
+          ],
+          model: 'gpt-5',
+          providerId: 'provider-1',
+          title: 'Cleanup conversation',
+          updatedAt: 1,
+        },
+      ],
+      sync: {
+        ...appData().sync,
+        lastSyncAt: 1,
+      },
+      updatedAt: 10,
+    })
+
+    await syncWithCloudflare(firstData, syncContext())
+    store.clearCalls()
+
+    let guardCalls = 0
+    const secondData = appData({
+      sync: {
+        ...appData().sync,
+        lastSyncAt: 2,
+      },
+      updatedAt: 20,
+    })
+
+    let caught: unknown
+    try {
+      await syncWithCloudflare(
+        secondData,
+        syncContext({
+          shouldDeferRemoteWrite: () => ++guardCalls > 3,
+        }),
+      )
+    } catch (error: unknown) {
+      caught = error
+    }
+
+    expect(caught).toBeDefined()
+    expect(guardCalls).toBeGreaterThan(3)
+    expect(
+      store.calls().some((call) => call.startsWith('DELETE ')),
+    ).toBe(false)
   })
 
   it('rejects a successful bulk clear response without a valid rotated generation', async () => {
@@ -1147,6 +1636,333 @@ describe('Cloudflare sync transport', () => {
         syncContext(),
       ),
     ).rejects.toThrow(rt('error.remoteUpdated'))
+
+    expect(store.calls()).toEqual([
+      'GET /sync/head',
+      'GET /snapshot',
+      'PUT /snapshot',
+    ])
+  })
+
+  it('merges local content into a legacy snapshot during first sync', async () => {
+    const store = await createInstalledStore()
+    store.setIncrementalUnsupported(true)
+    store.seedSnapshot(
+      await serializeVault(
+        appData({
+          providers: [provider('remote-provider')],
+          updatedAt: 30,
+          sync: {
+            autoSync: true,
+            encryptionEnabled: true,
+            lastSyncAt: 20,
+            mode: 'cloudflare',
+            workerEndpoint: endpoint,
+          },
+        }),
+        { providerKeys: { remote: 'remote-key' } },
+        passphrase,
+      ),
+    )
+
+    const local = appData({
+      conversations: [
+        {
+          createdAt: 1,
+          id: 'local-conversation',
+          messages: [],
+          model: 'gpt-5',
+          providerId: 'local-provider',
+          title: 'Local content',
+          updatedAt: 10,
+        },
+      ],
+      providers: [provider('local-provider')],
+      updatedAt: 10,
+    })
+    const result = await syncWithCloudflare(
+      local,
+      syncContext({
+        firstSyncStrategy: 'merge',
+        providerKeys: { local: 'local-key' },
+      }),
+    )
+
+    expect(result.remoteAccepted).toBe(true)
+    expect(result.data.providers.map(({ id }) => id).sort()).toEqual([
+      'local-provider',
+      'remote-provider',
+    ])
+    expect(result.secrets).toEqual({
+      providerKeys: { local: 'local-key', remote: 'remote-key' },
+    })
+    expect(store.snapshot()).toBeDefined()
+  })
+
+  it('merges local content into an incremental remote vault during first sync', async () => {
+    const store = await createInstalledStore()
+    await syncWithCloudflare(
+      appData({
+        providers: [provider('remote-provider')],
+        updatedAt: 30,
+      }),
+      syncContext({ providerKeys: { remote: 'remote-key' } }),
+    )
+    store.clearCalls()
+
+    const local = appData({
+      conversations: [
+        {
+          createdAt: 1,
+          id: 'local-conversation',
+          messages: [],
+          model: 'gpt-5',
+          providerId: 'local-provider',
+          title: 'Local content',
+          updatedAt: 10,
+        },
+      ],
+      providers: [provider('local-provider')],
+      updatedAt: 10,
+    })
+    const result = await syncWithCloudflare(
+      local,
+      syncContext({
+        firstSyncStrategy: 'merge',
+        providerKeys: { local: 'local-key' },
+      }),
+    )
+
+    expect(result.remoteAccepted).toBe(true)
+    expect(result.data.providers.map(({ id }) => id).sort()).toEqual([
+      'local-provider',
+      'remote-provider',
+    ])
+    expect(result.message).toBe(rt('sync.status.merged'))
+    expect(store.calls()).toContain('PUT /sync/head')
+  })
+
+  it('accepts a newer incremental remote vault without publishing local data', async () => {
+    const store = await createInstalledStore()
+    await syncWithCloudflare(
+      appData({ updatedAt: 30 }),
+      syncContext({ providerKeys: { remote: 'remote-key' } }),
+    )
+    store.clearCalls()
+
+    const result = await syncWithCloudflare(
+      appData({
+        updatedAt: 10,
+        sync: {
+          autoSync: true,
+          encryptionEnabled: true,
+          lastSyncAt: 5,
+          mode: 'cloudflare',
+          workerEndpoint: endpoint,
+        },
+      }),
+      syncContext({ firstSyncStrategy: 'use-remote' }),
+    )
+
+    expect(result.remoteAccepted).toBe(true)
+    expect(result.data.updatedAt).toBe(30)
+    expect(result.secrets).toEqual({ providerKeys: { remote: 'remote-key' } })
+    expect(store.calls().some((call) => call.startsWith('PUT '))).toBe(false)
+  })
+
+  it('migrates a legacy snapshot into incremental storage while merging first-sync content', async () => {
+    const store = await createInstalledStore()
+    store.seedSnapshot(
+      await serializeVault(
+        appData({
+          providers: [provider('remote-provider')],
+          updatedAt: 30,
+          sync: {
+            autoSync: true,
+            encryptionEnabled: true,
+            lastSyncAt: 20,
+            mode: 'cloudflare',
+            workerEndpoint: endpoint,
+          },
+        }),
+        { providerKeys: { remote: 'remote-key' } },
+        passphrase,
+      ),
+    )
+
+    const local = appData({
+      conversations: [
+        {
+          createdAt: 1,
+          id: 'local-conversation',
+          messages: [],
+          model: 'gpt-5',
+          providerId: 'local-provider',
+          title: 'Local content',
+          updatedAt: 10,
+        },
+      ],
+      providers: [provider('local-provider')],
+      updatedAt: 10,
+    })
+    const result = await syncWithCloudflare(
+      local,
+      syncContext({
+        firstSyncStrategy: 'merge',
+        providerKeys: { local: 'local-key' },
+      }),
+    )
+
+    expect(result.remoteAccepted).toBe(true)
+    expect(store.head()?.kind).toBe('zerochat.incrementalHead')
+    expect(store.snapshot()).toBeUndefined()
+    expect(store.calls()).toContain('DELETE /snapshot')
+  })
+
+  it('accepts a newer legacy snapshot during incremental migration without writing', async () => {
+    const store = await createInstalledStore()
+    store.seedSnapshot(
+      await serializeVault(
+        appData({
+          updatedAt: 30,
+          sync: {
+            autoSync: true,
+            encryptionEnabled: true,
+            lastSyncAt: 20,
+            mode: 'cloudflare',
+            workerEndpoint: endpoint,
+          },
+        }),
+        { providerKeys: { remote: 'remote-key' } },
+        passphrase,
+      ),
+    )
+
+    const result = await syncWithCloudflare(
+      appData({
+        updatedAt: 10,
+        sync: {
+          autoSync: true,
+          encryptionEnabled: true,
+          lastSyncAt: 5,
+          mode: 'cloudflare',
+          workerEndpoint: endpoint,
+        },
+      }),
+      syncContext({ firstSyncStrategy: 'use-remote' }),
+    )
+
+    expect(result.remoteAccepted).toBe(true)
+    expect(result.data.updatedAt).toBe(30)
+    expect(store.calls()).toEqual(['GET /sync/head', 'GET /snapshot', 'GET /snapshot'])
+  })
+
+  it('merges a first-sync incremental pull and preserves the remote state', async () => {
+    const store = await createInstalledStore()
+    await syncWithCloudflare(
+      appData({
+        providers: [provider('remote-provider')],
+        updatedAt: 30,
+      }),
+      syncContext({ providerKeys: { remote: 'remote-key' } }),
+    )
+    store.clearCalls()
+
+    const result = await pullWithCloudflare(
+      appData({
+        conversations: [
+          {
+            createdAt: 1,
+            id: 'local-conversation',
+            messages: [],
+            model: 'gpt-5',
+            providerId: 'local-provider',
+            title: 'Local content',
+            updatedAt: 10,
+          },
+        ],
+        providers: [provider('local-provider')],
+        updatedAt: 10,
+      }),
+      syncContext({
+        firstSyncStrategy: 'merge',
+        providerKeys: { local: 'local-key' },
+      }),
+    )
+
+    expect(result.remoteAccepted).toBe(true)
+    expect(result.data.providers.map(({ id }) => id).sort()).toEqual([
+      'local-provider',
+      'remote-provider',
+    ])
+    expect(result.message).toBe(rt('sync.status.merged'))
+    expect(store.calls()).toContain('PUT /sync/head')
+  })
+
+  it('keeps a newer local vault when pulling an older incremental remote', async () => {
+    const store = await createInstalledStore()
+    await syncWithCloudflare(appData({ updatedAt: 5 }), syncContext())
+    store.clearCalls()
+
+    const result = await pullWithCloudflare(
+      appData({
+        updatedAt: 10,
+        sync: {
+          autoSync: true,
+          encryptionEnabled: true,
+          lastSyncAt: 8,
+          mode: 'cloudflare',
+          workerEndpoint: endpoint,
+        },
+      }),
+      syncContext(),
+    )
+
+    expect(result.remoteAccepted).toBe(false)
+    expect(result.message).toBe(rt('sync.status.upToDate'))
+    expect(result.data.updatedAt).toBe(10)
+    expect(store.calls()).toEqual([
+      'GET /sync/head',
+      expect.stringMatching(/^GET \/sync\/object\/manifest-/),
+      'GET /sync/head',
+    ])
+  })
+
+  it('falls back to the snapshot pull path when an incremental head is empty', async () => {
+    const store = await createInstalledStore()
+
+    const result = await pullWithCloudflare(appData(), syncContext())
+
+    expect(result.remoteAccepted).toBe(false)
+    expect(result.message).toBe(rt('sync.status.upToDate'))
+    expect(store.calls()).toEqual([
+      'GET /sync/head',
+      'GET /snapshot',
+      'GET /snapshot',
+    ])
+  })
+
+  it('fails closed for empty sync passphrases before making a request', async () => {
+    const store = await createInstalledStore()
+
+    await expect(
+      syncWithCloudflare(appData(), syncContext({ encryptionPassphrase: '' })),
+    ).rejects.toThrow(rt('error.syncPassphraseRequired'))
+    await expect(
+      pullWithCloudflare(appData(), syncContext({ encryptionPassphrase: '' })),
+    ).rejects.toThrow(rt('error.syncPassphraseRequired'))
+
+    expect(store.calls()).toEqual([])
+  })
+
+  it('reports snapshot write failures without treating them as remote conflicts', async () => {
+    const store = await createInstalledStore()
+    store.setIncrementalUnsupported(true)
+    store.failPut('/snapshot', 'Snapshot write failed')
+
+    await expect(syncWithCloudflare(appData(), syncContext())).rejects.toThrow(
+      'Snapshot write failed',
+    )
 
     expect(store.calls()).toEqual([
       'GET /sync/head',

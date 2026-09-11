@@ -3,6 +3,7 @@ package app.zerochat.ui.chat
 internal const val ANDROID_CHAT_TWO_PANE_MIN_WIDTH_DP = 840
 internal const val ANDROID_CHAT_SIDEBAR_WIDTH_DP = 320
 internal const val ANDROID_CHAT_COMPACT_TOP_BAR_ACTIONS_MAX_WIDTH_DP = 480
+internal const val ANDROID_CHAT_COMPACT_HEIGHT_DP = 720
 
 internal enum class AndroidChatLayoutMode {
     Compact,
@@ -18,3 +19,8 @@ internal fun androidChatLayoutMode(widthDp: Int): AndroidChatLayoutMode =
 
 internal fun androidChatTopBarUsesIconActions(widthDp: Int): Boolean =
     widthDp < ANDROID_CHAT_COMPACT_TOP_BAR_ACTIONS_MAX_WIDTH_DP
+
+internal fun androidChatShowsProviderModelFeatureHint(
+    heightDp: Int,
+    requested: Boolean,
+): Boolean = requested && heightDp >= ANDROID_CHAT_COMPACT_HEIGHT_DP

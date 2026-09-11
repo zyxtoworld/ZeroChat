@@ -2,6 +2,7 @@ import { rt } from '../i18n'
 import type { ProviderConfig } from '../types'
 import {
   assertProviderResponseOk,
+  cancelUnreadProviderResponse,
   isAbortError,
   MAX_PROVIDER_TEXT_RESPONSE_BYTES,
   ProviderRequestError,
@@ -14,7 +15,7 @@ import {
   type ProviderCapabilityRequestBlocker,
 } from './providerCapabilityRequests'
 import { transcriptionTextFromProviderResponse } from './providerResponses'
-import { capabilityLabel } from './providerConfig'
+import { capabilityLabel } from './providerConfigCore'
 import { providerTimeoutSignal } from './providerTimeoutSignal'
 import { audioSourceFileRejection } from './audioAttachments'
 import {
@@ -108,9 +109,10 @@ export async function transcribeAudioFile({
   }
 
   const timeoutSignal = providerTimeoutSignal(plan.init.signal, timeoutMs)
+  let response: Response | undefined
 
   try {
-    const response = await fetcher(plan.endpoint, {
+    response = await fetcher(plan.endpoint, {
       ...plan.init,
       signal: timeoutSignal.signal,
     })
@@ -136,6 +138,8 @@ export async function transcribeAudioFile({
     timeoutSignal.signal.throwIfAborted()
     return result
   } catch (error: unknown) {
+    cancelUnreadProviderResponse(response)
+
     if (timeoutSignal.timedOut()) {
       throw providerTimeoutError()
     }

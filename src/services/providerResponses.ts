@@ -4,13 +4,10 @@ import {
   safeImageAttachmentDataUrl,
   safeRemoteImageAttachmentUrl,
 } from './imageAttachmentSafety'
+import { hasControlCharacter } from './imageAttachmentDataSafety'
+import type { GeneratedImage } from '../types'
 
-export interface GeneratedImage {
-  dataUrl?: string
-  url?: string
-  mimeType: string
-  revisedPrompt?: string
-}
+export type { GeneratedImage } from '../types'
 
 function parseJsonString(value: string): unknown {
   try {
@@ -91,12 +88,12 @@ function imageMimeTypeFromFormat(value: unknown): string {
 }
 
 function imageString(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : ''
+  return typeof value === 'string' ? value : ''
 }
 
 function imageUrlFromValue(value: unknown): string {
   if (typeof value === 'string') {
-    return value.trim()
+    return value
   }
 
   if (typeof value === 'object' && value !== null) {
@@ -149,9 +146,11 @@ function imageFromRecord(item: unknown): GeneratedImage | null {
 
   if (base64Value.trim()) {
     const b64 = base64Value.trim()
-    const safeDataUrl = safeImageAttachmentDataUrl(
-      b64.startsWith('data:') ? b64 : `data:${mimeType};base64,${b64}`,
-    )
+    const safeDataUrl = hasControlCharacter(base64Value)
+      ? null
+      : safeImageAttachmentDataUrl(
+          b64.startsWith('data:') ? b64 : `data:${mimeType};base64,${b64}`,
+        )
 
     if (safeDataUrl) {
       return {

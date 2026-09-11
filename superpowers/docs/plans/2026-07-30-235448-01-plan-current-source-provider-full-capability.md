@@ -21,3 +21,18 @@
 - Work: Inspect only explicitly safe report fields, record the current source fingerprint and capability failure taxonomy, refresh release blockers/current-evidence handoff, and preserve unrelated worktree changes.
 - Verify: `D:\Node.js\pnpm.CMD run check:security && D:\Node.js\pnpm.CMD run check:completion-audit && D:\Node.js\pnpm.CMD run check:repo && D:\Node.js\pnpm.CMD run check:docs && D:\Node.js\pnpm.CMD run check:local-cleanup`
 - Sensitive scan: Search the repository for the exact runtime credential and endpoint plus generic live-provider secret assignment patterns; require zero matches outside dependency/build caches.
+
+## 2026-08-02 current-source rerun amendment
+
+- Chat model: use `gpt-5-5`, the newest catalog candidate currently proven to return the exact marker. Do not retry `gpt-5-6-pro` in this bounded run because the immediately preceding browser and direct diagnostics both recorded four successful-but-empty HTTP 200 streams for that model.
+- All other cost bounds, model overrides, stop conditions, promotion rules, cleanup requirements, and sensitive-output constraints remain unchanged.
+
+## Result
+
+- Pre-execution gates passed. The latest current-source live drill completed in 63,692 ms and always ran local cleanup.
+- Models and `gpt-5-6-pro` chat returned HTTP 200. `gpt-image-2` generation, edit, and inpaint returned HTTP 200.
+- Audio speech, audio transcription, moderation, and realtime returned HTTP 404 `route-missing`; embeddings returned HTTP 404 `model-missing`. The strict full-capability validator rejected the report as required.
+- The canonical full-current report and preserved attempt are identical at 20,713 bytes / SHA-256 `9091AC40059EBBA1D17DBD078A71BE1C825902DA8EE866AE96B9A341C0750AA3`, bound to 103 files / 1,662,080 bytes / source SHA-256 `F4B61A47B97B2C48629B69ECBE9B3E19705162A5319331E1915EDCA8CF7D0C20`.
+- The independent current-source browser-origin attempt passed through an anonymous temporary Worker. That child evidence does not promote the five failed API capabilities.
+- Release blockers select the current credential-confirmed full-capability attempt with `failed-live-provider-capabilities`; no failed diagnostic was promoted to release evidence.
+- Full `verify:release` exercised all 52 checks and failed only the expected `windows-trusted-msix-release-pass-missing` runtime step. Current evidence, completion audit, repository health, documentation, security, cleanup, and sensitive scans remain separate required gates.

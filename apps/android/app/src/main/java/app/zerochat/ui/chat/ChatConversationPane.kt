@@ -84,10 +84,13 @@ internal fun ChatConversationPane(
 ) {
     BoxWithConstraints(modifier = modifier) {
         val layoutMode = androidChatLayoutMode(maxWidth.value.toInt())
-        val compactHomeSyncStrip = maxHeight < 720.dp
+        val compactHomeSyncStrip = maxHeight < ANDROID_CHAT_COMPACT_HEIGHT_DP.dp
         val compactImageMode = compactHomeSyncStrip && composerMode == ComposerMode.Image
         val showHomeSyncStrip = !compactImageMode
-        val showProviderHint = showProviderModelFeatureHint && !compactImageMode
+        val showProviderHint = androidChatShowsProviderModelFeatureHint(
+            heightDp = maxHeight.value.toInt(),
+            requested = showProviderModelFeatureHint,
+        )
 
         when (layoutMode) {
             AndroidChatLayoutMode.Compact -> {

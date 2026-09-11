@@ -5,7 +5,10 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_CONNECT_TIMEOUT_MS,
   connectCdp,
+  findCdpPageTarget,
   findMainFrameLoadCompletionEvent,
+  markdownWorkerTargetUrls,
+  waitForMainFrameLoadCompletion,
   waitForChrome,
 } from '../browser-cdp.mjs'
 
@@ -62,6 +65,68 @@ class FakeChromeProcess extends EventEmitter {
 }
 
 describe('bounded browser CDP client', () => {
+  it('selects the existing about:blank page target without creating a new target', () => {
+    const target = findCdpPageTarget([
+      { type: 'browser', url: '', webSocketDebuggerUrl: 'ws://browser' },
+      { type: 'page', url: 'http://127.0.0.1:4173/', webSocketDebuggerUrl: 'ws://app' },
+      { type: 'page', url: 'about:blank', webSocketDebuggerUrl: 'ws://blank' },
+      { type: 'page', url: 'about:blank', webSocketDebuggerUrl: '' },
+    ])
+
+    expect(target).toEqual({
+      type: 'page',
+      url: 'about:blank',
+      webSocketDebuggerUrl: 'ws://blank',
+    })
+  })
+
+  it('fails closed when the target list has no connectable page', () => {
+    expect(
+      findCdpPageTarget([
+        { type: 'browser', url: '', webSocketDebuggerUrl: 'ws://browser' },
+        { type: 'page', url: 'about:blank' },
+      ]),
+    ).toBeUndefined()
+  })
+
+  it('accepts only real Markdown worker targets', () => {
+    expect(
+      markdownWorkerTargetUrls({
+        targetInfos: [
+          { type: 'worker', url: 'http://127.0.0.1/assets/markdown.worker-abc.js' },
+        ],
+      }),
+    ).toEqual(['http://127.0.0.1/assets/markdown.worker-abc.js'])
+  })
+
+  it('fails closed for client-only, non-worker, and wrong-worker targets', () => {
+    const negativeTargets = [
+      {
+        label: 'markdownWorkerClient-only resource',
+        target: { type: 'worker', url: 'http://127.0.0.1/assets/markdownWorkerClient-abc.js' },
+      },
+      {
+        label: 'non-worker Markdown script',
+        target: { type: 'script', url: 'http://127.0.0.1/assets/markdown.worker-abc.js' },
+      },
+      {
+        label: 'wrong worker URL',
+        target: { type: 'worker', url: 'http://127.0.0.1/assets/other.worker-abc.js' },
+      },
+    ]
+
+    for (const { label, target } of negativeTargets) {
+      expect(
+        markdownWorkerTargetUrls({ targetInfos: [target] }),
+        label,
+      ).toEqual([])
+    }
+  })
+
+  it('fails closed when CDP has no target list', () => {
+    expect(markdownWorkerTargetUrls(undefined)).toEqual([])
+  })
+
   it('keeps the default connection budget aligned with Chrome readiness', () => {
     expect(DEFAULT_CONNECT_TIMEOUT_MS).toBe(30_000)
   })
@@ -93,6 +158,36 @@ describe('bounded browser CDP client', () => {
     expect(
       findMainFrameLoadCompletionEvent([childFrameStop], 0, 'main-frame'),
     ).toBeUndefined()
+  })
+
+  it('does not evaluate a newly navigated page before its main frame finishes loading', async () => {
+    const events = [
+      {
+        method: 'Page.frameStoppedLoading',
+        params: { frameId: 'old-frame' },
+      },
+    ]
+    let waitCount = 0
+
+    const completion = await waitForMainFrameLoadCompletion(
+      events,
+      events.length,
+      'new-main-frame',
+      {
+        intervalMs: 1,
+        timeoutMs: 100,
+        sleep: async () => {
+          waitCount += 1
+          events.push({
+            method: 'Page.frameStoppedLoading',
+            params: { frameId: 'new-main-frame' },
+          })
+        },
+      },
+    )
+
+    expect(waitCount).toBe(1)
+    expect(completion).toEqual(events.at(-1))
   })
 
   it('reports a Chrome process that exits before remote debugging is ready', async () => {

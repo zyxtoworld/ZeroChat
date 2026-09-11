@@ -39,6 +39,8 @@ import {
   reorderProviders,
   shouldUseBrowserProviderKey,
 } from '../providerConfig'
+import { customOpenAiRelayNames } from '../providerCustomOpenAiNames'
+import { isDefaultCustomOpenAiRelayName } from '../providerModelCore'
 
 const t: Translator = (key, values) => {
   const translations: Record<string, string> = {
@@ -112,6 +114,22 @@ function appData(overrides: Partial<AppData> = {}): AppData {
 }
 
 describe('provider config helpers', () => {
+  it('keeps the static custom OpenAI relay matcher exact across locales', () => {
+    expect(customOpenAiRelayNames.every(isDefaultCustomOpenAiRelayName)).toBe(true)
+    expect(
+      [
+        'Custom relay (OpenAI Responses)',
+        'Custom OpenAI relay',
+        'Custom relay (OpenAI compatible) extra',
+        'OpenAI compatible relay',
+        'カスタムリレー (OpenAI compatible)',
+        'カスタム リレー（OpenAI 互換）',
+        '맞춤형 릴레이(OpenAI 호환)',
+        '사용자 지정 릴레이(OpenAI compatible)',
+      ].some(isDefaultCustomOpenAiRelayName),
+    ).toBe(false)
+  })
+
   afterEach(() => {
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
@@ -155,6 +173,30 @@ describe('provider config helpers', () => {
         }),
       ),
     ).toBeUndefined()
+  })
+
+  it('keeps custom preset identity stable across host locale casing rules', () => {
+    const originalToLocaleLowerCase = String.prototype.toLocaleLowerCase
+    const localeSensitiveLowerCase = vi
+      .spyOn(String.prototype, 'toLocaleLowerCase')
+      .mockImplementation(function (this: string) {
+        return originalToLocaleLowerCase.call(this).replaceAll('i', 'ı')
+      })
+
+    try {
+      expect(
+        defaultCustomPresetIdForProvider(
+          provider({
+            name: 'Custom relay (OpenAI compatible)',
+            kind: 'openai-compatible',
+            baseUrl: 'https://relay.example.com/v1',
+            custom: true,
+          }),
+        ),
+      ).toBe('custom-openai-relay')
+    } finally {
+      localeSensitiveLowerCase.mockRestore()
+    }
   })
 
   it('resolves the active provider with deterministic conversation and provider fallbacks', () => {
@@ -263,6 +305,18 @@ describe('provider config helpers', () => {
       models: OPENAI_DEFAULT_MODELS,
       capabilities: OPENAI_FULL_CAPABILITIES,
     })
+  })
+
+  it('uses the runtime id fallback when WebCrypto cannot create a Provider id', () => {
+    vi.stubGlobal('crypto', {
+      randomUUID: () => {
+        throw new Error('randomUUID unavailable')
+      },
+    })
+
+    expect(providerFromPreset(presetById('openai')).id).toMatch(
+      /^provider-[A-Za-z0-9_-]+$/,
+    )
   })
 
   it('backfills official full-capability defaults when saved models are blank or mismatched', () => {

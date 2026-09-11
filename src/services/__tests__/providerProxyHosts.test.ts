@@ -7,8 +7,8 @@ import {
   replaceManagedProxyHosts,
   safeProxyRootUrlForHostManagement,
   safeRemoteUrlForProxyHostManagement,
-  workerProxyUrlFromSync,
 } from '../providerProxyHosts'
+import { workerProxyUrlFromSync } from '../providerConfig'
 
 function provider(overrides: Partial<ProviderConfig> = {}): ProviderConfig {
   return {
@@ -57,6 +57,7 @@ function appData(overrides: Partial<AppData> = {}): AppData {
 
 describe('provider proxy host management', () => {
   afterEach(() => {
+    vi.useRealTimers()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
@@ -232,6 +233,45 @@ describe('provider proxy host management', () => {
     )
   })
 
+  it('clears an old token when the same Worker endpoint rotates credentials', async () => {
+    const remoteAllowlist = new Map([
+      ['old-access-key', ['https://old-relay.example/v1']],
+    ])
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string>
+      const token = headers['x-zerochat-access-key']
+      const body = JSON.parse(String(init?.body)) as { baseUrls: string[] }
+      remoteAllowlist.set(token, body.baseUrls)
+      return { ok: true }
+    })
+    vi.stubGlobal('fetch', fetch)
+
+    await replaceManagedProxyHosts(
+      [
+        {
+          endpoint: 'https://sync.example.workers.dev',
+          token: 'new-access-key',
+          baseUrls: ['https://new-relay.example/v1'],
+        },
+      ],
+      [
+        {
+          endpoint: 'https://sync.example.workers.dev',
+          token: 'old-access-key',
+          baseUrls: ['https://old-relay.example/v1'],
+        },
+      ],
+    )
+
+    expect(remoteAllowlist).toEqual(
+      new Map([
+        ['old-access-key', []],
+        ['new-access-key', ['https://new-relay.example/v1']],
+      ]),
+    )
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
   it('releases managed proxy host response bodies after status inspection', async () => {
     const cancel = vi.fn().mockResolvedValue(undefined)
     vi.stubGlobal(
@@ -255,6 +295,190 @@ describe('provider proxy host management', () => {
     )
 
     expect(cancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries bounded network failures before updating a managed proxy host', async () => {
+    vi.useFakeTimers()
+    const fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValue({ ok: true })
+    vi.stubGlobal('fetch', fetch)
+
+    const replacement = replaceManagedProxyHosts(
+      [
+        {
+          endpoint: 'https://sync.example.workers.dev',
+          token: 'access-key',
+          baseUrls: ['https://relay-one.example/v1'],
+        },
+      ],
+      [],
+    )
+
+    await vi.runAllTimersAsync()
+    await expect(replacement).resolves.toBeUndefined()
+    expect(fetch).toHaveBeenCalledTimes(3)
+  })
+
+  it('survives a synchronously fired retry timer with a source signal', async () => {
+    const originalSetTimeout = globalThis.setTimeout
+    const fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValue({ ok: true })
+    vi.stubGlobal('fetch', fetch)
+    vi.stubGlobal(
+      'setTimeout',
+      ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+        if (timeout === 400) {
+          if (typeof handler === 'function') {
+            handler(...args)
+          }
+          return 1 as unknown as ReturnType<typeof setTimeout>
+        }
+        return originalSetTimeout(handler, timeout, ...args)
+      }) as typeof globalThis.setTimeout,
+    )
+
+    await expect(
+      replaceManagedProxyHosts(
+        [
+          {
+            endpoint: 'https://sync.example.workers.dev',
+            token: 'access-key',
+            baseUrls: ['https://relay-one.example/v1'],
+          },
+        ],
+        [],
+        { signal: new AbortController().signal },
+      ),
+    ).resolves.toBeUndefined()
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not start a network retry after its source is aborted during backoff', async () => {
+    vi.useFakeTimers()
+    const fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValue({ ok: true })
+    vi.stubGlobal('fetch', fetch)
+    const controller = new AbortController()
+
+    const replacement = replaceManagedProxyHosts(
+      [
+        {
+          endpoint: 'https://sync.example.workers.dev',
+          token: 'access-key',
+          baseUrls: ['https://relay-one.example/v1'],
+        },
+      ],
+      [],
+      { signal: controller.signal },
+    )
+    const replacementFailure = expect(replacement).rejects.toThrow(
+      'AI proxy host-list update failed for 1 Worker endpoint.',
+    )
+
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
+    controller.abort()
+    await vi.advanceTimersByTimeAsync(400)
+
+    await replacementFailure
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('bounds each managed proxy host request with an abort signal', async () => {
+    let resolveFetch: ((response: { ok: true }) => void) | undefined
+    const fetch = vi.fn(
+      (_url: string, _init?: RequestInit) => {
+        void _url
+        void _init
+        return new Promise<{ ok: true }>((resolve) => {
+          resolveFetch = resolve
+        })
+      },
+    )
+    vi.stubGlobal('fetch', fetch)
+
+    const replacement = replaceManagedProxyHosts(
+      [
+        {
+          endpoint: 'https://sync.example.workers.dev',
+          token: 'access-key',
+          baseUrls: ['https://relay-one.example/v1'],
+        },
+      ],
+      [],
+    )
+
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
+    expect(fetch.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+
+    resolveFetch?.({ ok: true })
+    await expect(replacement).resolves.toBeUndefined()
+  })
+
+  it('fails a timed-out managed proxy host request without retrying', async () => {
+    vi.useFakeTimers()
+    const fetch = vi.fn((_url: string, init?: RequestInit) => {
+      if (!init?.signal) {
+        return Promise.reject(new TypeError('missing abort signal'))
+      }
+
+      return new Promise((_resolve, reject) => {
+        init.signal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('Aborted', 'AbortError')),
+          { once: true },
+        )
+      })
+    })
+    vi.stubGlobal('fetch', fetch)
+
+    const replacement = expect(
+      replaceManagedProxyHosts(
+        [
+          {
+            endpoint: 'https://sync.example.workers.dev',
+            token: 'access-key',
+            baseUrls: ['https://relay-one.example/v1'],
+          },
+        ],
+        [],
+      ),
+    ).rejects.toThrow('AI proxy host-list update failed for 1 Worker endpoint.')
+
+    await vi.runAllTimersAsync()
+    await replacement
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops managed proxy host network retries after five attempts', async () => {
+    vi.useFakeTimers()
+    const fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))
+    vi.stubGlobal('fetch', fetch)
+
+    const replacement = expect(
+      replaceManagedProxyHosts(
+        [
+          {
+            endpoint: 'https://sync.example.workers.dev',
+            token: 'access-key',
+            baseUrls: ['https://relay-one.example/v1'],
+          },
+        ],
+        [],
+      ),
+    ).rejects.toThrow('AI proxy host-list update failed for 1 Worker endpoint.')
+
+    await vi.runAllTimersAsync()
+    await replacement
+    expect(fetch).toHaveBeenCalledTimes(5)
   })
 
   it('continues through fixed allowlist Workers that disable automatic host learning', async () => {
@@ -331,14 +555,15 @@ describe('provider proxy host management', () => {
 
   it('treats unexpected Worker host-list responses as failed maintenance', async () => {
     const cancel = vi.fn().mockResolvedValue(undefined)
+    const fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      bodyUsed: false,
+      body: { cancel },
+    })
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 503,
-        bodyUsed: false,
-        body: { cancel },
-      }),
+      fetch,
     )
 
     await expect(
@@ -355,5 +580,6 @@ describe('provider proxy host management', () => {
     ).rejects.toThrow('AI proxy host-list update failed for 1 Worker endpoint.')
 
     expect(cancel).toHaveBeenCalledTimes(1)
+    expect(fetch).toHaveBeenCalledTimes(1)
   })
 })

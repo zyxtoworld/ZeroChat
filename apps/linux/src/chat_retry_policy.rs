@@ -3,6 +3,7 @@ pub(crate) enum ChatRequestFailureKind {
     Http(u16),
     Timeout,
     Transport,
+    EmptyResponse,
     Other,
 }
 
@@ -18,7 +19,9 @@ pub(crate) fn should_retry_chat_request(
         ChatRequestFailureKind::Http(status) => {
             matches!(status, 408 | 409 | 425 | 429 | 500 | 502 | 503 | 504)
         }
-        ChatRequestFailureKind::Timeout | ChatRequestFailureKind::Transport => true,
+        ChatRequestFailureKind::Timeout
+        | ChatRequestFailureKind::Transport
+        | ChatRequestFailureKind::EmptyResponse => true,
         ChatRequestFailureKind::Other => false,
     }
 }
@@ -54,6 +57,10 @@ mod tests {
             ChatRequestFailureKind::Transport,
             false
         ));
+        assert!(should_retry_chat_request(
+            ChatRequestFailureKind::EmptyResponse,
+            false
+        ));
         assert!(!should_retry_chat_request(
             ChatRequestFailureKind::Other,
             false
@@ -66,6 +73,7 @@ mod tests {
             ChatRequestFailureKind::Http(503),
             ChatRequestFailureKind::Timeout,
             ChatRequestFailureKind::Transport,
+            ChatRequestFailureKind::EmptyResponse,
             ChatRequestFailureKind::Other,
         ] {
             assert!(!should_retry_chat_request(failure, true));

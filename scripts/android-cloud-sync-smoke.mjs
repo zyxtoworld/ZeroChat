@@ -10,7 +10,19 @@ import {
   isAndroidDeviceSelectionError,
   selectAndroidDevice,
 } from './android-device-selection.mjs'
+import {
+  createAndroidManualRefreshEvidence,
+  observeAndroidManualRefreshUi,
+} from './android-manual-refresh-evidence.mjs'
+import { planAndroidProviderEditorStep } from './android-provider-editor-navigation.mjs'
 import { currentAndroidDebugApkEvidence } from './android-source-fingerprint.mjs'
+import {
+  androidGestureViewportFromBounds,
+  androidTapCenterIsSafe,
+  androidVerticalRevealAction,
+  boundedAndroidForwardScrollGesture,
+  boundedAndroidReverseScrollGesture,
+} from './android-ui-scroll-gesture.mjs'
 import { createRequestHoldGate } from './request-hold-gate.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -39,11 +51,11 @@ const deviceSelectionFailureReportPath = path.join(
 const installedApkCopyPath = path.join(screenshotDir, 'android-cloud-sync-installed-base.apk')
 const packageName = 'app.zerochat.client'
 const xmlPath = '/sdcard/zerochat-cloud-sync-window.xml'
-const hierarchyDumpAttempts = 16
+const hierarchyDumpAttempts = 8
 const uploadWaitAttempts = 180
 const skillUploadWaitAttempts = 180
 const skillRemovalWaitAttempts = 180
-const conversationUploadWaitAttempts = 180
+const conversationUploadWaitAttempts = 360
 const persistedSyncWaitAttempts = 120
 const persistedSyncPollMs = 500
 const manualRefreshUiTag = 'zerochat-manual-sync-refreshing'
@@ -58,6 +70,7 @@ const remoteProviderKeyFixture = 'AndroidCloudProviderSource'
 const localProviderKeyFixture = 'AndroidCloudProviderReplacementLong'
 const args = new Set(process.argv.slice(2))
 const APK_INSTALL_TIMEOUT_MS = 120_000
+let cachedWindowSize = null
 const addProviderKeyLabels = [
   'Add provider key',
   '填写 API Key',
@@ -485,6 +498,19 @@ function launchApp() {
     '1',
   ])
   sleep(1400)
+  waitForAppShellReady('Android app launch')
+}
+
+function waitForAppShellReady(label) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    if (findResourceEntry('zerochat-topbar-settings')) {
+      return
+    }
+
+    sleep(500)
+  }
+
+  throw new Error(`Android app shell did not become ready after ${label}.`)
 }
 
 function decodeXml(value) {
@@ -556,20 +582,42 @@ function tapBounds(bounds) {
   return true
 }
 
+function hasUsefulHierarchyDump(xml) {
+  return xml.includes('<hierarchy') && [...xml.matchAll(/<node\b/g)].length > 1
+}
+
 function dumpXml() {
   let lastError = null
 
   for (let attempt = 0; attempt < hierarchyDumpAttempts; attempt += 1) {
     try {
-      runAdb(['shell', 'rm', '-f', xmlPath])
-      runAdb(['shell', 'timeout', '8', 'uiautomator', 'dump', xmlPath], { timeout: 12_000 })
-      const xml = runAdb(['shell', 'cat', xmlPath], { maxBuffer: 20 * 1024 * 1024 })
+      const xml = runAdb(['exec-out', 'uiautomator', 'dump', '/dev/tty'], {
+        maxBuffer: 20 * 1024 * 1024,
+        timeout: 12_000,
+      })
 
-      if (xml.includes('<hierarchy')) {
+      if (hasUsefulHierarchyDump(xml)) {
         return xml
       }
 
-      lastError = new Error('Android UI hierarchy dump did not contain a hierarchy root.')
+      lastError = new Error('Android UI hierarchy dump was unavailable or sparse.')
+    } catch (error) {
+      lastError = error
+    }
+
+    try {
+      runAdb(['shell', 'rm', '-f', xmlPath], { timeout: 5_000 })
+      runAdb(['shell', 'timeout', '8', 'uiautomator', 'dump', xmlPath], { timeout: 12_000 })
+      const xml = runAdb(['shell', 'cat', xmlPath], {
+        maxBuffer: 20 * 1024 * 1024,
+        timeout: 15_000,
+      })
+
+      if (hasUsefulHierarchyDump(xml)) {
+        return xml
+      }
+
+      lastError = new Error('Android UI hierarchy dump was unavailable or sparse.')
     } catch (error) {
       lastError = error
     }
@@ -688,6 +736,7 @@ function findResourceEntry(resourceIdSuffix) {
 
 function findExactTextButton(values) {
   const entries = nodeEntries(dumpVisibleXml())
+  const viewport = androidGestureViewportFromBounds(entries[0]?.bounds)
   const valueList = Array.isArray(values) ? values : [values]
   const labels = entries
     .map((entry) => ({ entry, center: boundsCenter(entry.bounds) }))
@@ -700,7 +749,8 @@ function findExactTextButton(values) {
       .filter((entry) =>
         entry.packageName === packageName &&
           (entry.clickable || !entry.enabled) &&
-          boundsContainsPoint(entry.bounds, label.center, 4),
+          boundsContainsPoint(entry.bounds, label.center, 4) &&
+          androidTapCenterIsSafe(boundsCenter(entry.bounds), viewport),
       )
       .sort((left, right) => boundsArea(left.bounds) - boundsArea(right.bounds))
 
@@ -754,9 +804,7 @@ function assertVisible(patterns, label) {
 }
 
 function waitForManualRefreshUiToSettle() {
-  let refreshingUiObservations = 0
-  let syncProgressUiObservations = 0
-  let stableAbsentSamples = 0
+  let evidence = createAndroidManualRefreshEvidence()
 
   for (let attempt = 0; attempt < manualRefreshUiSettleAttempts; attempt += 1) {
     const xml = dumpVisibleXml()
@@ -767,28 +815,18 @@ function waitForManualRefreshUiToSettle() {
     const syncProgressVisible = entries.some((entry) =>
       entry.resourceId.endsWith(manualRefreshProgressUiTag),
     )
+    evidence = observeAndroidManualRefreshUi(evidence, {
+      refreshing,
+      syncProgressVisible,
+    })
 
-    if (refreshing) {
-      refreshingUiObservations += 1
-      if (!syncProgressVisible) {
-        throw new Error(
-          'Android manual pull-to-refresh showed its active marker without the cloud sync progress control.',
-        )
-      }
-      syncProgressUiObservations += 1
-      stableAbsentSamples = 0
-    } else {
-      stableAbsentSamples += 1
-      if (stableAbsentSamples >= manualRefreshUiStableSamples) {
-        return {
-          settled: true,
-          refreshingUiObservations,
-          syncProgressUiObservations,
-          stableAbsentSamples,
-          pollCount: attempt + 1,
-          pollIntervalMs: manualRefreshUiSettlePollMs,
-          xml,
-        }
+    if (evidence.stableAbsentSamples >= manualRefreshUiStableSamples) {
+      return {
+        settled: true,
+        ...evidence,
+        pollCount: attempt + 1,
+        pollIntervalMs: manualRefreshUiSettlePollMs,
+        xml,
       }
     }
 
@@ -796,32 +834,30 @@ function waitForManualRefreshUiToSettle() {
   }
 
   throw new Error(
-    `Android manual pull-to-refresh UI did not settle after ${manualRefreshUiSettleAttempts} probes.`,
+    `Android manual pull-to-refresh UI did not settle after ${manualRefreshUiSettleAttempts} probes: ${JSON.stringify(evidence)}.`,
   )
 }
 
 function waitForManualRefreshUiToAppear() {
+  let evidence = createAndroidManualRefreshEvidence()
+
   for (let attempt = 0; attempt < manualRefreshUiSettleAttempts; attempt += 1) {
     const xml = dumpVisibleXml()
     const entries = nodeEntries(xml)
     const refreshing = entries.some((entry) =>
       entry.resourceId.endsWith(manualRefreshUiTag),
     )
+    const syncProgressVisible = entries.some((entry) =>
+      entry.resourceId.endsWith(manualRefreshProgressUiTag),
+    )
+    evidence = observeAndroidManualRefreshUi(evidence, {
+      refreshing,
+      syncProgressVisible,
+    })
 
-    if (refreshing) {
-      const syncProgressVisible = entries.some((entry) =>
-        entry.resourceId.endsWith(manualRefreshProgressUiTag),
-      )
-
-      if (!syncProgressVisible) {
-        throw new Error(
-          'Android manual pull-to-refresh showed its active marker without the cloud sync progress control.',
-        )
-      }
-
+    if (evidence.coherentActiveObserved) {
       return {
-        refreshingUiObservations: 1,
-        syncProgressUiObservations: 1,
+        ...evidence,
         pollCount: attempt + 1,
         pollIntervalMs: manualRefreshUiSettlePollMs,
         xml,
@@ -932,10 +968,15 @@ function tapExactText(values, label) {
 
 function tapResourceEntry(resourceIdSuffix, label) {
   for (let attempt = 0; attempt < 12; attempt += 1) {
-    const entry = findResourceEntry(resourceIdSuffix)
+    const xml = dumpVisibleXml()
+    const entries = nodeEntries(xml)
+    const entry = entries.find((candidate) =>
+      candidate.packageName === packageName && candidate.resourceId.endsWith(resourceIdSuffix),
+    ) ?? null
     const center = entry ? boundsCenter(entry.bounds) : null
+    const viewport = androidGestureViewportFromBounds(entries[0]?.bounds)
 
-    if (center && center.y > 160 && center.y < 2260) {
+    if (center && entry?.clickable && entry.enabled && androidTapCenterIsSafe(center, viewport)) {
       tapEntry(entry, label)
       return
     }
@@ -1001,13 +1042,60 @@ function tapEditTextAfter(anchorPatterns, label) {
 }
 
 function swipeUp() {
-  runAdb(['shell', 'input', 'swipe', '540', '2100', '540', '1200', '450'])
-  sleep(900)
+  const gesture = boundedAndroidForwardScrollGesture(readWindowSize())
+  runAdb([
+    'shell',
+    'input',
+    'swipe',
+    String(gesture.startX),
+    String(gesture.startY),
+    String(gesture.endX),
+    String(gesture.endY),
+    String(gesture.durationMs),
+  ])
+  sleep(800)
+}
+
+function readWindowSize() {
+  if (cachedWindowSize) return cachedWindowSize
+
+  const output = runAdb(['shell', 'wm', 'size']).trim()
+  const match = output.match(/(\d+)x(\d+)/)
+  cachedWindowSize = match
+    ? { width: Number(match[1]), height: Number(match[2]) }
+    : { width: 1080, height: 2400 }
+
+  return cachedWindowSize
+}
+
+function swipeUpBounded() {
+  const gesture = boundedAndroidForwardScrollGesture(readWindowSize())
+  runAdb([
+    'shell',
+    'input',
+    'swipe',
+    String(gesture.startX),
+    String(gesture.startY),
+    String(gesture.endX),
+    String(gesture.endY),
+    String(gesture.durationMs),
+  ])
+  sleep(800)
 }
 
 function swipeDown() {
-  runAdb(['shell', 'input', 'swipe', '540', '1200', '540', '2100', '450'])
-  sleep(900)
+  const gesture = boundedAndroidReverseScrollGesture(readWindowSize())
+  runAdb([
+    'shell',
+    'input',
+    'swipe',
+    String(gesture.startX),
+    String(gesture.startY),
+    String(gesture.endX),
+    String(gesture.endY),
+    String(gesture.durationMs),
+  ])
+  sleep(800)
 }
 
 function swipeDownOnTranscript(attempt = 0) {
@@ -1322,7 +1410,7 @@ function findLabeledEditTextInEntries(entries, labelPatterns) {
 }
 
 function focusLabeledEditText(labelPatterns, label) {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  for (let attempt = 0; attempt < 16; attempt += 1) {
     const match = findLabeledEditText(labelPatterns)
     const center = match ? boundsCenter(match.editText.bounds) : null
 
@@ -1345,7 +1433,7 @@ function focusLabeledEditText(labelPatterns, label) {
       }
     }
 
-    swipeUp()
+    swipeUpBounded()
   }
 
   throw new Error(`Could not focus Android credential input for ${label}.`)
@@ -1395,106 +1483,150 @@ function assertSecretInputMaskedLength(labelPatterns, expectedLength, label) {
   )
 }
 
+function ensureFocusedCredentialSafelyFramed(expectedLength, label) {
+  const viewport = readWindowSize()
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const focused = focusedEditTextEntry()
+
+    if (!focused?.password || focused.text.length !== expectedLength) {
+      throw new Error(`Expected a focused masked Android credential while framing ${label}.`)
+    }
+
+    const action = androidVerticalRevealAction(focused.bounds, viewport)
+    if (action === 'resolved') {
+      return { bounds: focused.bounds, viewport }
+    }
+
+    if (action === 'forward') swipeUpBounded()
+    else swipeDown()
+  }
+
+  throw new Error(`Could not frame Android credential above system navigation for ${label}.`)
+}
+
 function ensureProviderEditorExpanded(providerId, providerDisplayName, label) {
   const editorResourceId = `zerochat-provider-editor-${providerId}`
   const expandResourceId = `zerochat-provider-expand-${providerId}`
+  let expandedBy = null
   let targetEditorObserved = false
+  const navigationTrace = []
+  let previousTraceSignature = null
 
   const readState = () => {
     const entries = nodeEntries(dumpVisibleXml())
     const editor = entries.find((entry) =>
       entry.packageName === packageName && entry.resourceId.endsWith(editorResourceId),
     ) ?? null
-    const expand = entries.find((entry) =>
+    const taggedExpand = entries.find((entry) =>
       entry.packageName === packageName && entry.resourceId.endsWith(expandResourceId),
     ) ?? null
+    const providerNameEditor = entries.find((entry) => {
+      const center = boundsCenter(entry.bounds)
+
+      return entry.packageName === packageName &&
+        entry.className === 'android.widget.EditText' &&
+        entry.enabled &&
+        entry.text === providerDisplayName &&
+        center && center.y > 160 && center.y < 2260
+    }) ?? null
 
     return {
-      entries,
       editor,
-      expand,
+      listTop: findVisibleExactEntryInEntries(entries, addProviderKeyLabels),
+      providerKey: findLabeledEditTextInEntries(entries, providerKeyFieldLabels),
       providerName: findVisibleExactEntryInEntries(entries, [providerDisplayName]),
+      providerNameEditor,
       providerSpecificExpand: findVisibleExactEntryInEntries(entries, [
         `Edit provider: ${providerDisplayName}`,
       ]),
-      providerKey: findLabeledEditTextInEntries(entries, providerKeyFieldLabels),
-      listTop: findVisibleExactEntryInEntries(entries, ['Add provider']),
       showMore: findVisibleExactEntryInEntries(entries, ['Show more']),
+      taggedExpand,
     }
   }
 
-  const observeTarget = (state) => {
-    if (state.editor || state.providerName) {
-      targetEditorObserved = true
+  const runStep = (state, phase) => {
+    const taggedExpandCenter = state.taggedExpand
+      ? boundsCenter(state.taggedExpand.bounds)
+      : null
+    const step = planAndroidProviderEditorStep({
+      editorVisible: Boolean(state.editor),
+      listTopVisible: Boolean(state.listTop),
+      phase,
+      providerKeyVisible: Boolean(state.providerKey),
+      providerNameEditorVisible: Boolean(state.providerNameEditor),
+      providerNameVisible: Boolean(state.providerName),
+      providerSpecificExpandVisible: Boolean(state.providerSpecificExpand),
+      showMoreVisible: Boolean(state.showMore),
+      taggedExpandVisible: Boolean(
+        taggedExpandCenter && taggedExpandCenter.y > 160 && taggedExpandCenter.y < 2260,
+      ),
+      targetEditorObserved,
+    })
+    targetEditorObserved = step.targetEditorObserved
+    const traceState = {
+      action: step.action,
+      editorVisible: Boolean(state.editor),
+      phase,
+      providerKeyVisible: Boolean(state.providerKey),
+      providerNameEditorVisible: Boolean(state.providerNameEditor),
+      providerNameVisible: Boolean(state.providerName),
+      showMoreVisible: Boolean(state.showMore),
+      targetEditorObserved,
+    }
+    const traceSignature = JSON.stringify(traceState)
+
+    if (traceSignature !== previousTraceSignature) {
+      navigationTrace.push(traceState)
+      previousTraceSignature = traceSignature
     }
 
-    if (targetEditorObserved && state.providerKey) {
+    if (step.action === 'resolved') {
+      const evidence = state.editor ?? state.providerKey.editText
+
       return {
-        providerId,
-        resourceId: state.providerKey.editText.resourceId,
-        bounds: state.providerKey.editText.bounds,
+        resolved: true,
+        value: {
+          providerId,
+          expandedBy: expandedBy ?? 'editor-test-tag',
+          resourceId: evidence.resourceId,
+          bounds: evidence.bounds,
+        },
       }
     }
 
-    return null
+    if (step.action === 'tap-provider-specific-expand') {
+      tapEntry(state.providerSpecificExpand, label)
+      expandedBy = 'provider-specific-edit-action'
+    } else if (step.action === 'tap-tagged-expand') {
+      tapEntry(state.taggedExpand, label)
+      expandedBy = 'expand-action-test-tag'
+    } else if (step.action === 'tap-show-more') {
+      tapEntry(state.showMore, `${label} show more providers`)
+    } else if (step.action === 'rewind') {
+      swipeDown()
+    }
+
+    return { resolved: false, step }
   }
 
-  // A setup screenshot can leave the expanded form below its credential field.
-  // Search back only until the target or list top is observed, avoiding sheet drag.
   for (let attempt = 0; attempt < providerListRewindAttempts; attempt += 1) {
-    const state = readState()
-    const resolved = observeTarget(state)
-    if (resolved) return resolved
+    const result = runStep(readState(), 'rewind')
 
-    if (state.providerSpecificExpand) {
-      tapEntry(state.providerSpecificExpand, label)
-      targetEditorObserved = true
-      sleep(500)
-      break
-    }
-
-    const expandCenter = state.expand ? boundsCenter(state.expand.bounds) : null
-    if (expandCenter && expandCenter.y > 160 && expandCenter.y < 2260) {
-      tapEntry(state.expand, label)
-      targetEditorObserved = true
-      sleep(500)
-      break
-    }
-
-    if (targetEditorObserved || state.listTop) break
-    swipeDown()
+    if (result.resolved) return result.value
+    if (result.step.action === 'scan-forward') break
   }
 
   for (let attempt = 0; attempt < providerListScanAttempts; attempt += 1) {
-    const state = readState()
-    const resolved = observeTarget(state)
-    if (resolved) return resolved
+    const result = runStep(readState(), 'scan')
 
-    if (state.providerSpecificExpand) {
-      tapEntry(state.providerSpecificExpand, label)
-      targetEditorObserved = true
-      sleep(500)
-      continue
-    }
-
-    const expandCenter = state.expand ? boundsCenter(state.expand.bounds) : null
-    if (expandCenter && expandCenter.y > 160 && expandCenter.y < 2260) {
-      tapEntry(state.expand, label)
-      targetEditorObserved = true
-      sleep(500)
-      continue
-    }
-
-    if (state.showMore) {
-      tapEntry(state.showMore, `${label} show more providers`)
-      sleep(500)
-      continue
-    }
-
-    swipeUp()
+    if (result.resolved) return result.value
+    if (result.step.action === 'scan-forward') swipeUpBounded()
   }
 
-  throw new Error(`Could not expand Android provider editor for ${label}.`)
+  throw new Error(
+    `Could not expand Android provider editor for ${label}. Navigation trace: ${JSON.stringify(navigationTrace)}`,
+  )
 }
 
 function tapEnabledExactTextButtonWithScroll(values, label) {
@@ -1506,7 +1638,7 @@ function tapEnabledExactTextButtonWithScroll(values, label) {
       return
     }
 
-    swipeUp()
+    swipeUpBounded()
   }
 
   throw new Error(`Could not tap enabled Android button for ${label}.`)
@@ -1521,7 +1653,7 @@ function waitForExactTextButtonEnabled(values, expected, label) {
     }
 
     if (attempt >= 7 && !button) {
-      swipeUp()
+      swipeUpBounded()
     } else {
       sleep(400)
     }
@@ -1539,15 +1671,22 @@ function saveOpenAiProviderKey(value, label) {
   hideKeyboard()
   tapEnabledExactTextButtonWithScroll(['Save'], `${label} Save action`)
   waitForExactTextButtonEnabled(['Save'], false, `${label} Save after commit`)
+  ensureProviderEditorExpanded('openai', 'OpenAI', `${label} committed editor`)
   const committed = assertSecretInputMaskedLength(
     providerKeyFieldLabels,
     value.length,
     `${label} committed value`,
   )
   hideKeyboard()
+  const committedFraming = ensureFocusedCredentialSafelyFramed(
+    value.length,
+    `${label} committed screenshot`,
+  )
   return {
     enteredMaskedLength: entered.maskedLength,
     committedMaskedLength: committed.maskedLength,
+    committedBounds: committedFraming.bounds,
+    safelyFramedAfterCommit: true,
     saveDisabledAfterCommit: true,
   }
 }
@@ -2403,8 +2542,16 @@ async function waitForSkillRemovalUpload(worker, value, minUploads, skillName) {
   )
 }
 
-async function waitForConversationUpload(worker, value, minUploads, conversationId, messageText) {
+async function waitForConversationUpload(
+  worker,
+  value,
+  minUploads,
+  conversationId,
+  messageText,
+  options = {},
+) {
   let lastConversationText = ''
+  let lastClientSyncObservation = null
 
   for (let attempt = 0; attempt < conversationUploadWaitAttempts; attempt += 1) {
     const uploads = worker.uploads.slice(minUploads - 1)
@@ -2423,6 +2570,46 @@ async function waitForConversationUpload(worker, value, minUploads, conversation
       }
     }
 
+    if (options.watchClientSync) {
+      try {
+        const snapshot = readAppSnapshot()
+        const sync = snapshot.sync ?? {}
+        const status = sync.lastSyncStatus ?? null
+        const initialStatus = options.initialClientSyncStatus ?? null
+        const statusChanged = status !== null && status !== initialStatus
+        const completedWithoutUpload = status === 'Sync complete'
+        const failedWithoutUpload = statusChanged && !completedWithoutUpload
+        lastClientSyncObservation = {
+          statusChanged,
+          completedWithoutUpload,
+          failedWithoutUpload,
+          hasLastSyncAt: Number.isFinite(sync.lastSyncAt),
+          autoSync: sync.autoSync === true,
+        }
+
+        if (completedWithoutUpload || failedWithoutUpload) {
+          throw new Error(
+            [
+              completedWithoutUpload
+                ? 'Android manual pull-to-refresh completed locally without a matching Worker upload.'
+                : 'Android manual pull-to-refresh failed locally before a matching Worker upload.',
+              `Client sync observation: ${JSON.stringify(lastClientSyncObservation)}.`,
+              `Upload count: ${worker.uploads.length}.`,
+              `Requests seen: ${JSON.stringify(worker.requests)}.`,
+            ].join(' '),
+          )
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('manual pull-to-refresh')) {
+          throw error
+        }
+      }
+    }
+
+    if (options.watchClientSync && attempt % 5 === 0) {
+      writeProgress('manual pull-to-refresh upload wait')
+    }
+
     await delay(1000)
   }
 
@@ -2431,6 +2618,9 @@ async function waitForConversationUpload(worker, value, minUploads, conversation
       `Android pull-to-refresh did not upload the seeded conversation after upload #${minUploads - 1}.`,
       `Upload count: ${worker.uploads.length}.`,
       lastConversationText ? `Last matching conversation text: ${lastConversationText}` : 'No matching conversation was found in new uploads.',
+      lastClientSyncObservation
+        ? `Client sync observation: ${JSON.stringify(lastClientSyncObservation)}.`
+        : 'Client sync observation: unavailable.',
       `Requests seen: ${JSON.stringify(worker.requests)}`,
     ].join(' '),
   )
@@ -2544,6 +2734,10 @@ async function runManualPullRefreshProbe(worker, value, endpoint, screenshots) {
     uploadCountBeforePull + 1,
     conversationId,
     messageText,
+    {
+      watchClientSync: true,
+      initialClientSyncStatus: seeded.sync.lastSyncStatus,
+    },
   )
 
   if (vault.data?.sync?.autoSync !== false) {
@@ -2577,6 +2771,7 @@ async function runManualPullRefreshProbe(worker, value, endpoint, screenshots) {
     pullWindowXml,
     activeRefreshingUiObservations: activeUi.refreshingUiObservations,
     activeSyncProgressUiObservations: activeUi.syncProgressUiObservations,
+    activeCoherentUiObservations: activeUi.coherentActiveObservations,
     activeUiPollingAttempts: activeUi.pollCount,
     activeUiPollingIntervalMs: activeUi.pollIntervalMs,
     completionUiSettled: completionUi.settled,
@@ -2747,6 +2942,10 @@ async function runProviderKeyRemoteRecoveryProbe(worker, value, endpoint, screen
     'OpenAI Provider key after remote restore',
   )
   hideKeyboard()
+  const restoredFraming = ensureFocusedCredentialSafelyFramed(
+    remoteProviderKeyFixture.length,
+    'restored OpenAI Provider key screenshot',
+  )
   const restoredScreenshot = capture(
     'android-cloud-sync-smoke-12-provider-key-restored.png',
   )
@@ -2770,6 +2969,10 @@ async function runProviderKeyRemoteRecoveryProbe(worker, value, endpoint, screen
     'OpenAI Provider key after process relaunch',
   )
   hideKeyboard()
+  const relaunchedFraming = ensureFocusedCredentialSafelyFramed(
+    remoteProviderKeyFixture.length,
+    'relaunched OpenAI Provider key screenshot',
+  )
   const relaunchScreenshot = capture(
     'android-cloud-sync-smoke-13-provider-key-relaunch.png',
   )
@@ -2785,8 +2988,13 @@ async function runProviderKeyRemoteRecoveryProbe(worker, value, endpoint, screen
     conflictObserved: true,
     remoteRestoreStatusObserved: true,
     restoredMaskedLength: restored.maskedLength,
+    restoredBounds: restoredFraming.bounds,
+    restoredSafelyFramed: true,
     survivedProcessRelaunch: true,
     relaunchedMaskedLength: relaunched.maskedLength,
+    relaunchedBounds: relaunchedFraming.bounds,
+    relaunchedSafelyFramed: true,
+    captureViewport: restoredFraming.viewport,
     uploadCountBeforeRemotePull,
     uploadCountAfterRemotePull,
     requestCountBeforeRemotePull,
@@ -2875,9 +3083,6 @@ try {
 
   tapExactText(addProviderKeyLabels, 'add provider key')
   assertVisible(settingsSheetLabels, 'settings sheet')
-  scrollUntilVisible(providerKeyFieldLabels, 'targeted provider key field before sync configuration')
-  scrollUntilVisible(['Base URL'], 'targeted provider setup before sync configuration')
-  screenshots.push(capture('android-cloud-sync-smoke-02-settings.png'))
   const sourceProviderKey = saveOpenAiProviderKey(
     remoteProviderKeyFixture,
     'source-client OpenAI Provider key',
@@ -2886,6 +3091,8 @@ try {
     'android-cloud-sync-smoke-02a-provider-key-saved.png',
   )
   screenshots.push(sourceProviderKeyScreenshot)
+  scrollUntilVisible(['Base URL'], 'targeted provider setup before sync configuration')
+  screenshots.push(capture('android-cloud-sync-smoke-02-settings.png'))
 
   tapText(settingsSheetLabels, 'Appearance tab after targeted provider setup')
   tapText(['English'], 'English language option')

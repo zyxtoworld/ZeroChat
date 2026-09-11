@@ -12,6 +12,8 @@ import {
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { isProjectLocalBoundaryPath } from './project-local-boundary.mjs'
+
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const defaultRepoRoot = path.resolve(scriptDir, '..')
 
@@ -38,6 +40,7 @@ function collectFiles(repoRoot, roots) {
   const files = []
 
   function visit(candidate) {
+    if (isProjectLocalBoundaryPath(normalizeRelativePath(repoRoot, candidate))) return
     const metadata = lstatSync(candidate)
     if (metadata.isSymbolicLink()) {
       throw new Error(`Android source fingerprint refuses symbolic links: ${candidate}`)

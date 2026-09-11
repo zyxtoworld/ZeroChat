@@ -116,6 +116,18 @@ function isSafeTimestamp(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) > 0
 }
 
+function addUniqueNonEmptyIdentity(
+  identities: Set<string>,
+  value: unknown,
+): value is string {
+  if (typeof value !== 'string' || value.length === 0 || identities.has(value)) {
+    return false
+  }
+
+  identities.add(value)
+  return true
+}
+
 export function isSafeObjectKey(value: unknown): value is string {
   return typeof value === 'string' && OBJECT_KEY_PATTERN.test(value)
 }
@@ -130,6 +142,12 @@ export function isIncrementalHead(value: unknown): value is IncrementalSyncHead 
     (value as IncrementalSyncHead).manifestKey.startsWith('manifest-') &&
     isSafeTimestamp((value as IncrementalSyncHead).updatedAt)
   )
+}
+
+function indexesAreContiguous(indexes: readonly number[]): boolean {
+  return [...indexes]
+    .sort((left, right) => left - right)
+    .every((index, expected) => index === expected)
 }
 
 function isIncrementalChunkRef(value: unknown): value is IncrementalChunkRef {
@@ -213,30 +231,178 @@ function isIncrementalAttachmentRef(
   )
 }
 
-export function isIncrementalManifest(value: unknown): value is IncrementalManifest {
-  const manifest = value as IncrementalManifest
+export function hasValidIncrementalManifestReferences(
+  value: unknown,
+): boolean {
+  if (!isPlainRecord(value) || !isPlainRecord(value.data)) {
+    return false
+  }
 
+  const conversations = value.data.conversations
+  const providers = value.data.providers
+  const skills = value.data.skills
+  const chunks = value.chunks
+  const skillChunks = value.skillChunks
+  const attachmentChunks = value.attachmentChunks
+  const manifestUpdatedAt = value.updatedAt
+  if (
+    !isSafeTimestamp(manifestUpdatedAt) ||
+    !Number.isSafeInteger(value.data.updatedAt) ||
+    Number(value.data.updatedAt) < 0 ||
+    value.data.updatedAt !== manifestUpdatedAt ||
+    !Array.isArray(providers) ||
+    !Array.isArray(conversations) ||
+    !Array.isArray(skills) ||
+    !Array.isArray(chunks) ||
+    !chunks.every(isIncrementalChunkRef) ||
+    (skillChunks !== undefined &&
+      (!Array.isArray(skillChunks) ||
+        !skillChunks.every(isIncrementalSkillRef))) ||
+    (attachmentChunks !== undefined &&
+      (!Array.isArray(attachmentChunks) ||
+        !attachmentChunks.every(isIncrementalAttachmentRef)))
+  ) {
+    return false
+  }
+
+  const providerIds = new Set<string>()
+  for (const provider of providers) {
+    if (
+      !isPlainRecord(provider) ||
+      !addUniqueNonEmptyIdentity(providerIds, provider.id)
+    ) {
+      return false
+    }
+  }
+
+  const conversationIds = new Set<string>()
+  for (const conversation of conversations) {
+    if (
+      !isPlainRecord(conversation) ||
+      !addUniqueNonEmptyIdentity(conversationIds, conversation.id)
+    ) {
+      return false
+    }
+  }
+
+  const skillIds = new Set<string>()
+  const skillChunkIds = new Set<string>()
+  for (const skill of skills) {
+    if (
+      !isPlainRecord(skill) ||
+      !Array.isArray(skill.chunks) ||
+      !addUniqueNonEmptyIdentity(skillIds, skill.id)
+    ) {
+      return false
+    }
+    const skillChunkIdentityIds = new Set<string>()
+    for (const chunk of skill.chunks) {
+      if (
+        !isPlainRecord(chunk) ||
+        !addUniqueNonEmptyIdentity(skillChunkIdentityIds, chunk.id)
+      ) {
+        return false
+      }
+      const identity = skillRefKey(skill.id, chunk.id)
+      if (skillChunkIds.has(identity)) {
+        return false
+      }
+      skillChunkIds.add(identity)
+    }
+  }
+
+  const objectKeys = new Set<string>()
+  const conversationIndexes = new Map<string, number[]>()
+  for (const ref of chunks) {
+    if (
+      !conversationIds.has(ref.conversationId) ||
+      objectKeys.has(ref.key)
+    ) {
+      return false
+    }
+    objectKeys.add(ref.key)
+    const indexes = conversationIndexes.get(ref.conversationId) ?? []
+    indexes.push(ref.index)
+    conversationIndexes.set(ref.conversationId, indexes)
+  }
+
+  if (
+    [...conversationIndexes.values()].some(
+      (indexes) => !indexesAreContiguous(indexes),
+    )
+  ) {
+    return false
+  }
+
+  const skillReferences = new Set<string>()
+  for (const ref of skillChunks ?? []) {
+    const identity = skillRefKey(ref.skillId, ref.chunkId)
+    if (
+      !skillChunkIds.has(identity) ||
+      skillReferences.has(identity) ||
+      objectKeys.has(ref.key)
+    ) {
+      return false
+    }
+    skillReferences.add(identity)
+    objectKeys.add(ref.key)
+  }
+
+  const attachmentIndexes = new Map<string, number[]>()
+  const attachmentChunkCounts = new Map<string, number>()
+  for (const ref of attachmentChunks ?? []) {
+    if (
+      !conversationIds.has(ref.conversationId) ||
+      objectKeys.has(ref.key)
+    ) {
+      return false
+    }
+    objectKeys.add(ref.key)
+    const identity = attachmentRefKey(
+      ref.conversationId,
+      ref.messageId,
+      ref.attachmentId,
+    )
+    const previousCount = attachmentChunkCounts.get(identity)
+    if (previousCount !== undefined && previousCount !== ref.chunkCount) {
+      return false
+    }
+    attachmentChunkCounts.set(identity, ref.chunkCount)
+    const indexes = attachmentIndexes.get(identity) ?? []
+    indexes.push(ref.index)
+    attachmentIndexes.set(identity, indexes)
+  }
+
+  for (const [identity, indexes] of attachmentIndexes) {
+    if (
+      attachmentChunkCounts.get(identity) !== indexes.length ||
+      !indexesAreContiguous(indexes)
+    ) {
+      return false
+    }
+  }
+
+  return true
+}
+
+export function isIncrementalManifest(value: unknown): value is IncrementalManifest {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const manifest = value as IncrementalManifest
   return (
-    typeof value === 'object' &&
-    value !== null &&
     manifest.kind === 'zerochat.incrementalManifest' &&
     manifest.version === 1 &&
     isSafeTimestamp(manifest.updatedAt) &&
-    typeof manifest.data === 'object' &&
-    manifest.data !== null &&
+    isPlainRecord(manifest.data) &&
     manifest.data.version === 1 &&
     Array.isArray(manifest.data.providers) &&
     Array.isArray(manifest.data.conversations) &&
+    Array.isArray(manifest.data.skills) &&
     isPlainRecord(manifest.secrets) &&
     isStringRecord(manifest.secrets.providerKeys) &&
-    Array.isArray(manifest.chunks) &&
-    manifest.chunks.every(isIncrementalChunkRef) &&
-    (manifest.skillChunks === undefined ||
-      (Array.isArray(manifest.skillChunks) &&
-        manifest.skillChunks.every(isIncrementalSkillRef))) &&
-    (manifest.attachmentChunks === undefined ||
-      (Array.isArray(manifest.attachmentChunks) &&
-        manifest.attachmentChunks.every(isIncrementalAttachmentRef)))
+    hasValidIncrementalManifestReferences(manifest)
   )
 }
 

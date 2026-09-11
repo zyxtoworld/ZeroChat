@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { loadLocale, rt, setRuntimeLocale } from '../../i18n'
 import type {
@@ -6,12 +6,24 @@ import type {
   ChatMessage,
   Conversation,
   ProviderConfig,
+  SyncVault,
 } from '../../types'
 import { defaultSkillSettings } from '../appData'
+import { encryptObject } from '../crypto'
 import { clearWithGist, pullWithGist, syncWithGist } from '../syncGist'
 import {
+  clearGistCursor,
+  createGistClearOperation,
+  createGistStateOperation,
   gistOperationIdFromFileName,
+  gistVaultsEqual,
+  loadGistCursor,
+  materializeGistOperations,
+  normalizeGistVault,
   parseGistOperation,
+  serializeGistOperation,
+  storeGistCursor,
+  tombstonesFromCursor,
 } from '../syncGistProtocol'
 import {
   DEFAULT_GIST_FILE,
@@ -33,6 +45,7 @@ let restoreFetch: (() => void) | null = null
 afterEach(() => {
   restoreFetch?.()
   restoreFetch = null
+  vi.unstubAllGlobals()
 })
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -316,6 +329,201 @@ function operationFiles(store: ReturnType<typeof createGistStore>, gistId: strin
 }
 
 describe('Gist sync transport', () => {
+  it('keeps protocol validation, normalization, merge, cursor, and tombstone paths deterministic', async () => {
+    const sourceMessage = message('message-1', 2)
+    const sourceData = chatData([sourceMessage])
+    sourceData.sync.lastSyncAt = 20
+    sourceData.skills = [{
+      autoMatch: true,
+      contentHash: 'skill-hash',
+      contentType: 'text',
+      createdAt: 1,
+      description: 'Skill',
+      enabled: true,
+      fixed: false,
+      id: 'skill-1',
+      keywords: [],
+      name: 'Skill',
+      sourceSize: 1,
+      updatedAt: 1,
+      chunks: [{
+        content: 'skill content',
+        heading: 'Skill',
+        id: 'chunk-1',
+        keywords: [],
+        tokenEstimate: 1,
+      }],
+    }]
+    const sourceVault: SyncVault = {
+      data: sourceData,
+      secrets: { providerKeys: { 'provider-1': 'secret-1' } },
+    }
+    const emptyVault: SyncVault = {
+      data: appData({
+        conversations: [conversation([])],
+        providers: [],
+        skills: [],
+        sync: { ...sourceData.sync },
+      }),
+      secrets: { providerKeys: {} },
+    }
+
+    expect(normalizeGistVault(sourceVault).data.sync.encryptionEnabled).toBe(true)
+    expect(gistVaultsEqual(sourceVault, normalizeGistVault(sourceVault))).toBe(true)
+    expect(normalizeGistVault(null as unknown as SyncVault)).toBeNull()
+    await expect(createGistStateOperation(['invalid'], sourceVault, [])).rejects.toThrow(
+      rt('error.remoteDataBadFormat'),
+    )
+    await expect(
+      createGistStateOperation([], sourceVault, [{
+        fingerprint: 'invalid',
+        id: 'provider-1',
+        kind: 'provider',
+      }]),
+    ).rejects.toThrow(rt('error.remoteDataBadFormat'))
+    await expect(createGistClearOperation(['invalid'])).rejects.toThrow(
+      rt('error.remoteDataBadFormat'),
+    )
+    await expect(materializeGistOperations(new Map())).resolves.toEqual({
+      heads: [],
+      tombstones: [],
+      vault: null,
+    })
+
+    const left = await createGistStateOperation([], sourceVault, [])
+    const rightVault: SyncVault = {
+      data: {
+        ...sourceData,
+        updatedAt: 21,
+        conversations: [conversation([sourceMessage], { updatedAt: 21 })],
+      },
+      secrets: { providerKeys: { 'provider-1': 'secret-2' } },
+    }
+    const right = await createGistStateOperation([], rightVault, [])
+    const merged = await materializeGistOperations(
+      new Map([
+        [left.id, left],
+        [right.id, right],
+      ]),
+    )
+    expect(merged.vault?.secrets.providerKeys['provider-1']).toBe('secret-2')
+
+    const removedOperation = await createGistStateOperation(
+      [],
+      sourceVault,
+      await tombstonesFromCursor(
+        {
+          ...(await (async () => {
+            sourceData.sync.lastSyncAt = 20
+            await storeGistCursor(
+              'gist-tombstone-source',
+              DEFAULT_GIST_FILE,
+              [left.id],
+              sourceData,
+              sourceVault,
+            )
+            return loadGistCursor(
+              'gist-tombstone-source',
+              DEFAULT_GIST_FILE,
+              sourceData,
+            )
+          })())!,
+        },
+        {
+          data: {
+            ...emptyVault.data,
+            conversations: [
+              conversation([]),
+              conversation([], { id: 'new-conversation' }),
+            ],
+          },
+          secrets: { providerKeys: {} },
+        },
+      ),
+    )
+    const removed = await materializeGistOperations(
+      new Map([[removedOperation.id, removedOperation]]),
+    )
+    expect(removed.vault?.data.providers).toEqual([])
+    expect(removed.vault?.data.conversations[0]?.messages).toEqual([])
+    expect(removed.vault?.data.skills).toEqual([])
+    expect(removed.vault?.secrets.providerKeys).toEqual({})
+
+    await expect(
+      parseGistOperation('{"not":"encrypted"}', passphrase, left.id),
+    ).rejects.toThrow(rt('error.remoteDataEncryptedOnly'))
+    const serialized = await serializeGistOperation(left, passphrase, 20)
+    await expect(parseGistOperation('{', passphrase, left.id)).rejects.toThrow(
+      rt('error.remoteDataInvalidJson'),
+    )
+    await expect(parseGistOperation(serialized, passphrase, '0'.repeat(64))).rejects.toThrow(
+      rt('error.remoteDataBadFormat'),
+    )
+    const encryptedNull = await encryptObject(
+      null,
+      passphrase,
+      'gist-operation-v2',
+      20,
+    )
+    await expect(
+      parseGistOperation(JSON.stringify(encryptedNull), passphrase, left.id),
+    ).rejects.toThrow(rt('error.remoteDataBadFormat'))
+
+    const localStorageData = new Map<string, string>()
+    const localStorageSetItem = vi.fn((key: string, value: string) => {
+      localStorageData.set(key, value)
+    })
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn((key: string) => localStorageData.get(key) ?? null),
+      removeItem: vi.fn((key: string) => {
+        localStorageData.delete(key)
+      }),
+      setItem: localStorageSetItem,
+    })
+
+    await storeGistCursor('gist-cursor', DEFAULT_GIST_FILE, [left.id], sourceData, sourceVault)
+    const cursor = loadGistCursor('gist-cursor', DEFAULT_GIST_FILE, sourceData)
+    expect(cursor).not.toBeNull()
+    const tombstones = await tombstonesFromCursor(cursor!, emptyVault)
+    expect(tombstones).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'provider-1', kind: 'provider' }),
+        expect.objectContaining({ id: 'message-1', kind: 'message' }),
+        expect.objectContaining({ id: 'skill-1', kind: 'skill' }),
+        expect.objectContaining({ id: 'provider-1', kind: 'provider-secret' }),
+      ]),
+    )
+    const conversationTombstones = await tombstonesFromCursor(cursor!, {
+      data: {
+        ...sourceData,
+        conversations: [],
+      },
+      secrets: sourceVault.secrets,
+    })
+    const conversationRemoval = await createGistStateOperation(
+      [],
+      sourceVault,
+      conversationTombstones,
+    )
+    const conversationRemoved = await materializeGistOperations(
+      new Map([[conversationRemoval.id, conversationRemoval]]),
+    )
+    expect(conversationRemoved.vault?.data.conversations).toEqual([])
+    const cursorKey = localStorageSetItem.mock.calls[0]?.[0]
+    expect(cursorKey).toBeTruthy()
+    localStorageData.set(cursorKey!, '{')
+    expect(loadGistCursor('gist-cursor', DEFAULT_GIST_FILE, sourceData)).toBeNull()
+    await storeGistCursor(
+      'gist-without-sync-time',
+      DEFAULT_GIST_FILE,
+      [left.id],
+      { ...sourceData, sync: { ...sourceData.sync, lastSyncAt: undefined } },
+      sourceVault,
+    )
+    clearGistCursor('gist-cursor', DEFAULT_GIST_FILE)
+    expect(loadGistCursor('gist-cursor', DEFAULT_GIST_FILE, sourceData)).toBeNull()
+  }, 60_000)
+
   it('forwards runtime cancellation to the active Gist request', async () => {
     const originalFetch = globalThis.fetch
     const source = new AbortController()
@@ -894,6 +1102,222 @@ describe('Gist sync transport', () => {
     expect(
       pulled.data.conversations[0]?.messages.map((item) => item.id),
     ).toEqual(['left-message', 'right-message'])
+  }, 30_000)
+
+  it('preserves a newer remote operation when an older PATCH is released later', async () => {
+    const store = createGistStore()
+    installGistFetch(store)
+    const base = await syncWithGist(chatData(), syncContext())
+    const baseOperation = operationFiles(store, 'gist-1')[0]
+    const baseId = baseOperation
+      ? gistOperationIdFromFileName(DEFAULT_GIST_FILE, baseOperation[0])
+      : null
+    expect(baseId).not.toBeNull()
+
+    const gate = store.holdNextPatches(1)
+    const older = syncWithGist(
+      {
+        ...base.data,
+        conversations: [
+          conversation([message('older-message', 20)], { updatedAt: 20 }),
+        ],
+        updatedAt: 20,
+      },
+      syncContext(),
+    )
+
+    await gate.arrived
+    const newer = syncWithGist(
+      {
+        ...base.data,
+        conversations: [
+          conversation([message('newer-message', 30)], { updatedAt: 30 }),
+        ],
+        updatedAt: 30,
+      },
+      syncContext(),
+    )
+    await newer
+    expect(operationFiles(store, 'gist-1')).toHaveLength(1)
+
+    gate.release()
+    await older
+
+    const files = operationFiles(store, 'gist-1')
+    expect(files).toHaveLength(2)
+    const operations = await Promise.all(
+      files.map(async ([fileName, content]) => {
+        const id = gistOperationIdFromFileName(DEFAULT_GIST_FILE, fileName)
+        expect(id).not.toBeNull()
+        return parseGistOperation(content, passphrase, id!)
+      }),
+    )
+    expect(operations.every((operation) => operation.operation === 'state')).toBe(true)
+    expect(operations.map((operation) => operation.parents)).toEqual([
+      [baseId],
+      [baseId],
+    ])
+
+    const pulled = await pullWithGist(
+      appData({
+        sync: {
+          autoSync: true,
+          encryptionEnabled: true,
+          gistId: 'gist-1',
+          mode: 'gist',
+        },
+      }),
+      syncContext({ firstSyncStrategy: 'use-remote' }),
+    )
+    expect(
+      pulled.data.conversations[0]?.messages.map((item) => item.id).sort(),
+    ).toEqual(['newer-message', 'older-message'])
+  }, 30_000)
+
+  it('does not publish a stale Gist cursor after its sync owner changes', async () => {
+    const store = createGistStore()
+    installGistFetch(store)
+    const initial = chatData([message('base-message', 10)])
+    initial.sync = { ...initial.sync, lastSyncAt: 1 }
+    const base = await syncWithGist(
+      initial,
+      syncContext(),
+    )
+    const before = loadGistCursor(
+      'gist-1',
+      DEFAULT_GIST_FILE,
+      base.data,
+    )
+    expect(before).not.toBeNull()
+
+    const gate = store.holdNextPatches(1)
+    let ownerStale = false
+    const stale = syncWithGist(
+      {
+        ...base.data,
+        conversations: [conversation([message('stale-message', 20)])],
+        sync: {
+          ...base.data.sync,
+          lastSyncAt: 2,
+        },
+        updatedAt: 20,
+      },
+      syncContext({ shouldDeferRemoteWrite: () => ownerStale }),
+    )
+
+    await gate.arrived
+    ownerStale = true
+    gate.release()
+
+    let caught: unknown
+    try {
+      await stale
+    } catch (error: unknown) {
+      caught = error
+    }
+
+    expect(caught).toBeDefined()
+    const after = loadGistCursor(
+      'gist-1',
+      DEFAULT_GIST_FILE,
+      base.data,
+    )
+    expect(after?.localSyncAt).toBe(before?.localSyncAt)
+  }, 30_000)
+
+  it('does not publish a Gist cursor when its owner changes during baseline work', async () => {
+    const store = createGistStore()
+    installGistFetch(store)
+    const initial = chatData([message('base-message', 10)])
+    initial.sync = { ...initial.sync, lastSyncAt: 1 }
+    const base = await syncWithGist(initial, syncContext())
+    const before = loadGistCursor(
+      'gist-1',
+      DEFAULT_GIST_FILE,
+      base.data,
+    )
+    expect(before).not.toBeNull()
+
+    const originalDigest = globalThis.crypto.subtle.digest.bind(
+      globalThis.crypto.subtle,
+    )
+    const digestSpy = vi.spyOn(globalThis.crypto.subtle, 'digest')
+    let holdDigest = false
+    let markDigestStarted = (): void => undefined
+    const digestStarted = new Promise<void>((resolve) => {
+      markDigestStarted = resolve
+    })
+    let releaseDigest!: () => void
+    digestSpy.mockImplementation((algorithm, data) => {
+      if (!holdDigest) return originalDigest(algorithm, data)
+      holdDigest = false
+      markDigestStarted()
+      return new Promise<ArrayBuffer>((resolve, reject) => {
+        releaseDigest = () => {
+          void originalDigest(algorithm, data).then(resolve, reject)
+        }
+      })
+    })
+
+    const gate = store.holdNextPatches(1)
+    let guardCalls = 0
+    let ownerStale = false
+    const stale = syncWithGist(
+      {
+        ...base.data,
+        conversations: [conversation([message('stale-message', 20)])],
+        sync: {
+          ...base.data.sync,
+          lastSyncAt: 2,
+        },
+        updatedAt: 20,
+      },
+      syncContext({
+        shouldDeferRemoteWrite: () => {
+          guardCalls += 1
+          if (guardCalls === 3) {
+            ownerStale = true
+            return false
+          }
+          return ownerStale
+        },
+      }),
+    )
+
+    await gate.arrived
+    holdDigest = true
+    gate.release()
+    await digestStarted
+
+    let settled = false
+    void stale.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      },
+    )
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    releaseDigest()
+    let caught: unknown
+    try {
+      await stale
+    } catch (error: unknown) {
+      caught = error
+    }
+    digestSpy.mockRestore()
+
+    expect(caught).toBeDefined()
+    expect(guardCalls).toBeGreaterThan(3)
+    const after = loadGistCursor(
+      'gist-1',
+      DEFAULT_GIST_FILE,
+      base.data,
+    )
+    expect(after?.localSyncAt).toBe(before?.localSyncAt)
   }, 30_000)
 
   it('keeps a message tombstone while preserving a concurrent new message', async () => {

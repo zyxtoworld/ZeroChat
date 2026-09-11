@@ -239,8 +239,10 @@ failed or timed out, `pnpm run qa:android:refresh-cloud` revalidates the UI
 report hash and device, then refreshes only Cloudflare smoke and aggregate
 evidence. It reinstalls the APK for a clean sync profile and rejects stale or
 cross-device UI evidence.
-On slower local machines, budget roughly 25-30 minutes for the full UI plus
-Cloudflare sync pass even when the build is skipped.
+On slower local machines, budget roughly 50-60 minutes for the full UI plus
+Cloudflare sync pass even when the build is skipped. The encrypted Cloudflare
+drill alone can take roughly 29 minutes under emulator load, while each child
+process remains bounded by a 45-minute parent timeout.
 When both individual smoke reports already passed against that exact debug APK,
 `pnpm run qa:android:reuse-current` can regenerate only the aggregate report and
 contact sheet. It rejects missing/failed reports, different devices, missing
@@ -264,7 +266,10 @@ the local snapshot has `autoSync=false`. On Android 13+ it grants
 `POST_NOTIFICATIONS` for the disposable profile and verifies posted
 `ZeroChat sync` / `Sync complete` sync-status notifications for both initial
 Cloudflare sync and manual pull-to-refresh, then writes
-`.manual-qa/android-cloud-sync-smoke.json`. The wrapper also writes
+`.manual-qa/android-cloud-sync-smoke.json`. After the IME closes, all source,
+local replacement, remote restore, and process-relaunch Provider credential
+frames must record viewport and field bounds and keep the complete masked input
+above system navigation. The wrapper also writes
 `.manual-qa/android-emulator-qa.json` linking the two smoke reports and
 refreshes the Android contact sheet from the current screenshots. Add
 `-- --no-install` to an individual smoke when the APK is already installed.

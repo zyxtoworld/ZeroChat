@@ -7,10 +7,13 @@ import {
   liveProviderApiSourceFingerprint,
   liveProviderUiSourceFingerprint,
 } from './live-provider-source-fingerprint.mjs'
+import { liveProviderChatModelAttemptValidationFailures } from './live-provider-empty-chat-retry.mjs'
 import {
   liveProviderUiLocalProxyDiagnosticSourceFingerprint,
   localProxyDiagnosticValidationFailures,
 } from './live-provider-ui-local-proxy-diagnostic.mjs'
+import { buildAndroidTargetRuntimeBlocker } from './android-runtime-blocker.mjs'
+import { readCurrentAndroidApkEvidence as readAndroidApkEvidence } from './android-current-apk-evidence.mjs'
 import {
   liveSyncSourceFingerprint,
   liveSyncSourceFingerprintRoots,
@@ -33,6 +36,8 @@ import {
   parseReleaseBlockerReportCliArgs,
   releaseBlockerReportUsage,
 } from './release-blocker-report-cli.mjs'
+import { selectSourceValidationOutcome } from './release-source-validation.mjs'
+import { isProjectLocalBoundaryPath } from './project-local-boundary.mjs'
 
 const cliResult = parseReleaseBlockerReportCliArgs(process.argv.slice(2))
 
@@ -58,6 +63,9 @@ const windowsCurrentMsixStageWebPath = '.manual-qa/windows-msix-stage/web'
 const sourceReportPaths = {
   nativePrereq: '.manual-qa/native-prereq-all-platforms.json',
   strictPreflight: '.manual-qa/strict-release-preflight.json',
+  androidEmulatorQa: '.manual-qa/android-emulator-qa.json',
+  androidUiSmoke: '.manual-qa/android-ui-smoke.json',
+  androidCloudSyncSmoke: '.manual-qa/android-cloud-sync-smoke.json',
   windowsTrustedMsixFailure: '.manual-qa/windows-msix-current-trusted-install-update-qa.failure.json',
   windowsMsixHostPreflight: '.manual-qa/windows-msix-host-preflight.json',
   liveSyncDiagnostic:
@@ -82,6 +90,14 @@ const summarySourceReportPaths = {
   ...sourceReportPaths,
   ...optionalSourceReportPaths,
 }
+
+function readCurrentAndroidApkEvidence() {
+  try {
+    return readAndroidApkEvidence({ repoRoot: root })
+  } catch {
+    return null
+  }
+}
 const validationCommands = [
   [
     'nativePrereq',
@@ -90,6 +106,31 @@ const validationCommands = [
       '--only-native-prereq-report',
       `--require-native-prereq=${sourceReportPaths.nativePrereq}`,
     ],
+  ],
+  [
+    'androidRuntimeArtifacts',
+    [
+      'scripts/runtime-smoke-artifact-check.mjs',
+      '--only-runtime-artifact',
+      '--require-runtime-artifact=android',
+    ],
+    {
+      sourceId: 'androidEmulatorQa',
+      outcomes: [
+        {
+          expectedCode: 0,
+          requiredOutput: ['Runtime smoke artifact checks passed: android'],
+        },
+        {
+          expectedCode: 1,
+          requiredOutputAny: [
+            ['.manual-qa/android-emulator-qa.json must report passed: true'],
+            ['.manual-qa/android-ui-smoke.json apk.local source fingerprint'],
+            ['.manual-qa/android-cloud-sync-smoke.json apk.local source fingerprint'],
+          ],
+        },
+      ],
+    },
   ],
   [
     'strictPreflight',
@@ -107,15 +148,25 @@ const validationCommands = [
       '--require-runtime-artifact=windows-msix-trusted',
     ],
     {
-      expectedCode: 1,
-      requiredOutputAny: [
-        [
-          '.manual-qa/windows-msix-current-trusted-install-update-qa.json distWebAssets',
-          '.manual-qa/windows-msix-current-trusted-install-update-qa.json currentPackageEvidence',
-        ],
-        [
-          '.manual-qa/windows-msix-host-preflight.json current host preflight status=blocked',
-        ],
+      outcomes: [
+        {
+          expectedCode: 0,
+          requiredOutput: [
+            'Runtime smoke artifact checks passed: windows-msix-trusted:',
+          ],
+        },
+        {
+          expectedCode: 1,
+          requiredOutputAny: [
+            [
+              '.manual-qa/windows-msix-current-trusted-install-update-qa.json distWebAssets',
+              '.manual-qa/windows-msix-current-trusted-install-update-qa.json currentPackageEvidence',
+            ],
+            [
+              '.manual-qa/windows-msix-host-preflight.json current host preflight status=blocked',
+            ],
+          ],
+        },
       ],
     },
   ],
@@ -255,6 +306,12 @@ const appleReleaseBlockerEvidenceCommands = [
   'pnpm run check:apple-ipa-size -- --ipa=<path-to-ipa>',
   'pnpm run check:apple-macos-app-size -- --app=<path-to-app>',
 ]
+const androidReleaseBlockerEvidenceCommands = [
+  'pnpm run qa:android:current',
+  'pnpm run check:android-ui-smoke',
+  'pnpm run check:android-cloud-sync-smoke',
+  'pnpm run check:runtime-artifacts',
+]
 const linuxReleaseBlockerEvidenceCommands = [
   'pnpm run qa:linux',
   'pnpm run check:linux-release-size -- --binary=<path-to-binary>',
@@ -286,6 +343,7 @@ const hostedNativeCiReleaseBlockerCommands = [
   'pnpm run check:hosted-native-ci-release-pass',
 ]
 const releaseBlockerEvidenceCommands = [
+  ...androidReleaseBlockerEvidenceCommands,
   ...appleReleaseBlockerEvidenceCommands,
   ...linuxReleaseBlockerEvidenceCommands,
   ...windowsTrustedMsixHostPreflightEvidenceCommands,
@@ -998,8 +1056,14 @@ function runNode(args) {
 async function validateSourceReports(sources) {
   const results = []
 
-  async function validateOne(id, args, options = {}, sourcePath = sourceReportPaths[id]) {
-    const sourceSummary = sourceReportSummary(id, sourcePath, sources[id])
+  async function validateOne(id, args, options = {}, sourcePath) {
+    const sourceId = options.sourceId ?? id
+    const resolvedSourcePath = sourcePath ?? sourceReportPaths[sourceId]
+    const sourceSummary = sourceReportSummary(
+      sourceId,
+      resolvedSourcePath,
+      sources[sourceId],
+    )
     const command = validationCommandLabel(args, options)
     const result =
       options.internal === 'preserved-live-provider-attempt-safety'
@@ -1011,21 +1075,8 @@ async function validateSourceReports(sources) {
         : options.internal === 'live-provider-report-safety'
           ? validateLiveProviderReportSafetySource(sources[id], sourcePath)
         : await runNode(args)
-    const expectedCode = options.expectedCode ?? 0
-    const requiredOutput = Array.isArray(options.requiredOutput) ? options.requiredOutput : []
-    const requiredOutputAny = Array.isArray(options.requiredOutputAny)
-      ? options.requiredOutputAny
-      : []
-    const hasRequiredOutput =
-      requiredOutput.every((marker) => result.output.includes(marker)) &&
-      (requiredOutputAny.length === 0 ||
-        requiredOutputAny.some(
-          (markers) =>
-            Array.isArray(markers) &&
-            markers.every((marker) => result.output.includes(marker)),
-        ))
-    const passed = result.code === expectedCode && hasRequiredOutput
-    const outcome = expectedCode === 0 ? 'passed' : 'expected-diagnostic-failure'
+    const selectedOutcome = selectSourceValidationOutcome(result, options)
+    const { passed, expectedCode, outcome } = selectedOutcome
 
     results.push({
       id,
@@ -1044,16 +1095,17 @@ async function validateSourceReports(sources) {
         [
           `Release blocker source validation failed for ${id}.`,
           `Command: ${command}`,
-          `Expected exit code: ${expectedCode}; actual exit code: ${result.code}`,
-          requiredOutput.length
-            ? `Required output markers: ${requiredOutput.join('; ')}`
-            : '',
-          requiredOutputAny.length
-            ? `Required output marker alternatives: ${requiredOutputAny
-                .map((markers) => (Array.isArray(markers) ? markers.join(' + ') : ''))
-                .filter(Boolean)
-                .join(' | ')}`
-            : '',
+          `Accepted exit codes: ${selectedOutcome.acceptedOutcomes.map((item) => item.expectedCode).join(', ')}; actual exit code: ${result.code}`,
+          ...selectedOutcome.acceptedOutcomes.map((item) => {
+            const required = item.requiredOutput.join(' + ')
+            const alternatives = item.requiredOutputAny
+              .map((markers) => markers.join(' + '))
+              .join(' | ')
+            const markers = [required, alternatives].filter(Boolean).join(' and ')
+            return markers
+              ? `Exit ${item.expectedCode} requires: ${markers}`
+              : `Exit ${item.expectedCode} requires no output markers.`
+          }),
           compactOutput(result.output),
         ].filter(Boolean).join('\n'),
       )
@@ -1278,6 +1330,21 @@ function validateLiveProviderUiSmokeReport(report, options = {}) {
       : report.evidenceType === 'live-provider-ui-smoke-diagnostic',
     'live provider UI report evidenceType must match pass or diagnostic status.',
   )
+  if (
+    report.status === 'passed' ||
+    'attemptedChatModels' in report ||
+    'chatModelAttempts' in report
+  ) {
+    for (const failure of liveProviderChatModelAttemptValidationFailures(
+      report.chatModelAttempts,
+      {
+        attemptedChatModels: report.attemptedChatModels,
+        requirePassedFinal: report.status === 'passed',
+      },
+    )) {
+      failures.push(`live provider UI report chatModelAttempts ${failure}`)
+    }
+  }
   expect(
     isObject(report.requestedInputs) &&
       typeof report.requestedInputs.providerBaseUrlPresent === 'boolean' &&
@@ -1377,6 +1444,7 @@ function validateLiveProviderUiSmokeReport(report, options = {}) {
     'upstream',
   ])
   const browserNetworkUpstreamEdges = new Set(['cloudflare', 'none'])
+  const browserNetworkOptionalRecordKeys = new Set(['edgeMitigation', 'edgePlatform'])
 
   if ('browserNetworkTrace' in report) {
     expect(
@@ -1385,7 +1453,7 @@ function validateLiveProviderUiSmokeReport(report, options = {}) {
     )
 
     if (Array.isArray(browserNetworkTrace)) {
-      const expectedRecordKeys = [
+      const requiredRecordKeys = [
         'action',
         'bodyKind',
         'hasProviderAuthorization',
@@ -1399,10 +1467,14 @@ function validateLiveProviderUiSmokeReport(report, options = {}) {
       ]
 
       for (const record of browserNetworkTrace) {
+        const recordKeys = isObject(record) ? Object.keys(record) : []
         expect(
           isObject(record) &&
-            JSON.stringify(Object.keys(record).sort()) ===
-              JSON.stringify(expectedRecordKeys) &&
+            requiredRecordKeys.every((key) => recordKeys.includes(key)) &&
+            recordKeys.every(
+              (key) =>
+                requiredRecordKeys.includes(key) || browserNetworkOptionalRecordKeys.has(key),
+            ) &&
             browserNetworkMethods.has(record.method) &&
             browserNetworkPaths.has(record.path) &&
             browserNetworkActions.has(record.action) &&
@@ -1413,6 +1485,9 @@ function validateLiveProviderUiSmokeReport(report, options = {}) {
             browserNetworkBodyKinds.has(record.bodyKind) &&
             (record.status === null ||
               (Number.isInteger(record.status) && record.status >= 100 && record.status <= 599)) &&
+            (!('edgePlatform' in record) || record.edgePlatform === 'cloudflare') &&
+            (!('edgeMitigation' in record) ||
+              (record.edgeMitigation === 'challenge' && record.edgePlatform === 'cloudflare')) &&
             browserNetworkOutcomes.has(record.outcome),
           'live provider UI report browserNetworkTrace records must contain only canonical, secret-free request metadata.',
         )
@@ -1492,6 +1567,19 @@ function validateLiveProviderUiSmokeReport(report, options = {}) {
       'passed live provider UI report must dismiss the chat feature hint before sending the marker prompt.',
     )
     expect(report.browserMessageSent === true, 'passed live provider UI report must send a browser message.')
+    expect(
+      isObject(report.browserProxyReadiness) &&
+        report.browserProxyReadiness.status === 'passed' &&
+        Number.isInteger(report.browserProxyReadiness.attemptCount) &&
+        report.browserProxyReadiness.attemptCount >= 2 &&
+        Number.isInteger(report.browserProxyReadiness.consecutivePasses) &&
+        report.browserProxyReadiness.consecutivePasses >= 2 &&
+        [200, 403].includes(report.browserProxyReadiness.statusCode) &&
+        report.browserProxyReadiness.originMatchesExpected === true &&
+        typeof report.browserProxyReadiness.defaultUserAgentHeadless === 'boolean' &&
+        report.browserProxyReadiness.effectiveUserAgentHeadless === false,
+      'passed live provider UI report must prove two browser-origin Worker host-management responses from the expected app origin with a normalized user-facing Chrome UA.',
+    )
     expect(
       Array.isArray(browserNetworkTrace) && browserNetworkTrace.length > 0,
       'passed live provider UI report must include browserNetworkTrace evidence.',
@@ -1846,10 +1934,17 @@ function validateLiveProviderUiSmokeReport(report, options = {}) {
           'failed live provider UI proxyPreflight must include failureKind and redacted failureSummary.',
         )
         if (proxyPreflight.failureKind === 'ai-proxy-ingress-or-deployment-unverified') {
+          const noProvenanceProxyObservation = [
+            proxyPreflight.modelsObservation,
+            proxyPreflight.chatObservation,
+          ].some(
+            (observation) =>
+              validObservation(observation) &&
+              observation.canonicalPath === '/proxy' &&
+              observation.responseSource === 'none',
+          )
           expect(
-            validObservation(proxyPreflight.modelsObservation) &&
-              proxyPreflight.modelsObservation.canonicalPath === '/proxy' &&
-              proxyPreflight.modelsObservation.responseSource === 'none',
+            noProvenanceProxyObservation,
             'unverified AI proxy ingress failures must preserve a no-provenance /proxy observation.',
           )
         }
@@ -1992,6 +2087,9 @@ async function readDirectoryWebAssets(directory) {
 
     for (const entry of entries) {
       const entryPath = join(currentDirectory, entry.name)
+      if (isProjectLocalBoundaryPath(relative(root, entryPath))) {
+        continue
+      }
 
       if (entry.isDirectory()) {
         await walk(entryPath)
@@ -2129,7 +2227,12 @@ function targetHostRuntimeEvidence({
   return evidence
 }
 
-function buildNativeBlockers(nativePrereq, strictPreflight) {
+function buildNativeBlockers(
+  nativePrereq,
+  strictPreflight,
+  androidSources,
+  currentAndroidApkEvidence,
+) {
   const nativeReport = nativePrereq.report
   const strictReport = strictPreflight.report
   const sourceFingerprint = nativeReport.sourceFingerprint ?? {}
@@ -2246,6 +2349,21 @@ function buildNativeBlockers(nativePrereq, strictPreflight) {
       ]),
     })
   }
+
+  const androidBlocker = buildAndroidTargetRuntimeBlocker({
+    strictReport,
+    emulatorReport: androidSources?.emulator?.report,
+    uiReport: androidSources?.ui?.report,
+    cloudSyncReport: androidSources?.cloudSync?.report,
+    currentApkEvidence: currentAndroidApkEvidence,
+    sourcePaths: {
+      strictPreflight: sourceReportPaths.strictPreflight,
+      androidEmulatorQa: sourceReportPaths.androidEmulatorQa,
+      androidUiSmoke: sourceReportPaths.androidUiSmoke,
+      androidCloudSyncSmoke: sourceReportPaths.androidCloudSyncSmoke,
+    },
+  })
+  if (androidBlocker) blockers.push(androidBlocker)
 
   return blockers
 }
@@ -3576,9 +3694,14 @@ function buildReleaseBlockerSets(
   currentMsixPackageCandidate,
   currentMsixStageWebAssets,
   currentMsixPackageWebAssets,
+  currentAndroidApkEvidence,
 ) {
   const baselineCandidates = [
-    ...buildNativeBlockers(sources.nativePrereq, sources.strictPreflight),
+    ...buildNativeBlockers(sources.nativePrereq, sources.strictPreflight, {
+      emulator: sources.androidEmulatorQa,
+      ui: sources.androidUiSmoke,
+      cloudSync: sources.androidCloudSyncSmoke,
+    }, currentAndroidApkEvidence),
     buildWindowsTrustedMsixBlocker(
       sources.windowsTrustedMsixFailure,
       sources.windowsMsixHostPreflight,
@@ -3604,6 +3727,8 @@ function buildReleaseBlockerSets(
       missingLabels(sources.nativePrereq.report, 'Apple').length > 0,
     linuxPrerequisitesMissing:
       missingLabels(sources.nativePrereq.report, 'Linux').length > 0,
+    androidPrerequisitesMissing:
+      missingLabels(sources.nativePrereq.report, 'Android').length > 0,
     candidateIds: baselineCandidates.map((blocker) => blocker.id),
   })
   const activeBaselineIdSet = new Set(activeBaselineIds)
@@ -3664,6 +3789,7 @@ function validateReleaseBlockerSummary(
   currentMsixPackageCandidate,
   currentMsixStageWebAssets,
   currentMsixPackageWebAssets,
+  currentAndroidApkEvidence,
 ) {
   const failures = []
   const summaryGeneratedAtMs = Date.parse(report.generatedAt ?? '')
@@ -3700,6 +3826,7 @@ function validateReleaseBlockerSummary(
     currentMsixPackageCandidate,
     currentMsixStageWebAssets,
     currentMsixPackageWebAssets,
+    currentAndroidApkEvidence,
   )
   const sourceDerivedBlockers = blockerSets.blockers
   const expectedBlockerIds = sourceDerivedBlockers.map((blocker) => blocker.id)
@@ -3926,6 +4053,57 @@ function validateReleaseBlockerSummary(
         linuxBlocker.evidence.targetHostRuntimeEvidence.requiredProof.includes('target-host package-size evidence'),
       'linux target runtime QA blocker evidence must distinguish GTK/libadwaita/Secret Service target-host runtime proof from local prerequisite preflight.',
     )
+
+    const androidBlocker =
+      report.blockers.find((blocker) => blocker?.id === 'android-target-runtime-qa') ??
+      blockerSets.baselineCandidates.find(
+        (blocker) => blocker.id === 'android-target-runtime-qa',
+      )
+    const strictRuntimeMentionsAndroid = (
+      Array.isArray(sources.strictPreflight.report?.blockers)
+        ? sources.strictPreflight.report.blockers
+        : []
+    )
+      .filter((blocker) => blocker?.label === 'Native runtime smoke artifacts')
+      .some((blocker) => /\bandroid\b|\bapk\b|\bemulator\b/iu.test(blocker?.message ?? ''))
+    if (strictRuntimeMentionsAndroid) {
+      expect(
+        androidBlocker?.id === 'android-target-runtime-qa',
+        'Android runtime failures in strict preflight must produce an independent android-target-runtime-qa blocker.',
+      )
+    }
+    if (androidBlocker) {
+      expect(
+        androidBlocker.releaseEvidence === false,
+        'android target runtime QA blocker releaseEvidence must remain false.',
+      )
+      expect(
+        androidBlocker.sourceReports?.includes(sourceReportPaths.strictPreflight) &&
+          androidBlocker.sourceReports?.includes(sourceReportPaths.androidEmulatorQa) &&
+          androidBlocker.sourceReports?.includes(sourceReportPaths.androidUiSmoke) &&
+          androidBlocker.sourceReports?.includes(sourceReportPaths.androidCloudSyncSmoke),
+        'android target runtime QA blocker must cite strict preflight and all Android runtime reports.',
+      )
+      expect(
+        androidBlocker.evidence?.targetRuntimeEvidenceRequired === true &&
+          androidBlocker.evidence?.targetHostRuntimeEvidence?.headless === true &&
+          androidBlocker.evidence?.targetHostRuntimeEvidence?.currentHostSatisfiesTargetRuntime === false &&
+          androidBlocker.evidence?.targetHostRuntimeEvidence?.requiredProof?.includes('headless Android UI smoke') &&
+          androidBlocker.evidence?.targetHostRuntimeEvidence?.requiredProof?.includes('headless aggregate emulator QA'),
+        'android target runtime QA blocker evidence must require headless target-host proof.',
+      )
+      expect(
+        Array.isArray(androidBlocker.evidence?.failureReasons) &&
+          androidBlocker.evidence.failureReasons.length > 0 &&
+          (androidBlocker.evidence.sourceStale === true ||
+            androidBlocker.evidence.runtimeFailed === true),
+        'android target runtime QA blocker evidence must identify source-stale or runtime-failed state.',
+      )
+      expect(
+        androidBlocker.nextActions?.some((action) => /headless Android QA/iu.test(action)),
+        'android target runtime QA blocker nextActions must name headless Android QA.',
+      )
+    }
 
     const windowsBlocker =
       report.blockers.find((blocker) => blocker?.id === 'windows-trusted-msix-release-pass') ??
@@ -5126,8 +5304,6 @@ function validateReleaseBlockerSummary(
 
     for (const [id, args, options = {}] of expectedValidationCommands) {
       const command = validationCommandLabel(args, options)
-      const expectedCode = options.expectedCode ?? 0
-      const expectedOutcome = expectedCode === 0 ? 'passed' : 'expected-diagnostic-failure'
       const expected = validationResults.find((item) => item?.id === id)
       const actual = report.validationResults.find((item) => item?.id === id)
 
@@ -5146,12 +5322,18 @@ function validateReleaseBlockerSummary(
         actual.sourceStatus === expected.sourceStatus,
         `validationResults.${id}.sourceStatus must match fresh source validation result.`,
       )
-      expect(actual.expectedCode === expectedCode, `validationResults.${id}.expectedCode must match ${expectedCode}.`)
+      expect(
+        actual.expectedCode === expected.expectedCode,
+        `validationResults.${id}.expectedCode must match fresh source validation result.`,
+      )
       expect(
         actual.actualCode === expected.actualCode,
         `validationResults.${id}.actualCode must match fresh source validation result.`,
       )
-      expect(actual.outcome === expectedOutcome, `validationResults.${id}.outcome must be ${expectedOutcome}.`)
+      expect(
+        actual.outcome === expected.outcome,
+        `validationResults.${id}.outcome must match fresh source validation result.`,
+      )
       expect(
         actual.passed === expected.passed,
         `validationResults.${id}.passed must match fresh source validation result.`,
@@ -5272,6 +5454,7 @@ async function main() {
   const currentMsixPackageWebAssets = currentMsixPackageCandidate
     ? await readMsixPackageWebAssets(resolve(root, windowsCurrentMsixPackageCandidatePath))
     : null
+  const currentAndroidApkEvidence = readCurrentAndroidApkEvidence()
   const validationResults = await validateSourceReports(sources)
 
   if (checkOnly) {
@@ -5284,6 +5467,7 @@ async function main() {
       currentMsixPackageCandidate,
       currentMsixStageWebAssets,
       currentMsixPackageWebAssets,
+      currentAndroidApkEvidence,
     )
 
     if (failures.length) {
@@ -5308,6 +5492,7 @@ async function main() {
     currentMsixPackageCandidate,
     currentMsixStageWebAssets,
     currentMsixPackageWebAssets,
+    currentAndroidApkEvidence,
   ).blockers
 
   const report = {

@@ -420,7 +420,7 @@ func realtimeClientSecretsRequestBody(
 ) throws -> Data {
     let outputModality = normalizedRealtimeModality(modalities)
 
-    try JSONEncoder().encode(RealtimeClientSecretsRequest(
+    return try JSONEncoder().encode(RealtimeClientSecretsRequest(
         session: RealtimeClientSecretsSession(
             model: model.trimmingCharacters(in: .whitespacesAndNewlines),
             output_modalities: normalizedRealtimeModalities(outputModality),
@@ -638,6 +638,10 @@ private let acceptedImageAttachmentMimeTypes: Set<String> = [
     "image/webp"
 ]
 
+private let maxImageAttachmentBase64Bytes = ((maxImageFileBytes + 2) / 3) * 4
+let maxImageAttachmentDataURLBytes =
+    "data:image/jpeg;base64,".utf8.count + maxImageAttachmentBase64Bytes
+
 private func acceptedImageAttachmentMimeType(_ value: String) -> String? {
     let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     if normalized == "image/jpg" {
@@ -675,6 +679,31 @@ private func validImageAttachmentBase64(_ value: String) -> Bool {
     return padding.isEmpty || value.utf8.count % 4 == 0
 }
 
+func imageAttachmentDecodedBase64ByteCount(
+    encodedByteCount: Int,
+    paddingCount: Int
+) -> Int? {
+    guard encodedByteCount > 0,
+          (0...2).contains(paddingCount),
+          encodedByteCount % 4 != 1,
+          paddingCount == 0 || encodedByteCount % 4 == 0 else {
+        return nil
+    }
+
+    let (fullGroupBytes, multipliedOverflow) =
+        (encodedByteCount / 4).multipliedReportingOverflow(by: 3)
+    guard !multipliedOverflow else { return nil }
+
+    if paddingCount > 0 {
+        guard fullGroupBytes >= paddingCount else { return nil }
+        return fullGroupBytes - paddingCount
+    }
+
+    let remainderBytes = encodedByteCount % 4 == 2 ? 1 : encodedByteCount % 4 == 3 ? 2 : 0
+    let (decodedByteCount, additionOverflow) = fullGroupBytes.addingReportingOverflow(remainderBytes)
+    return additionOverflow ? nil : decodedByteCount
+}
+
 public func safeImageAttachmentDataURL(
     _ value: String?
 ) -> (dataURL: String, mimeType: String)? {
@@ -690,6 +719,13 @@ public func safeImageAttachmentDataURL(
 
     let payload = String(trimmed[trimmed.index(after: separator)...])
     guard validImageAttachmentBase64(payload) else { return nil }
+    let paddingCount = payload.reversed().prefix(while: { $0 == "=" }).count
+    guard let decodedByteCount = imageAttachmentDecodedBase64ByteCount(
+        encodedByteCount: payload.utf8.count,
+        paddingCount: paddingCount
+    ), decodedByteCount <= maxImageFileBytes else {
+        return nil
+    }
 
     return ("data:\(mimeType);base64,\(payload)", mimeType)
 }
@@ -819,12 +855,14 @@ func chatText(from data: Data) -> String? {
     if let choices = root["choices"] as? [[String: Any]],
        let first = choices.first {
         if let message = first["message"] as? [String: Any],
-           let content = (message["content"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let content = openAIContentText(message["content"])
+            .trimmingCharacters(in: .whitespacesAndNewlines),
            !content.isEmpty {
             return content
         }
         if let delta = first["delta"] as? [String: Any],
-           let content = (delta["content"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let content = openAIContentText(delta["content"])
+            .trimmingCharacters(in: .whitespacesAndNewlines),
            !content.isEmpty {
             return content
         }
@@ -861,6 +899,27 @@ func chatText(from data: Data) -> String? {
     }
 
     return nil
+}
+
+private func openAIContentText(_ value: Any?) -> String {
+    if let text = value as? String {
+        return text
+    }
+
+    guard let parts = value as? [[String: Any]] else {
+        return ""
+    }
+
+    return parts.compactMap { part in
+        guard
+            part["type"] as? String == "text",
+            let text = part["text"] as? String
+        else {
+            return nil
+        }
+        return text
+    }
+    .joined()
 }
 
 private func providerAPIRoot(_ provider: ProviderConfig) throws -> String {
@@ -919,7 +978,7 @@ private func providerAPIRoot(_ provider: ProviderConfig) throws -> String {
 
 private func safeBaseURL(_ value: String, label: String) throws -> String {
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard var components = URLComponents(string: trimmed), let scheme = components.scheme else {
+    guard let components = URLComponents(string: trimmed), let scheme = components.scheme else {
         throw AiError.invalidURL
     }
 
@@ -1265,13 +1324,13 @@ private func openAIChoiceDelta(from root: [String: Any]) -> String? {
     }
 
     if let delta = first["delta"] as? [String: Any],
-       let content = delta["content"] as? String {
-        return content
+       !openAIContentText(delta["content"]).isEmpty {
+        return openAIContentText(delta["content"])
     }
 
     if let message = first["message"] as? [String: Any],
-       let content = message["content"] as? String {
-        return content
+       !openAIContentText(message["content"]).isEmpty {
+        return openAIContentText(message["content"])
     }
 
     return nil

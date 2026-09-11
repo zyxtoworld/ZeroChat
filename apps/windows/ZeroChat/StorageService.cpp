@@ -3,8 +3,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <initializer_list>
 #include <limits>
+#include <optional>
 #include <string_view>
 #include <unordered_set>
 #include <winrt/Windows.Data.Json.h>
@@ -1086,23 +1088,80 @@ namespace ZeroChat
             StorageOperationLease operationLease(operationGate.get());
 
             auto folder = ApplicationData::Current().LocalFolder();
-            auto item = co_await folder.TryGetItemAsync(SnapshotFileName());
-            bool recoveringTempSnapshot = false;
-            if (!item)
+            auto primaryItem = co_await folder.TryGetItemAsync(SnapshotFileName());
+            auto tempItem = co_await folder.TryGetItemAsync(SnapshotTempFileName());
+            StorageFile primaryFile{ nullptr };
+            StorageFile tempFile{ nullptr };
+            std::optional<AppSnapshot> primarySnapshot;
+            std::optional<AppSnapshot> tempSnapshot;
+            std::exception_ptr primaryFailure;
+            std::exception_ptr tempFailure;
+
+            if (primaryItem)
             {
-                item = co_await folder.TryGetItemAsync(SnapshotTempFileName());
-                recoveringTempSnapshot = static_cast<bool>(item);
+                try
+                {
+                    primaryFile = primaryItem.as<StorageFile>();
+                    auto json = co_await ReadBoundedSnapshotTextAsync(primaryFile);
+                    primarySnapshot = DeserializeSnapshot(json);
+                }
+                catch (hresult_error const&)
+                {
+                    primaryFailure = std::current_exception();
+                }
             }
 
-            if (item)
+            if (tempItem)
             {
-                auto file = item.as<StorageFile>();
-                auto json = co_await ReadBoundedSnapshotTextAsync(file);
-                snapshot = DeserializeSnapshot(json);
-                if (recoveringTempSnapshot)
+                try
                 {
-                    co_await file.RenameAsync(SnapshotFileName(), NameCollisionOption::ReplaceExisting);
+                    tempFile = tempItem.as<StorageFile>();
+                    auto json = co_await ReadBoundedSnapshotTextAsync(tempFile);
+                    tempSnapshot = DeserializeSnapshot(json);
                 }
+                catch (hresult_error const&)
+                {
+                    tempFailure = std::current_exception();
+                }
+            }
+
+            if (tempSnapshot &&
+                (!primarySnapshot || tempSnapshot->updatedAt >= primarySnapshot->updatedAt))
+            {
+                snapshot = std::move(*tempSnapshot);
+                try
+                {
+                    co_await tempFile.RenameAsync(
+                        SnapshotFileName(),
+                        NameCollisionOption::ReplaceExisting);
+                }
+                catch (hresult_error const&)
+                {
+                    // The validated in-memory snapshot remains usable; retry promotion next launch.
+                }
+            }
+            else if (primarySnapshot)
+            {
+                snapshot = std::move(*primarySnapshot);
+                if (tempFile)
+                {
+                    try
+                    {
+                        co_await tempFile.DeleteAsync();
+                    }
+                    catch (hresult_error const&)
+                    {
+                        // A later save replaces stale temporary data.
+                    }
+                }
+            }
+            else if (primaryFailure)
+            {
+                std::rethrow_exception(primaryFailure);
+            }
+            else if (tempFailure)
+            {
+                std::rethrow_exception(tempFailure);
             }
         }
 
@@ -1144,16 +1203,16 @@ namespace ZeroChat
         StorageOperationLease operationLease(operationGate.get());
 
         auto folder = ApplicationData::Current().LocalFolder();
-        auto item = co_await folder.TryGetItemAsync(SnapshotFileName());
-        if (item)
-        {
-            co_await item.DeleteAsync();
-        }
-
         auto tempItem = co_await folder.TryGetItemAsync(SnapshotTempFileName());
         if (tempItem)
         {
             co_await tempItem.DeleteAsync();
+        }
+
+        auto item = co_await folder.TryGetItemAsync(SnapshotFileName());
+        if (item)
+        {
+            co_await item.DeleteAsync();
         }
     }
 }

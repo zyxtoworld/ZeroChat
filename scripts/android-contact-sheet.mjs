@@ -269,8 +269,16 @@ function reportScreenshots(report, group) {
   }))
 }
 
+function contactSheetSourceTimestamp(reports) {
+  const timestamps = [reports.ui?.generatedAt, reports.cloud?.generatedAt]
+    .filter((value) => typeof value === 'string' && value.trim().length > 0)
+    .sort()
+
+  return timestamps.at(-1) ?? 'source reports'
+}
+
 function contactSheetHtml(records, reports) {
-  const generatedAt = new Date().toISOString()
+  const generatedAt = contactSheetSourceTimestamp(reports)
   const cards = records
     .map((record) => {
       const src = pathToFileURL(record.path).href

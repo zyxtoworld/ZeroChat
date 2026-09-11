@@ -74,10 +74,13 @@ import app.zerochat.ui.chat.emptyStateSettingsTarget
 import app.zerochat.ui.chat.completeImageMessage
 import app.zerochat.ui.chat.failImageMessage
 import app.zerochat.ui.chat.executeImageRequest
+import app.zerochat.ui.chat.GenerationTaskOwner
+import app.zerochat.ui.chat.runIfCurrent
 import app.zerochat.ui.chat.hydrateChatSnapshot
 import app.zerochat.ui.chat.imageMessageBlockerFeedback
 import app.zerochat.ui.chat.imageModelsForProvider
 import app.zerochat.ui.chat.imageRetryPrompt
+import app.zerochat.ui.chat.initializeResourceOrRelease
 import app.zerochat.ui.chat.manualCloudSyncBlocker
 import app.zerochat.ui.chat.manualCloudSyncBlockerMessageKey
 import app.zerochat.ui.chat.manualCloudSyncErrorNotice
@@ -106,6 +109,7 @@ import app.zerochat.ui.chat.stoppedAssistantMessage
 import app.zerochat.ui.chat.stoppedImageMessage
 import app.zerochat.ui.chat.streamChatGenerationWithRetry
 import app.zerochat.ui.settings.ChatSettingsSheet
+import app.zerochat.ui.settings.BackupTaskViewModel
 import app.zerochat.ui.settings.SettingsNoticeKind
 import app.zerochat.ui.settings.SettingsTab
 import app.zerochat.ui.settings.syncSettingsStatusPresentation
@@ -142,13 +146,18 @@ private fun settingsNotice(message: String, kind: SettingsNoticeKind): InlineNot
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(
+internal fun ChatScreen(
     snapshot: AppSnapshot,
     onSnapshotChange: (AppSnapshot, Boolean) -> Unit,
     onSnapshotReduce: ((AppSnapshot) -> AppSnapshot, Boolean) -> Unit,
     initialNotice: String? = null,
     localSnapshotIssue: LocalSnapshotRecoveryIssue?,
-    onSnapshotImport: suspend (AppSnapshot, Map<String, String>) -> Result<Unit>,
+    backupTaskViewModel: BackupTaskViewModel,
+    generationTasks: GenerationTaskOwner,
+    settingsOpen: Boolean,
+    settingsInitialTabName: String,
+    onSettingsOpen: (SettingsTab) -> Unit,
+    onSettingsClose: () -> Unit,
     onResetLocalData: suspend (AppSnapshot) -> Result<Unit>,
     onSaveProviderKey: suspend (String, String) -> Result<Unit>,
     onDeleteProvider: suspend (String) -> Result<Unit>,
@@ -156,7 +165,7 @@ fun ChatScreen(
     onSaveSyncPassphrase: suspend (String) -> Result<Unit>,
     onFirstSyncStrategy: (FirstSyncStrategy) -> Unit = {},
     onManualSync: suspend (AppSnapshot) -> AppSnapshot? = { null },
-    quickAskRequestId: Long = 0L,
+    quickAskDeliveryCount: Long = 0L,
     secretStore: SecretStore,
 ) {
     val context = LocalContext.current
@@ -165,8 +174,6 @@ fun ChatScreen(
     val syncClient = remember(context) {
         SyncClient(gistCursorStorage = SharedPreferencesGistCursorStorage(context))
     }
-    var settingsOpen by rememberSaveable { mutableStateOf(false) }
-    var settingsInitialTabName by rememberSaveable { mutableStateOf(SettingsTab.Appearance.name) }
     var input by rememberSaveable { mutableStateOf("") }
     var composerModeName by rememberSaveable { mutableStateOf(ComposerMode.Chat.name) }
     var imageTaskName by rememberSaveable { mutableStateOf(ImageTaskMode.Generate.name) }
@@ -410,9 +417,8 @@ fun ChatScreen(
         notice: InlineNotice? = null,
         initialTab: SettingsTab = SettingsTab.Appearance,
     ) {
-        settingsInitialTabName = initialTab.name
         settingsNotice = notice
-        settingsOpen = true
+        onSettingsOpen(initialTab)
     }
 
     fun showRequestBlockerFeedback(feedback: ChatRequestBlockerFeedback) {
@@ -426,7 +432,7 @@ fun ChatScreen(
     }
 
     fun closeSettings() {
-        settingsOpen = false
+        onSettingsClose()
         settingsNotice = null
     }
 
@@ -511,7 +517,10 @@ fun ChatScreen(
                 }
                 speechTempFile?.delete()
                 speechTempFile = audioFile
-                val player = MediaPlayer().apply {
+                val player = initializeResourceOrRelease(
+                    resource = MediaPlayer(),
+                    release = MediaPlayer::release,
+                ) {
                     setDataSource(audioFile.absolutePath)
                     setOnCompletionListener { completed ->
                         if (speechRequestSerial == requestSerial && speechPlayer === completed) {
@@ -557,10 +566,18 @@ fun ChatScreen(
         }
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(aiClient, syncClient) {
         onDispose {
+            chatStreamingJob?.cancel()
+            imageGenerationJob?.cancel()
             stopSpeaking(showNotice = false)
+            aiClient.close()
+            syncClient.close()
         }
+    }
+
+    DisposableEffect(generationTasks) {
+        onDispose { generationTasks.close() }
     }
 
     val backNavigationAction = androidBackNavigationAction(settingsOpen, conversationPendingDelete != null)
@@ -602,8 +619,8 @@ fun ChatScreen(
         return conversation
     }
 
-    LaunchedEffect(quickAskRequestId) {
-        if (quickAskRequestId <= 0L) {
+    LaunchedEffect(quickAskDeliveryCount) {
+        if (quickAskDeliveryCount <= 0L) {
             return@LaunchedEffect
         }
 
@@ -621,6 +638,7 @@ fun ChatScreen(
     }
 
     fun sendChatMessage(conversation: Conversation, text: String, editId: String?) {
+        val lease = generationTasks.tryAcquire() ?: return
         val request = when (val plan = prepareChatMessageRequest(
             snapshot = data,
             conversation = conversation,
@@ -631,6 +649,7 @@ fun ChatScreen(
         )) {
             is ChatMessageRequestPlan.Ready -> plan.request
             is ChatMessageRequestPlan.Blocked -> {
+                lease.release()
                 showRequestBlockerFeedback(chatMessageBlockerFeedback(plan.blocker))
                 return
             }
@@ -647,16 +666,22 @@ fun ChatScreen(
             now = nowMillis(),
             fallbackTitle = i18n.t("title.newChat"),
         ) ?: run {
+            lease.release()
             mainNotice = InlineNotice(i18n.t("message.onlyOwnMessagesEditable"), NoticeKind.Warning)
             return
         }
         val pendingSnapshot = pending.snapshot
         val baseMessages = pending.baseMessages
         val assistantMessage = pending.pendingAssistantMessage
-        commitWithSync(pendingSnapshot, autoSync = false)
-        input = ""
-        editingMessageId = null
-        mainNotice = InlineNotice(i18n.t("message.savedLocallySyncQueued"), NoticeKind.Success)
+        if (!lease.runIfCurrent {
+            commitWithSync(pendingSnapshot, autoSync = false)
+            input = ""
+            editingMessageId = null
+            mainNotice = InlineNotice(i18n.t("message.savedLocallySyncQueued"), NoticeKind.Success)
+        }) {
+            lease.release()
+            return
+        }
 
         val receivedText = StringBuilder()
         var lastUiCommitAt = 0L
@@ -688,8 +713,8 @@ fun ChatScreen(
             )
         }
 
-        chatStreamingJob = scope.launch {
-            val generationJob = currentCoroutineContext()[Job]
+        val preparedGenerationJob = generationTasks.prepare(scope, lease) {
+            val runningJob = currentCoroutineContext()[Job]
             try {
                 val completedText = streamChatGenerationWithRetry(
                     aiClient = aiClient,
@@ -702,49 +727,66 @@ fun ChatScreen(
                     contextMessageLimit = pendingSnapshot.preferences.chatContextMessageLimit,
                     receivedText = receivedText,
                     onRetry = { attempt, total ->
-                        mainNotice = InlineNotice(
-                            i18n.networkRetryingNotice(attempt, total),
-                            NoticeKind.Warning,
-                        )
+                        lease.runIfCurrent {
+                            mainNotice = InlineNotice(
+                                i18n.networkRetryingNotice(attempt, total),
+                                NoticeKind.Warning,
+                            )
+                        }
                     },
                     onVisibleText = { visibleText ->
-                        commitStreamingContent(normalizeAssistantMessageContent(visibleText))
+                        lease.runIfCurrent {
+                            commitStreamingContent(normalizeAssistantMessageContent(visibleText))
+                        }
                     },
                 )
                 currentCoroutineContext().ensureActive()
                 val normalizedText = normalizeAssistantMessageContent(completedText)
-                commitAssistantMessage(
-                    assistantMessage.copy(
-                        content = normalizedText.ifBlank { i18n.t("message.providerEmptyResponse") },
-                        status = "done",
-                        error = null,
-                    ),
-                )
+                lease.runIfCurrent {
+                    commitAssistantMessage(
+                        assistantMessage.copy(
+                            content = normalizedText.ifBlank { i18n.t("message.providerEmptyResponse") },
+                            status = "done",
+                            error = null,
+                        ),
+                    )
+                }
             } catch (error: CancellationException) {
-                commitAssistantMessage(
-                    stoppedAssistantMessage(
-                        pendingMessage = assistantMessage,
-                        partialContent = normalizeAssistantMessageContent(receivedText.toString()),
-                        stoppedCopy = i18n.t("message.generationStopped"),
-                    ),
-                )
+                lease.runIfCurrent {
+                    commitAssistantMessage(
+                        stoppedAssistantMessage(
+                            pendingMessage = assistantMessage,
+                            partialContent = normalizeAssistantMessageContent(receivedText.toString()),
+                            stoppedCopy = i18n.t("message.generationStopped"),
+                        ),
+                    )
+                }
             } catch (error: Throwable) {
-                commitAssistantMessage(
-                    assistantMessage.copy(
-                        content = i18n.t("message.generationFailed"),
-                        status = "error",
-                        error = i18n.errorMessage(error.message ?: error::class.java.simpleName),
-                    ),
-                )
+                lease.runIfCurrent {
+                    commitAssistantMessage(
+                        assistantMessage.copy(
+                            content = i18n.t("message.generationFailed"),
+                            status = "error",
+                            error = i18n.errorMessage(error.message ?: error::class.java.simpleName),
+                        ),
+                    )
+                }
             } finally {
-                if (chatStreamingJob === generationJob) {
+                if (chatStreamingJob === runningJob) {
                     chatStreamingJob = null
                 }
             }
         }
+        if (preparedGenerationJob == null) {
+            lease.release()
+            return
+        }
+        chatStreamingJob = preparedGenerationJob
+        preparedGenerationJob.start()
     }
 
     fun generateImageMessage(conversation: Conversation, prompt: String) {
+        val lease = generationTasks.tryAcquire() ?: return
         val provider = data.providers.firstOrNull { it.id == conversation.providerId && it.enabled }
         val requestProvider = provider?.let { providerRequest(it, data) }
         val providerKeyMissing = provider?.let { currentProvider ->
@@ -762,6 +804,7 @@ fun ChatScreen(
             maskImage = maskImage,
         )) {
             is ImageMessageRequestPlan.Blocked -> {
+                lease.release()
                 showRequestBlockerFeedback(imageMessageBlockerFeedback(plan.blocker))
                 return
             }
@@ -779,12 +822,17 @@ fun ChatScreen(
         )
         val pendingSnapshot = pending.snapshot
         val pendingMessage = pending.pendingMessage
-        ownedStreamingImageMessageIds = ownedStreamingImageMessageIds + pendingMessage.id
-        commit(pendingSnapshot)
-        input = ""
+        if (!lease.runIfCurrent {
+            ownedStreamingImageMessageIds = ownedStreamingImageMessageIds + pendingMessage.id
+            commit(pendingSnapshot)
+            input = ""
+        }) {
+            lease.release()
+            return
+        }
 
-        imageGenerationJob = scope.launch {
-            val generationJob = currentCoroutineContext()[Job]
+        val preparedImageJob = generationTasks.prepare(scope, lease) {
+            val runningJob = currentCoroutineContext()[Job]
             try {
                 val result = runCatchingPreservingCancellation {
                     executeImageRequest(
@@ -799,52 +847,62 @@ fun ChatScreen(
                 }
                 currentCoroutineContext().ensureActive()
 
-                val completed = result.fold(
-                    onSuccess = { image ->
-                        completeImageMessage(
-                            pendingMessage = pendingMessage,
-                            image = image,
-                            prompt = request.prompt,
-                            imageModel = request.imageModel,
-                            attachmentId = newId(),
-                            createdAt = nowMillis(),
-                        )
-                    },
-                    onFailure = { error ->
-                        failImageMessage(
-                            pendingMessage = pendingMessage,
-                            failureCopy = i18n.t("message.imageRequestFailed"),
-                            errorCopy = i18n.errorMessage(error.message ?: error::class.java.simpleName),
-                        )
-                    },
-                )
-                onSnapshotReduce(
-                    replaceMessageReducer(
-                        conversationId = conversation.id,
-                        message = completed,
-                        updatedAt = nowMillis(),
-                    ),
-                    true,
-                )
-            } catch (error: CancellationException) {
-                onSnapshotReduce(
-                    replaceMessageReducer(
-                        conversationId = conversation.id,
-                        message = stoppedImageMessage(
-                            pendingMessage = pendingMessage,
-                            stoppedCopy = i18n.t("message.generationStopped"),
+                lease.runIfCurrent {
+                    val completed = result.fold(
+                        onSuccess = { image ->
+                            completeImageMessage(
+                                pendingMessage = pendingMessage,
+                                image = image,
+                                prompt = request.prompt,
+                                imageModel = request.imageModel,
+                                attachmentId = newId(),
+                                createdAt = nowMillis(),
+                            )
+                        },
+                        onFailure = { error ->
+                            failImageMessage(
+                                pendingMessage = pendingMessage,
+                                failureCopy = i18n.t("message.imageRequestFailed"),
+                                errorCopy = i18n.errorMessage(error.message ?: error::class.java.simpleName),
+                            )
+                        },
+                    )
+                    onSnapshotReduce(
+                        replaceMessageReducer(
+                            conversationId = conversation.id,
+                            message = completed,
+                            updatedAt = nowMillis(),
                         ),
-                        updatedAt = nowMillis(),
-                    ),
-                    true,
-                )
+                        true,
+                    )
+                }
+            } catch (error: CancellationException) {
+                lease.runIfCurrent {
+                    onSnapshotReduce(
+                        replaceMessageReducer(
+                            conversationId = conversation.id,
+                            message = stoppedImageMessage(
+                                pendingMessage = pendingMessage,
+                                stoppedCopy = i18n.t("message.generationStopped"),
+                            ),
+                            updatedAt = nowMillis(),
+                        ),
+                        true,
+                    )
+                }
             } finally {
                 ownedStreamingImageMessageIds = ownedStreamingImageMessageIds - pendingMessage.id
-                if (imageGenerationJob === generationJob) {
+                if (imageGenerationJob === runningJob) {
                     imageGenerationJob = null
                 }
             }
         }
+        if (preparedImageJob == null) {
+            lease.release()
+            return
+        }
+        imageGenerationJob = preparedImageJob
+        preparedImageJob.start()
     }
 
     CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
@@ -1030,7 +1088,7 @@ fun ChatScreen(
                 onSaveGithubToken = onSaveGithubToken,
                 onSaveSyncPassphrase = onSaveSyncPassphrase,
                 onLocalSnapshotChange = ::commitLocalSettings,
-                onSnapshotImport = onSnapshotImport,
+                backupTaskViewModel = backupTaskViewModel,
                 onResetLocalData = onResetLocalData,
                 onFirstSyncStrategy = { strategy ->
                     if (localSnapshotRecoveryNotice != null) {
@@ -1066,6 +1124,7 @@ fun ChatScreen(
                 providerDisplayName = { provider -> providerDisplayName(provider, i18n) },
                 providerRequest = ::providerRequest,
                 i18n = i18n,
+                generationTasks = generationTasks,
             )
         }
 

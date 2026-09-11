@@ -3,6 +3,10 @@ import react from '@vitejs/plugin-react'
 import path from 'node:path'
 
 import { finalizeServiceWorkerBuild } from './scripts/service-worker-finalize.mjs'
+import {
+  isProjectLocalBoundaryPath,
+  projectLocalBoundaryGlob,
+} from './scripts/project-local-boundary.mjs'
 
 function finalizeServiceWorkerPlugin() {
   let outDir = ''
@@ -29,6 +33,18 @@ function omitWindowsWebViewCspInDev() {
         '\n',
       ),
   }
+}
+
+function keepProviderSafetyOutOfModulePreload(
+  _filename: string,
+  deps: string[],
+): string[] {
+  return deps.filter(
+    (dep) =>
+      !/(?:imageAttachmentSafety|provider(?:Safety|UrlSafety)|providerTimeoutSignal|remoteHostSafety|crypto)-[^/]+\.js$/u.test(
+        dep,
+      ),
+  )
 }
 
 // https://vite.dev/config/
@@ -72,7 +88,32 @@ export default defineConfig({
   },
   server: {
     watch: {
-      ignored: ['**/.codex-*/**', '**/dist/**'],
+      ignored: [
+        '**/.codex-*/**',
+        '**/dist/**',
+        projectLocalBoundaryGlob,
+        (filePath) => isProjectLocalBoundaryPath(filePath, process.cwd()),
+      ],
+    },
+  },
+  build: {
+    target: 'esnext',
+    modulePreload: {
+      resolveDependencies: keepProviderSafetyOutOfModulePreload,
+    },
+    rollupOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            {
+              name: 'providerConfig',
+              test: /[\\/]src[\\/]services[\\/]providerConfig\.ts$/u,
+              includeDependenciesRecursively: false,
+              priority: 1,
+            },
+          ],
+        },
+      },
     },
   },
 })

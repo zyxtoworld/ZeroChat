@@ -248,7 +248,7 @@ public actor AiClient {
             }
         }
 
-        return received
+        return try validatedChatStreamResponse(received)
     }
 
     public func listModels(
@@ -918,6 +918,13 @@ func shouldTryNextResponsesImageModel(after error: Error) -> Bool {
     return statusCode == 400 || statusCode == 422
 }
 
+func validatedChatStreamResponse(_ response: String) throws -> String {
+    guard !response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        throw AiError.chatResponseEmpty
+    }
+    return response
+}
+
 private func aiHTTPFailure(statusCode: Int, data: Data? = nil) -> AiError {
     let message = data
         .flatMap { String(data: $0, encoding: .utf8) }?
@@ -936,6 +943,7 @@ public enum AiError: LocalizedError {
     case noModelsFound
     case unsupportedImageAPI
     case unsupportedCapabilityAPI
+    case chatResponseEmpty
     case imageResponseEmpty
     case invalidAudioResponse
     case httpFailed(statusCode: Int, message: String)
@@ -963,6 +971,8 @@ public enum AiError: LocalizedError {
             return "This provider does not support image generation."
         case .unsupportedCapabilityAPI:
             return "This provider does not support that capability."
+        case .chatResponseEmpty:
+            return "The provider returned an empty response."
         case .imageResponseEmpty:
             return "Image response did not include a result"
         case .invalidAudioResponse:

@@ -2,9 +2,12 @@ package app.zerochat
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
-import android.os.Bundle
 import android.os.Build
+import android.os.Bundle
+import android.os.Process
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -12,17 +15,31 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.core.content.edit
+import androidx.lifecycle.ViewModelProvider
 import app.zerochat.sync.LocalUserTriggeredSyncAction
 import app.zerochat.sync.SyncNotificationPermissionGate
 import app.zerochat.sync.shouldRequestPostNotifications
 import app.zerochat.ui.ZeroChatApp
+import app.zerochat.ui.settings.BackupTaskViewModel
+import java.util.concurrent.atomic.AtomicLong
 
 class MainActivity : ComponentActivity() {
-    private val quickAskRequestId = mutableLongStateOf(0L)
+    private val lifecycleInstanceId = nextLifecycleInstanceId.getAndIncrement()
+    private val quickAskDeliveryCount = mutableLongStateOf(0L)
+    private val quickAskOwner = QuickAskActivityOwner()
+    private val backupTaskViewModel by lazy(LazyThreadSafetyMode.NONE) {
+        ViewModelProvider(this)[BackupTaskViewModel::class.java]
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        if (isDebuggable()) {
+            Log.i(
+                ACTIVITY_LIFECYCLE_LOG_TAG,
+                "event=created instance=$lifecycleInstanceId pid=${Process.myPid()}",
+            )
+        }
         val notificationPermissionPreferences = getSharedPreferences(
             NOTIFICATION_PERMISSION_PREFERENCES,
             MODE_PRIVATE,
@@ -45,29 +62,50 @@ class MainActivity : ComponentActivity() {
             },
             requestPermission = ::requestPostNotifications,
         )
-        if (savedInstanceState == null) {
-            consumeQuickAskIntent(intent)
-        }
+        val savedQuickAskConsumed =
+            savedInstanceState?.getBoolean(QUICK_ASK_CONSUMED_STATE_KEY, false) == true
+        quickAskDeliveryCount.longValue = quickAskOwner.onCreate(
+            savedQuickAskConsumed,
+            QuickAskIntents.isQuickAsk(intent),
+        )
         setContent {
             CompositionLocalProvider(
                 LocalUserTriggeredSyncAction provides notificationPermissionGate,
             ) {
-                ZeroChatApp(quickAskRequestId = quickAskRequestId.longValue)
+                ZeroChatApp(
+                    quickAskDeliveryCount = quickAskDeliveryCount.longValue,
+                    backupTaskViewModel = backupTaskViewModel,
+                )
             }
         }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean(QUICK_ASK_CONSUMED_STATE_KEY, quickAskOwner.consumedForInstance)
+        super.onSaveInstanceState(outState)
+    }
+
+    override fun onDestroy() {
+        if (isDebuggable()) {
+            Log.i(
+                ACTIVITY_LIFECYCLE_LOG_TAG,
+                "event=destroyed instance=$lifecycleInstanceId pid=${Process.myPid()} " +
+                    "changingConfigurations=$isChangingConfigurations",
+            )
+        }
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        consumeQuickAskIntent(intent)
+        quickAskDeliveryCount.longValue = quickAskOwner.onNewIntent(
+            QuickAskIntents.isQuickAsk(intent),
+        )
     }
 
-    private fun consumeQuickAskIntent(intent: Intent?) {
-        if (QuickAskIntents.isQuickAsk(intent)) {
-            quickAskRequestId.longValue += 1L
-        }
-    }
+    private fun isDebuggable(): Boolean =
+        applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
 
     private fun postNotificationsPermissionGranted(): Boolean =
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
@@ -88,7 +126,9 @@ class MainActivity : ComponentActivity() {
     ) {}
 
     private companion object {
+        const val ACTIVITY_LIFECYCLE_LOG_TAG = "ZeroChatActivityLifecycle"
         const val NOTIFICATION_PERMISSION_PREFERENCES = "notification_permissions"
         const val NOTIFICATION_PERMISSION_REQUESTED = "post_notifications_requested"
+        val nextLifecycleInstanceId = AtomicLong(1L)
     }
 }

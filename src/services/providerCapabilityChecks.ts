@@ -7,6 +7,7 @@ import type { ProviderCapability } from '../types'
 import type { ProviderConfig } from '../types'
 import {
   assertProviderResponseOk,
+  cancelUnreadProviderResponse,
   isAbortError,
   MAX_PROVIDER_AUDIO_RESPONSE_BYTES,
   MAX_PROVIDER_TEXT_RESPONSE_BYTES,
@@ -670,9 +671,10 @@ export async function executeProviderCapabilityRequestPlan({
     plan.init.signal,
     timeoutMs,
   )
+  let response: Response | undefined
 
   try {
-    const response = await fetcher(plan.endpoint, {
+    response = await fetcher(plan.endpoint, {
       ...plan.init,
       signal: timeoutSignal.signal,
     })
@@ -687,6 +689,8 @@ export async function executeProviderCapabilityRequestPlan({
       status: response.status,
     }
   } catch (error: unknown) {
+    cancelUnreadProviderResponse(response)
+
     if (timeoutSignal.timedOut()) {
       throw providerTimeoutError()
     }

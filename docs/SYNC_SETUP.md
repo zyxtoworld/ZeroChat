@@ -183,9 +183,11 @@ ALLOWED_ORIGINS = "https://zerochat.example.com,http://127.0.0.1:5173"
 REQUIRE_ALLOWED_ORIGINS = "true"
 ```
 
-Origins must match protocol, host, and port exactly. `http://127.0.0.1:5173` and `http://localhost:5173` are different origins. The automatic list is limited by `MAX_AUTO_ALLOWED_ORIGINS`, defaulting to 8.
+Cross-origin entries must match protocol, host, and port exactly. `http://127.0.0.1:5173` and `http://localhost:5173` are different origins. An app served by the Worker can always call that same Worker origin and does not need an allowlist entry. The automatic list is limited by `MAX_AUTO_ALLOWED_ORIGINS`, defaulting to 8.
 
 ### 4. Deploy and Configure ZeroChat
+
+The template binds `../dist` to the `ASSETS` binding. From the repository root, build the current Web/PWA bundle before deploying; keep the `[assets]` block in the copied `wrangler.toml` so the same Worker serves the ZeroChat app shell/assets as well as `/proxy` and sync routes.
 
 Deploy from `cloudflare/`:
 
@@ -268,7 +270,7 @@ Only enable `ALLOW_KEYLESS_UPSTREAMS=true` when your upstream relay already hand
 - Do not commit `cloudflare/wrangler.toml`, `.dev.vars`, or any file containing real keys.
 - Use HTTPS provider Base URLs.
 - Custom relay hosts can be learned automatically after a valid access key request. Web/PWA replaces the learned list through `/proxy/hosts` when provider settings change, so removed custom Base URLs are also removed from the Worker. Add `ALLOWED_HOSTS` only when you want a manual fixed list; set `AUTO_ALLOWED_HOSTS=false` to disable host learning/replacement, and `ALLOW_DEFAULT_PROVIDER_HOSTS=false` if you also need to disable built-in provider hosts.
-- Automatic browser origin learning is enabled by default and requires a valid route token. Use `AUTO_ALLOWED_ORIGINS=false`, `ALLOWED_ORIGINS`, and `REQUIRE_ALLOWED_ORIGINS=true` when you want a fully manual CORS allowlist.
+- Exact same-origin Worker requests are always allowed. Learning for other browser origins is enabled by default and requires a valid route token. Use `AUTO_ALLOWED_ORIGINS=false`, `ALLOWED_ORIGINS`, and `REQUIRE_ALLOWED_ORIGINS=true` when you want a fully manual cross-origin allowlist.
 - For long-term Web/PWA use, prefer Cloudflare Secret-hosted AI API keys.
 
 Official references:

@@ -4,6 +4,7 @@ import app.zerochat.data.AppSnapshot
 import app.zerochat.data.Conversation
 import app.zerochat.data.ProviderConfig
 import app.zerochat.data.ProviderKind
+import app.zerochat.ui.NativeI18n
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -168,7 +169,39 @@ class ProviderSettingsHelpersTest {
     }
 
     @Test
-    fun providerSettingsApplyConnectivityModelsToSnapshotUsesTheLatestProviderRecord() {
+    fun providerSettingsApplyConnectivityModelsToSnapshotUsesTheLatestProviderRecordWhenOwnerMatches() {
+        val fetchedFor = provider(
+            "custom",
+            model = "legacy-model",
+            models = listOf("legacy-model"),
+        )
+        val latest = fetchedFor.copy(name = "Renamed provider")
+        val current = AppSnapshot(providers = listOf(latest))
+
+        val updated = providerSettingsApplyConnectivityModelsToSnapshot(
+            snapshot = current,
+            providerId = fetchedFor.id,
+            models = listOf("gpt-5.5"),
+            now = 43,
+            expectedOwner = ModelSettingsFetchOwner(
+                requestProvider = fetchedFor,
+                apiKey = "old-key",
+                proxyToken = "old-proxy",
+            ),
+            currentOwner = ModelSettingsFetchOwner(
+                requestProvider = latest,
+                apiKey = "old-key",
+                proxyToken = "old-proxy",
+            ),
+        )
+
+        assertEquals("Renamed provider", updated.providers.single().name)
+        assertEquals(listOf("gpt-5.5"), updated.providers.single().models)
+        assertEquals(43, updated.providers.single().updatedAt)
+    }
+
+    @Test
+    fun providerSettingsConnectivityResultIsRejectedAfterEndpointReplacement() {
         val fetchedFor = provider(
             "custom",
             model = "legacy-model",
@@ -178,15 +211,41 @@ class ProviderSettingsHelpersTest {
         val current = AppSnapshot(providers = listOf(latest))
 
         val updated = providerSettingsApplyConnectivityModelsToSnapshot(
-            current,
+            snapshot = current,
             providerId = fetchedFor.id,
             models = listOf("gpt-5.5"),
             now = 43,
+            expectedOwner = ModelSettingsFetchOwner(
+                requestProvider = fetchedFor,
+                apiKey = "old-key",
+                proxyToken = "old-proxy",
+            ),
+            currentOwner = ModelSettingsFetchOwner(
+                requestProvider = latest,
+                apiKey = "old-key",
+                proxyToken = "old-proxy",
+            ),
         )
 
-        assertEquals("https://edited.example/v1", updated.providers.single().baseUrl)
-        assertEquals(listOf("gpt-5.5"), updated.providers.single().models)
-        assertEquals(43, updated.providers.single().updatedAt)
+        assertEquals(current, updated)
+    }
+
+    @Test
+    fun providerConnectivityFailureNoticeDoesNotExposeRawExceptionText() {
+        val sentinel =
+            "C:\\private\\provider\\config.json /home/runner/.config/token " +
+                "https://provider.invalid/v1 sk-test-not-a-real-key"
+
+        val notice = providerConnectivityFailureNotice(
+            NativeI18n.forMode("en-US"),
+            IllegalStateException(sentinel),
+        )
+
+        assertFalse(notice.contains(sentinel))
+        assertFalse(notice.contains("C:\\private"))
+        assertFalse(notice.contains("/home/runner"))
+        assertFalse(notice.contains("provider.invalid"))
+        assertFalse(notice.contains("sk-test-not-a-real-key"))
     }
 
     @Test

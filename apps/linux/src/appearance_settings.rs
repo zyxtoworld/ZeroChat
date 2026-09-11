@@ -39,9 +39,9 @@ pub(crate) fn appearance_settings(
     language_label.set_xalign(0.0);
     box_.append(&language_label);
     let summary_text = language_summary(locale);
-    let language_summary = gtk::Label::new(Some(&summary_text));
-    language_summary.set_xalign(0.0);
-    language_summary.add_css_class("dim-label");
+    let language_summary_label = gtk::Label::new(Some(&summary_text));
+    language_summary_label.set_xalign(0.0);
+    language_summary_label.add_css_class("dim-label");
     let language_dropdown = gtk::DropDown::from_strings(&[
         tr(locale, "language.system"),
         "中文",
@@ -60,7 +60,7 @@ pub(crate) fn appearance_settings(
         .position(|mode| *mode == language_mode.as_str())
         .unwrap_or(0) as u32;
     language_dropdown.set_selected(selected_language_index);
-    let summary_for_language = language_summary.clone();
+    let summary_for_language = language_summary_label.clone();
     let window_for_language = window.clone();
     let state_for_language = state.clone();
     let surface_for_language = surface.clone();
@@ -68,7 +68,7 @@ pub(crate) fn appearance_settings(
         let index = dropdown.selected() as usize;
         let mode = LANGUAGE_MODES.get(index).copied().unwrap_or("system");
         let resolved = resolve_locale(mode);
-        summary_for_language.set_text(language_summary(&resolved));
+        summary_for_language.set_text(&language_summary(&resolved));
         state_for_language.update_preferences(|preferences| {
             preferences.language = mode.to_owned();
         });
@@ -87,7 +87,7 @@ pub(crate) fn appearance_settings(
         }
     });
     box_.append(&language_dropdown);
-    box_.append(&language_summary);
+    box_.append(&language_summary_label);
 
     let compact_enabled = compact;
     let compact_button = gtk::CheckButton::with_label(tr(locale, "field.compactDisplay"));

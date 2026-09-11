@@ -1,5 +1,4 @@
 import { mergeConcurrentAppData } from '../services/concurrentAppDataMerge'
-import type { LocalSaveCommitPrecondition } from '../services/localSaveQueueController'
 import type { AppData } from '../types'
 import { AppDataWriteConflictError } from './appDataWriteConflict'
 import { loadAppData, saveAppData } from './db'
@@ -17,6 +16,8 @@ interface AppDataConflictRecoveryServices {
   save: (snapshot: AppData) => Promise<void>
 }
 
+type AppDataCommitPrecondition = (snapshot: AppData | null) => boolean
+
 const defaultServices: AppDataConflictRecoveryServices = {
   load: loadAppData,
   save: saveAppData,
@@ -28,8 +29,8 @@ export async function recoverAppDataWriteConflict(
   local: AppData,
   servicesOrPrecondition:
     | AppDataConflictRecoveryServices
-    | LocalSaveCommitPrecondition['isSatisfied'] = defaultServices,
-  preconditionWithServices?: LocalSaveCommitPrecondition['isSatisfied'],
+    | AppDataCommitPrecondition = defaultServices,
+  preconditionWithServices?: AppDataCommitPrecondition,
 ): Promise<AppDataConflictRecoveryResult> {
   if (!(error instanceof AppDataWriteConflictError)) {
     throw error

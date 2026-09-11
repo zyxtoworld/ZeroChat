@@ -60,6 +60,75 @@ describe('UI runtime helpers', () => {
     )
   })
 
+  it('redacts bounded absolute filesystem paths without hiding endpoint paths', () => {
+    const message =
+      'C:\\private\\ZeroChat\\provider.log \\\\build-host\\share\\provider.log /home/alice/.config/zerochat /Users/alice/tmp/zerochat /tmp/zerochat https://relay.example.test/v1/models api_key=sk-provider-secret /models /chat/completions'
+
+    const redacted = redactSensitiveText(message)
+
+    expect(redacted).not.toContain('C:\\private\\ZeroChat\\provider.log')
+    expect(redacted).not.toContain('\\\\build-host\\share\\provider.log')
+    expect(redacted).not.toContain('/home/alice/.config/zerochat')
+    expect(redacted).not.toContain('/Users/alice/tmp/zerochat')
+    expect(redacted).not.toContain('/tmp/zerochat')
+    expect(redacted).toContain('/models')
+    expect(redacted).toContain('/chat/completions')
+    expect(redacted).toContain('[redacted-url]')
+    expect(redacted).toContain('[redacted]')
+  })
+
+  it.each([
+    ['UNC', '\\\\build-host\\share with spaces\\private secret.txt'],
+    ['drive', 'C:\\private folder\\secret.txt'],
+    ['Unix', '/home/alice/private folder/secret.txt'],
+  ])('redacts quoted absolute %s paths that contain spaces', (_kind, path) => {
+    const redacted = redactSensitiveText(`unable to open "${path}"`)
+
+    expect(redacted).not.toContain(path)
+    expect(redacted).not.toContain('private secret.txt')
+    expect(redacted).toBe('unable to open [redacted-path]')
+  })
+
+  it.each([
+    ['UNC', '\\\\build-host\\share\\private\\secret.txt'],
+    ['drive', 'C:\\private\\secret.txt'],
+    ['Unix', '/home/alice/private/secret.txt'],
+  ])('preserves quoted path prefixes and adjacent fragments (%s)', (_kind, path) => {
+    const redacted = redactSensitiveText(
+      `prefix "diagnostic ${path}" suffix /models /chat/completions "next fragment"`,
+    )
+
+    expect(redacted).toContain('prefix diagnostic [redacted-path] suffix')
+    expect(redacted).toContain('/models /chat/completions')
+    expect(redacted).toContain('"next fragment"')
+    expect(redacted).not.toContain(path)
+  })
+
+  it.each([
+    ['UNC', '\\\\build-host\\share with spaces\\private secret.txt'],
+    ['drive', 'C:\\private folder\\secret.txt'],
+    ['Unix', '/home/alice/private folder/secret.txt'],
+  ])('keeps embedded and adjacent quoted %s paths bounded', (_kind, path) => {
+    const redacted = redactSensitiveText(
+      `prefix "diagnostic ${path}" suffix "${path}" /models /chat/completions`,
+    )
+
+    expect(redacted).toBe(
+      'prefix diagnostic [redacted-path] suffix [redacted-path] /models /chat/completions',
+    )
+    expect(redacted).not.toContain('private')
+    expect(redacted).not.toContain('secret.txt')
+  })
+
+  it('does not cross mixed or unmatched quote boundaries while collapsing paths', () => {
+    const mixed = redactSensitiveText(
+      'prefix "diagnostic C:\\private\\secret.txt\\\'keep-this" suffix "next fragment"',
+    )
+
+    expect(mixed).toContain("diagnostic [redacted-path]'keep-this")
+    expect(mixed).toContain('"next fragment"')
+  })
+
   it('classifies notice tone from localized and provider error copy', () => {
     expect(noticeToneFor('')).toBe('success')
     expect(noticeToneFor('同步完成')).toBe('success')
@@ -116,6 +185,70 @@ describe('UI runtime helpers', () => {
     expect(clearTimeoutSpy).toHaveBeenCalledTimes(1)
   })
 
+  it('uses the timeout fallback when idle cancellation is unavailable', () => {
+    vi.useFakeTimers()
+    const callback = vi.fn()
+    const requestIdleCallback = vi.fn(() => 1)
+    const setTimeoutSpy = vi.fn((handler: () => void, delayMs?: number) =>
+      globalThis.setTimeout(handler, delayMs),
+    )
+    const clearTimeoutSpy = vi.fn((id: number) => globalThis.clearTimeout(id))
+    vi.stubGlobal('window', {
+      requestIdleCallback,
+      setTimeout: setTimeoutSpy,
+      clearTimeout: clearTimeoutSpy,
+    })
+
+    const cancel = scheduleIdleTask(callback)
+
+    expect(requestIdleCallback).not.toHaveBeenCalled()
+    expect(setTimeoutSpy).toHaveBeenCalledWith(
+      expect.any(Function),
+      IDLE_SERVICE_WARM_FALLBACK_MS,
+    )
+    expect(() => cancel()).not.toThrow()
+    expect(clearTimeoutSpy).toHaveBeenCalledOnce()
+  })
+
+  it('does not run an idle callback that was delivered after cancellation', () => {
+    const callback = vi.fn()
+    let queuedCallback: (() => void) | undefined
+    const requestIdleCallback = vi.fn((next: () => void) => {
+      queuedCallback = next
+      return 1
+    })
+    const cancelIdleCallback = vi.fn()
+    vi.stubGlobal('window', {
+      requestIdleCallback,
+      cancelIdleCallback,
+    })
+
+    const cancel = scheduleIdleTask(callback)
+    cancel()
+    queuedCallback?.()
+
+    expect(cancelIdleCallback).toHaveBeenCalledWith(1)
+    expect(callback).not.toHaveBeenCalled()
+  })
+
+  it('does not run a timeout fallback delivered after cancellation', () => {
+    let queuedCallback: (() => void) | undefined
+    const callback = vi.fn()
+    const setTimeout = vi.fn((next: () => void) => {
+      queuedCallback = next
+      return 2
+    })
+    const clearTimeout = vi.fn()
+    vi.stubGlobal('window', { setTimeout, clearTimeout })
+
+    const cancel = scheduleIdleTask(callback)
+    cancel()
+    queuedCallback?.()
+
+    expect(clearTimeout).toHaveBeenCalledWith(2)
+    expect(callback).not.toHaveBeenCalled()
+  })
+
   it('waits for generation retry delays and rejects on abort', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('window', {
@@ -131,6 +264,56 @@ describe('UI runtime helpers', () => {
     const abortedRetry = waitForGenerationRetry(abortController.signal, 25)
     abortController.abort()
     await expect(abortedRetry).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('still rejects a retry when timeout cleanup throws during abort', async () => {
+    let retryCallback: (() => void) | undefined
+    vi.stubGlobal('window', {
+      setTimeout: vi.fn((callback: () => void) => {
+        retryCallback = callback
+        return 1
+      }),
+      clearTimeout: vi.fn(() => {
+        throw new Error('embedded timer teardown failed')
+      }),
+    })
+
+    const controller = new AbortController()
+    const retry = waitForGenerationRetry(controller.signal, 25)
+    let rejection: unknown
+    let settled = false
+    void retry.catch((error: unknown) => {
+      settled = true
+      rejection = error
+    })
+
+    controller.abort()
+    await Promise.resolve()
+
+    expect(settled).toBe(true)
+    expect(rejection).toMatchObject({ name: 'AbortError' })
+    retryCallback?.()
+  })
+
+  it('does not register an abort listener after a synchronous timer callback', async () => {
+    const addEventListener = vi.fn()
+    const removeEventListener = vi.fn()
+    const signal = {
+      aborted: false,
+      addEventListener,
+      removeEventListener,
+    } as unknown as AbortSignal
+    vi.stubGlobal('window', {
+      setTimeout: vi.fn((callback: () => void) => {
+        callback()
+        return 2
+      }),
+      clearTimeout: vi.fn(),
+    })
+
+    await expect(waitForGenerationRetry(signal, 25)).resolves.toBeUndefined()
+    expect(addEventListener).not.toHaveBeenCalled()
+    expect(removeEventListener).toHaveBeenCalledOnce()
   })
 
   it('posts Windows WebView sync status payloads when the bridge exists', () => {

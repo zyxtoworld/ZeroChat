@@ -2,12 +2,16 @@ import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { stopChildProcessTree } from './browser-runtime-cleanup.mjs'
 import { withReleaseReportLock } from './release-report-lock.mjs'
 import {
   isStrictReleaseBlocked,
   isStrictReleasePass,
 } from './release-blocker-state.mjs'
 import { sanitizedDiagnosticEnv } from './release-diagnostics-env.mjs'
+import {
+  strictReleasePreflightPhaseTimeoutMs,
+} from './verify-release-preflight-policy.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const node = process.execPath
@@ -33,6 +37,9 @@ const validationArgs = [
 const releaseBlockerValidationArgs = [
   'scripts/release-blocker-report.mjs',
   '--check',
+]
+const releaseBlockerRefreshArgs = [
+  'scripts/release-blocker-report.mjs',
 ]
 
 function displayCommand(args) {
@@ -73,15 +80,23 @@ function compactOutput(output) {
   ].join('\n')
 }
 
-function runNode(args) {
+export function runNode(
+  args,
+  {
+    timeoutMs,
+    spawnImpl = spawn,
+    stopProcessTreeImpl = stopChildProcessTree,
+  } = {},
+) {
   return new Promise((resolveProcess, rejectProcess) => {
-    const child = spawn(node, args, {
+    const child = spawnImpl(node, args, {
       cwd: root,
       env: {
         ...sanitizedDiagnosticEnv(process.env),
         ZEROCHAT_SKIP_VERIFY_RELEASE_CHECKPOINT: '1',
         ZEROCHAT_SKIP_STRICT_RELEASE_PREFLIGHT_REFRESH: '1',
       },
+      detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     })
@@ -96,14 +111,81 @@ function runNode(args) {
     child.stderr.on('data', (chunk) => {
       stderr += chunk
     })
-    child.on('error', rejectProcess)
+    let settled = false
+    let timedOut = false
+    let timeoutHandle
+    const clearTimeoutHandle = () => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle)
+        timeoutHandle = undefined
+      }
+    }
+    const settle = (callback) => {
+      if (settled) {
+        return false
+      }
+
+      settled = true
+      clearTimeoutHandle()
+      callback()
+      return true
+    }
+    const timeoutChild = async () => {
+      if (settled) {
+        return
+      }
+
+      timedOut = true
+      let cleanupError = null
+      try {
+        const cleanupResult = await stopProcessTreeImpl(child, undefined, {
+          processGroupLeader: process.platform !== 'win32',
+        })
+        if (cleanupResult?.childQuiesced === false) {
+          cleanupError = new Error('Child process tree cleanup was not confirmed.')
+        }
+      } catch (error) {
+        cleanupError = error
+      }
+
+      settle(() => {
+        const error = new Error(
+          `${displayCommand(args)} timed out after ${timeoutMs} ms${
+            cleanupError ? '; child process tree cleanup failed' : ''
+          }`,
+          cleanupError ? { cause: cleanupError } : undefined,
+        )
+        error.childQuiesced = cleanupError ? false : true
+        rejectProcess(error)
+      })
+    }
+
+    if (Number.isInteger(timeoutMs) && timeoutMs > 0) {
+      timeoutHandle = setTimeout(() => {
+        void timeoutChild()
+      }, timeoutMs)
+    }
+
+    child.on('error', (error) => {
+      if (timedOut) {
+        return
+      }
+
+      settle(() => rejectProcess(error))
+    })
     child.on('close', (code, signal) => {
-      resolveProcess({
-        code,
-        signal,
-        stdout,
-        stderr,
-        combinedOutput: `${stdout}\n${stderr}`,
+      if (timedOut) {
+        return
+      }
+
+      settle(() => {
+        resolveProcess({
+          code,
+          signal,
+          stdout,
+          stderr,
+          combinedOutput: `${stdout}\n${stderr}`,
+        })
       })
     })
   })
@@ -143,7 +225,9 @@ async function main() {
   console.log(
     `Refreshing sanitized diagnostic source reports: ${displayCommand(sourceReportRefreshArgs)}`,
   )
-  const sourceReportRefreshResult = await runNode(sourceReportRefreshArgs)
+  const sourceReportRefreshResult = await runNode(sourceReportRefreshArgs, {
+    timeoutMs: strictReleasePreflightPhaseTimeoutMs('sourceReports'),
+  })
   if (sourceReportRefreshResult.code !== 0) {
     throw new Error(
       [
@@ -156,7 +240,9 @@ async function main() {
 
   console.log(`Running strict release preflight diagnostic: ${displayCommand(strictGateArgs)}`)
 
-  const strictResult = await runNode(strictGateArgs)
+  const strictResult = await runNode(strictGateArgs, {
+    timeoutMs: strictReleasePreflightPhaseTimeoutMs('strictGate'),
+  })
 
   const strictPreflightPassed = strictResult.code === 0
   if (!strictPreflightPassed && !strictResult.combinedOutput.includes(strictBlockerHeading)) {
@@ -171,7 +257,9 @@ async function main() {
   }
 
   console.log(`Validating strict release preflight report: ${displayCommand(validationArgs)}`)
-  const validationResult = await runNode(validationArgs)
+  const validationResult = await runNode(validationArgs, {
+    timeoutMs: strictReleasePreflightPhaseTimeoutMs('reportValidation'),
+  })
   if (validationResult.code !== 0) {
     throw new Error(
       [
@@ -205,8 +293,24 @@ async function main() {
     throw new Error(`${reportPath} must remain diagnostic-only releaseEvidence=false.`)
   }
 
+  console.log(`Refreshing release blocker summary: ${displayCommand(releaseBlockerRefreshArgs)}`)
+  const releaseBlockerRefreshResult = await runNode(releaseBlockerRefreshArgs, {
+    timeoutMs: strictReleasePreflightPhaseTimeoutMs('blockerRefresh'),
+  })
+  if (releaseBlockerRefreshResult.code !== 0) {
+    throw new Error(
+      [
+        'The strict release preflight report validated, but the release blocker summary could not be refreshed.',
+        'Captured output:',
+        compactOutput(releaseBlockerRefreshResult.combinedOutput),
+      ].join('\n'),
+    )
+  }
+
   console.log(`Validating refreshed release blocker summary: ${displayCommand(releaseBlockerValidationArgs)}`)
-  const releaseBlockerValidationResult = await runNode(releaseBlockerValidationArgs)
+  const releaseBlockerValidationResult = await runNode(releaseBlockerValidationArgs, {
+    timeoutMs: strictReleasePreflightPhaseTimeoutMs('blockerValidation'),
+  })
   if (releaseBlockerValidationResult.code !== 0) {
     throw new Error(
       [
@@ -220,9 +324,11 @@ async function main() {
   summarizeReport(report)
 }
 
-try {
-  await withReleaseReportLock('strict-release-preflight-report', main)
-} catch (error) {
-  console.error(`\n${error instanceof Error ? error.message : String(error)}`)
-  process.exitCode = 1
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    await withReleaseReportLock('strict-release-preflight-report', main)
+  } catch (error) {
+    console.error(`\n${error instanceof Error ? error.message : String(error)}`)
+    process.exitCode = 1
+  }
 }

@@ -2,6 +2,7 @@ import { rt } from '../i18n'
 import type { GeneratedImage } from './providerResponses'
 import {
   assertProviderResponseOk,
+  cancelUnreadProviderResponse,
   isAbortError,
   providerTimeoutError,
   readProviderResponseBytes,
@@ -85,9 +86,10 @@ export async function materializeGeneratedImage(
   }
 
   const timeoutSignal = providerTimeoutSignal(signal, timeoutMs)
+  let response: Response | undefined
 
   try {
-    const response = await fetch(url, {
+    response = await fetch(url, {
       cache: 'no-store',
       credentials: 'omit',
       method: 'GET',
@@ -136,6 +138,7 @@ export async function materializeGeneratedImage(
 
     throw generatedImageDownloadError()
   } finally {
+    cancelUnreadProviderResponse(response)
     timeoutSignal.dispose()
   }
 }

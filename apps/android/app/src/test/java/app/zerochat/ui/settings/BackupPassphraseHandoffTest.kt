@@ -1,6 +1,8 @@
 package app.zerochat.ui.settings
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class BackupPassphraseHandoffTest {
@@ -18,12 +20,14 @@ class BackupPassphraseHandoffTest {
     }
 
     @Test
-    fun aNewLaunchReplacesTheAbandonedPassphrase() {
+    fun aSecondLaunchDoesNotReplaceTheActivePassphrase() {
         val handoff = BackupPassphraseHandoff()
 
-        handoff.stageExport("old-secret")
-        handoff.stageExport("new-secret")
+        assertTrue(handoff.stageExport("old-secret"))
+        assertFalse(handoff.stageExport("new-secret"))
 
+        assertEquals("old-secret", handoff.consumeExport())
+        assertTrue(handoff.stageExport("new-secret"))
         assertEquals("new-secret", handoff.consumeExport())
     }
 }

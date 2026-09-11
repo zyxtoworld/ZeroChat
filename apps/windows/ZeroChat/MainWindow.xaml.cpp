@@ -10,6 +10,7 @@
 #include <optional>
 #include <shellapi.h>
 #include <string>
+#include <utility>
 #include <vector>
 #include <windows.h>
 #include <microsoft.ui.xaml.window.h>
@@ -38,6 +39,26 @@ namespace winrt::ZeroChat::implementation
         constexpr wchar_t WebView2RepairUri[] = L"https://developer.microsoft.com/microsoft-edge/webview2/";
         constexpr wchar_t TrustedWebHost[] = L"appassets.zerochat.local";
         constexpr wchar_t TrustedWebOriginPrefix[] = L"https://appassets.zerochat.local/";
+
+        template <typename Callback, typename FailureCallback>
+        void InvokeWebViewCallbackSafely(Callback&& callback, FailureCallback&& onFailure) noexcept
+        {
+            try
+            {
+                std::forward<Callback>(callback)();
+            }
+            catch (...)
+            {
+                try
+                {
+                    std::forward<FailureCallback>(onFailure)();
+                }
+                catch (...)
+                {
+                }
+            }
+        }
+
         bool StartsWith(std::wstring const& value, std::wstring_view prefix)
         {
             return value.rfind(prefix, 0) == 0;
@@ -327,7 +348,13 @@ namespace winrt::ZeroChat::implementation
             return WindowsStartupRoute::Chat;
         }
 
-        winrt::fire_and_forget ConfigureWindowsJumpListAsync()
+        winrt::fire_and_forget ConfigureWindowsJumpListAsync(
+            hstring quickAskTitle,
+            hstring quickAskDescription,
+            hstring searchChatsTitle,
+            hstring searchChatsDescription,
+            hstring settingsTitle,
+            hstring settingsDescription)
         {
             using namespace winrt::Windows::Foundation;
             using namespace winrt::Windows::UI::StartScreen;
@@ -347,9 +374,9 @@ namespace winrt::ZeroChat::implementation
                     items.Append(item);
                 };
 
-                addItem(L"--quick-ask", L"Quick Ask", L"Open a fresh ZeroChat composer.");
-                addItem(L"--search-chats", L"Search Chats", L"Focus conversation search.");
-                addItem(L"--settings", L"Settings", L"Open ZeroChat settings.");
+                addItem(L"--quick-ask", quickAskTitle, quickAskDescription);
+                addItem(L"--search-chats", searchChatsTitle, searchChatsDescription);
+                addItem(L"--settings", settingsTitle, settingsDescription);
 
                 co_await jumpList.SaveAsync();
             }
@@ -367,6 +394,7 @@ namespace winrt::ZeroChat::implementation
 
     MainWindow::MainWindow(hstring const& startupArguments)
     {
+        m_locale = ResolveLocale(L"system");
         m_startupRoute = StartupRouteFromArguments(startupArguments);
         InitializeComponent();
     }
@@ -455,137 +483,165 @@ namespace winrt::ZeroChat::implementation
             webView.CoreWebView2Initialized(
                 [indexPath, webRoot, weakThis, webViewSession, activeTrustedNavigationId](WebView2 const& sender, CoreWebView2InitializedEventArgs const& args)
                 {
-                    auto window = weakThis.get();
-                    if (!window || !window->IsCurrentWebViewSession(webViewSession))
+                    InvokeWebViewCallbackSafely([&]()
                     {
-                        return;
-                    }
+                        auto window = weakThis.get();
+                        if (!window || !window->IsCurrentWebViewSession(webViewSession))
+                        {
+                            return;
+                        }
 
-                    const auto initializationException = args.Exception();
-                    if (FAILED(initializationException))
-                    {
-                        window->ShowWebViewInitializationFallback(initializationException);
-                        return;
-                    }
+                        const auto initializationException = args.Exception();
+                        if (FAILED(initializationException))
+                        {
+                            window->ShowWebViewInitializationFallback(initializationException);
+                            return;
+                        }
 
-                    auto coreWebView = sender.CoreWebView2();
-                    if (!coreWebView)
-                    {
-                        window->ShowWebViewInitializationFallback(E_FAIL);
-                        return;
-                    }
+                        auto coreWebView = sender.CoreWebView2();
+                        if (!coreWebView)
+                        {
+                            window->ShowWebViewInitializationFallback(E_FAIL);
+                            return;
+                        }
 
-                    try
-                    {
+                        try
+                        {
 #if defined(NDEBUG)
-                        auto settings = coreWebView.Settings();
-                        settings.AreDevToolsEnabled(false);
-                        settings.AreDefaultContextMenusEnabled(false);
+                            auto settings = coreWebView.Settings();
+                            settings.AreDevToolsEnabled(false);
+                            settings.AreDefaultContextMenusEnabled(false);
 #endif
-                        coreWebView.NewWindowRequested(
-                            [weakThis, webViewSession](auto const&,
-                                winrt::Microsoft::Web::WebView2::Core::CoreWebView2NewWindowRequestedEventArgs const& args)
-                            {
-                                args.Handled(true);
-                                auto currentWindow = weakThis.get();
-                                if (!currentWindow || !currentWindow->IsCurrentWebViewSession(webViewSession))
+                            coreWebView.NewWindowRequested(
+                                [weakThis, webViewSession](auto const&,
+                                    winrt::Microsoft::Web::WebView2::Core::CoreWebView2NewWindowRequestedEventArgs const& args)
                                 {
-                                    return;
-                                }
-                                TryOpenAllowedExternalUri(args.Uri());
-                            });
-                        coreWebView.WebMessageReceived(
-                            [weakThis, webViewSession](
-                                auto const&,
-                                winrt::Microsoft::Web::WebView2::Core::CoreWebView2WebMessageReceivedEventArgs const& args)
-                            {
-                                if (auto currentWindow = weakThis.get();
-                                    currentWindow &&
-                                    currentWindow->IsCurrentWebViewSession(webViewSession) &&
-                                    IsTrustedWebUri(args.Source()))
-                                {
-                                    currentWindow->HandleWebMessage(
-                                        args.WebMessageAsJson(),
-                                        webViewSession);
-                                }
-                            });
-                        coreWebView.NavigationCompleted(
-                            [weakThis, webViewSession, activeTrustedNavigationId](auto const&,
-                                winrt::Microsoft::Web::WebView2::Core::CoreWebView2NavigationCompletedEventArgs const& args)
-                            {
-                                auto currentWindow = weakThis.get();
-                                if (!currentWindow || !currentWindow->IsCurrentWebViewSession(webViewSession))
-                                {
-                                    return;
-                                }
-
-                                if (!activeTrustedNavigationId->has_value() ||
-                                    activeTrustedNavigationId->value() != args.NavigationId())
-                                {
-                                    return;
-                                }
-                                activeTrustedNavigationId->reset();
-
-                                if (!args.IsSuccess())
-                                {
-                                    const auto webErrorStatus = args.WebErrorStatus();
-                                    currentWindow->ShowWebViewNavigationFallback(webErrorStatus);
-                                    return;
-                                }
-
-                                currentWindow->ApplyWindowsStartupRoute();
-                            });
-
-                        if (std::filesystem::exists(indexPath))
-                        {
-                            coreWebView.NavigationStarting(
-                                [weakThis, webViewSession, activeTrustedNavigationId](auto const&,
-                                    winrt::Microsoft::Web::WebView2::Core::CoreWebView2NavigationStartingEventArgs const& args)
-                                {
-                                    auto currentWindow = weakThis.get();
-                                    if (!currentWindow || !currentWindow->IsCurrentWebViewSession(webViewSession))
+                                    InvokeWebViewCallbackSafely([&]()
                                     {
-                                        args.Cancel(true);
-                                        return;
-                                    }
-
-                                    if (IsTrustedWebUri(args.Uri()))
+                                        args.Handled(true);
+                                        auto currentWindow = weakThis.get();
+                                        if (!currentWindow || !currentWindow->IsCurrentWebViewSession(webViewSession))
+                                        {
+                                            return;
+                                        }
+                                        TryOpenAllowedExternalUri(args.Uri());
+                                    }, [&]()
                                     {
-                                        *activeTrustedNavigationId = args.NavigationId();
-                                        return;
-                                    }
-
-                                    args.Cancel(true);
-                                    TryOpenAllowedExternalUri(args.Uri());
+                                        args.Handled(true);
+                                    });
                                 });
-                            coreWebView.SetVirtualHostNameToFolderMapping(
-                                TrustedWebHost,
-                                hstring{ webRoot.wstring() },
-                                winrt::Microsoft::Web::WebView2::Core::CoreWebView2HostResourceAccessKind::Deny);
+                            coreWebView.WebMessageReceived(
+                                [weakThis, webViewSession](
+                                    auto const&,
+                                    winrt::Microsoft::Web::WebView2::Core::CoreWebView2WebMessageReceivedEventArgs const& args)
+                                {
+                                    InvokeWebViewCallbackSafely([&]()
+                                    {
+                                        if (auto currentWindow = weakThis.get();
+                                            currentWindow &&
+                                            currentWindow->IsCurrentWebViewSession(webViewSession) &&
+                                            IsTrustedWebUri(args.Source()))
+                                        {
+                                            currentWindow->HandleWebMessage(
+                                                args.WebMessageAsJson(),
+                                                webViewSession);
+                                        }
+                                    }, []() {});
+                                });
+                            coreWebView.NavigationCompleted(
+                                [weakThis, webViewSession, activeTrustedNavigationId](auto const&,
+                                    winrt::Microsoft::Web::WebView2::Core::CoreWebView2NavigationCompletedEventArgs const& args)
+                                {
+                                    InvokeWebViewCallbackSafely([&]()
+                                    {
+                                        auto currentWindow = weakThis.get();
+                                        if (!currentWindow || !currentWindow->IsCurrentWebViewSession(webViewSession))
+                                        {
+                                            return;
+                                        }
 
-                            std::wstring source = L"https://appassets.zerochat.local/index.html";
-                            source += std::wstring{ window->WindowsStartupRouteHash() };
-                            sender.Source(winrt::Windows::Foundation::Uri{ hstring{ source } });
+                                        if (!activeTrustedNavigationId->has_value() ||
+                                            activeTrustedNavigationId->value() != args.NavigationId())
+                                        {
+                                            return;
+                                        }
+                                        activeTrustedNavigationId->reset();
+
+                                        if (!args.IsSuccess())
+                                        {
+                                            const auto webErrorStatus = args.WebErrorStatus();
+                                            currentWindow->ShowWebViewNavigationFallback(webErrorStatus);
+                                            return;
+                                        }
+
+                                        currentWindow->ApplyWindowsStartupRoute();
+                                    }, []() {});
+                                });
+
+                            if (std::filesystem::exists(indexPath))
+                            {
+                                coreWebView.NavigationStarting(
+                                    [weakThis, webViewSession, activeTrustedNavigationId](auto const&,
+                                        winrt::Microsoft::Web::WebView2::Core::CoreWebView2NavigationStartingEventArgs const& args)
+                                    {
+                                        InvokeWebViewCallbackSafely([&]()
+                                        {
+                                            auto currentWindow = weakThis.get();
+                                            if (!currentWindow || !currentWindow->IsCurrentWebViewSession(webViewSession))
+                                            {
+                                                args.Cancel(true);
+                                                return;
+                                            }
+
+                                            if (IsTrustedWebUri(args.Uri()))
+                                            {
+                                                *activeTrustedNavigationId = args.NavigationId();
+                                                return;
+                                            }
+
+                                            args.Cancel(true);
+                                            TryOpenAllowedExternalUri(args.Uri());
+                                        }, [&]()
+                                        {
+                                            args.Cancel(true);
+                                        });
+                                    });
+                                coreWebView.SetVirtualHostNameToFolderMapping(
+                                    TrustedWebHost,
+                                    hstring{ webRoot.wstring() },
+                                    winrt::Microsoft::Web::WebView2::Core::CoreWebView2HostResourceAccessKind::Deny);
+
+                                std::wstring source = L"https://appassets.zerochat.local/index.html";
+                                source += std::wstring{ window->WindowsStartupRouteHash() };
+                                sender.Source(winrt::Windows::Foundation::Uri{ hstring{ source } });
+                            }
+                            else
+                            {
+                                sender.NavigateToString(MissingWebBuildHtml());
+                            }
                         }
-                        else
+                        catch (winrt::hresult_error const& error)
                         {
-                            sender.NavigateToString(MissingWebBuildHtml());
+                            if (window->IsCurrentWebViewSession(webViewSession))
+                            {
+                                window->ShowWebViewInitializationFallback(error.code());
+                            }
                         }
-                    }
-                    catch (winrt::hresult_error const& error)
+                        catch (...)
+                        {
+                            if (window->IsCurrentWebViewSession(webViewSession))
+                            {
+                                window->ShowWebViewInitializationFallback(winrt::to_hresult());
+                            }
+                        }
+                    }, [&]()
                     {
-                        if (window->IsCurrentWebViewSession(webViewSession))
+                        if (auto currentWindow = weakThis.get();
+                            currentWindow && currentWindow->IsCurrentWebViewSession(webViewSession))
                         {
-                            window->ShowWebViewInitializationFallback(error.code());
+                            currentWindow->ShowWebViewInitializationFallback(winrt::to_hresult());
                         }
-                    }
-                    catch (...)
-                    {
-                        if (window->IsCurrentWebViewSession(webViewSession))
-                        {
-                            window->ShowWebViewInitializationFallback(winrt::to_hresult());
-                        }
-                    }
+                    });
                 });
 
             Content(webShell);
@@ -650,7 +706,7 @@ namespace winrt::ZeroChat::implementation
         if (offerRuntimeRepair)
         {
             Button repairButton;
-            repairButton.Content(box_value(L"Repair WebView2"));
+            repairButton.Content(box_value(Text(L"button.repairWebView")));
             repairButton.Click([](auto const&, auto const&)
             {
                 TryOpenAllowedExternalUri(WebView2RepairUri);
@@ -688,7 +744,13 @@ namespace winrt::ZeroChat::implementation
 
     void MainWindow::ConfigureWindowsJumpList()
     {
-        ConfigureWindowsJumpListAsync();
+        ConfigureWindowsJumpListAsync(
+            Text(L"shortcut.quickAsk"),
+            Text(L"shortcut.quickAskDescription"),
+            Text(L"shortcut.searchChats"),
+            Text(L"shortcut.searchChatsDescription"),
+            Text(L"title.settings"),
+            Text(L"shortcut.settingsDescription"));
     }
 
     hstring MainWindow::WindowsStartupRouteHash() const

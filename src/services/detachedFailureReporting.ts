@@ -1,4 +1,4 @@
-import type { NoticeTarget } from '../components/Notice'
+import type { NoticeTarget } from './noticeTypes'
 import type { NoticeTone } from './uiRuntime'
 
 export type DetachedNoticeWriter = (

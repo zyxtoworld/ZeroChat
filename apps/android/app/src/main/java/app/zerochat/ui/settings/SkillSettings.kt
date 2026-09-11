@@ -12,15 +12,17 @@ import app.zerochat.data.AppSnapshot
 import app.zerochat.data.SkillSettings
 import app.zerochat.data.UserSkill
 import app.zerochat.ui.NativeI18n
+import app.zerochat.ui.chat.GenerationTaskOwner
 
 @Composable
-fun SkillsSettings(
+internal fun SkillsSettings(
     snapshot: AppSnapshot,
     onSnapshotChange: (AppSnapshot) -> Unit,
     onSnapshotReduce: ((AppSnapshot) -> AppSnapshot) -> Unit,
     onNotice: (String, SettingsNoticeKind) -> Unit,
     i18n: NativeI18n,
     onRequestScrollTop: () -> Unit,
+    generationTasks: GenerationTaskOwner,
 ) {
     var skillName by remember { mutableStateOf("") }
     var skillContent by remember { mutableStateOf("") }
@@ -32,6 +34,7 @@ fun SkillsSettings(
         },
         onNotice = onNotice,
         i18n = i18n,
+        generationTasks = generationTasks,
     )
 
     fun updateSettings(settings: SkillSettings) {

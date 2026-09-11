@@ -132,7 +132,7 @@ export default {
     }
 
     if (url.pathname !== '/snapshot') {
-      return new Response('Not found', { status: 404, headers: corsHeaders })
+      return serveStaticAsset(request, env, corsHeaders)
     }
 
     if (!hasValidBearerAccessKey(request, env)) {
@@ -630,6 +630,18 @@ async function withCors(response, corsHeaders) {
   })
 }
 
+async function serveStaticAsset(request, env, corsHeaders) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return new Response('Not found', { status: 404, headers: corsHeaders })
+  }
+
+  if (typeof env?.ASSETS?.fetch !== 'function') {
+    return new Response('Not found', { status: 404, headers: corsHeaders })
+  }
+
+  return env.ASSETS.fetch(request)
+}
+
 async function putSnapshot(request, env, corsHeaders) {
   if (contentLength(request) > MAX_SNAPSHOT_BYTES) {
     return new Response('Snapshot too large', {
@@ -1079,9 +1091,9 @@ async function proxyAiRequest(request, env, corsHeaders) {
   let body
 
   if (request.method === 'POST') {
-    body = await request.arrayBuffer()
+    body = await readRequestBodyWithinLimit(request, maxProxyBytes)
 
-    if (body.byteLength > maxProxyBytes) {
+    if (body === null) {
       return new Response('Request too large', {
         status: 413,
         headers: corsHeaders,
@@ -1096,6 +1108,7 @@ async function proxyAiRequest(request, env, corsHeaders) {
       headers,
       body,
       redirect: 'manual',
+      signal: request.signal,
     })
   } catch {
     return new Response('Upstream request failed', {
@@ -1489,6 +1502,9 @@ function isDisallowedUpstreamHost(hostname) {
 async function resolveCorsContext(request, env) {
   const rawOrigin = request.headers.get('origin')
   const origin = safeBrowserOrigin(rawOrigin)
+  const sameOriginAllowed = Boolean(
+    origin && origin === new URL(request.url).origin,
+  )
   const explicitOrigins = safeOriginList(env.ALLOWED_ORIGINS)
   const autoEnabled = autoAllowedOriginsEnabled(env, explicitOrigins)
   const learnedOrigins = autoEnabled ? await readAutoAllowedOrigins(env) : []
@@ -1509,7 +1525,11 @@ async function resolveCorsContext(request, env) {
       learnedOrigins.length < maxAutoAllowedOrigins(env),
   )
   const allowed = Boolean(
-    !rawOrigin || explicitAllowed || learnedAllowed || wildcardAllowed,
+    !rawOrigin ||
+      sameOriginAllowed ||
+      explicitAllowed ||
+      learnedAllowed ||
+      wildcardAllowed,
   )
 
   return {
@@ -1725,6 +1745,48 @@ function contentLength(request) {
   const value = Number(request.headers.get('content-length') || 0)
 
   return Number.isFinite(value) && value > 0 ? value : 0
+}
+
+async function readRequestBodyWithinLimit(request, maxBytes) {
+  if (!request.body) {
+    return new ArrayBuffer(0)
+  }
+
+  const reader = request.body.getReader()
+  const chunks = []
+  let totalBytes = 0
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+
+      if (done) {
+        break
+      }
+
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value)
+      totalBytes += chunk.byteLength
+
+      if (totalBytes > maxBytes) {
+        void reader.cancel().catch(() => undefined)
+        return null
+      }
+
+      chunks.push(chunk)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+
+  const body = new Uint8Array(totalBytes)
+  let offset = 0
+
+  for (const chunk of chunks) {
+    body.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+
+  return body.buffer
 }
 
 function splitList(value) {

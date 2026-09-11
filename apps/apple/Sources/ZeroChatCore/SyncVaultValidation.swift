@@ -132,12 +132,32 @@ private func arrayObjects(
 private func isCanonicalAppSnapshot(_ data: AppSnapshot) -> Bool {
     data.version == 1
         && data.updatedAt >= 0
+        && hasUniqueSnapshotRecordIds(data)
         && data.providers.allSatisfy(isCanonicalProvider)
         && data.conversations.allSatisfy(isCanonicalConversation)
         && (data.skills ?? []).allSatisfy(isCanonicalSkill)
         && data.skillSettings.map(isCanonicalSkillSettings) == true
         && isCanonicalSyncConfig(data.sync)
         && isCanonicalPreferences(data.preferences)
+}
+
+func hasUniqueSnapshotRecordIds(_ data: AppSnapshot) -> Bool {
+    hasUniqueIds(data.providers)
+        && hasUniqueIds(data.conversations)
+        && data.conversations.allSatisfy { conversation in
+            hasUniqueIds(conversation.messages)
+                && conversation.messages.allSatisfy { message in
+                    hasUniqueIds(message.attachments ?? [])
+                }
+        }
+        && hasUniqueIds(data.skills ?? [])
+        && (data.skills ?? []).allSatisfy { skill in
+            hasUniqueIds(skill.chunks)
+        }
+}
+
+private func hasUniqueIds<Value: Identifiable>(_ values: [Value]) -> Bool where Value.ID: Hashable {
+    Set(values.map(\.id)).count == values.count
 }
 
 private func isCanonicalProvider(_ provider: ProviderConfig) -> Bool {

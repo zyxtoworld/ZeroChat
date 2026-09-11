@@ -1,5 +1,6 @@
 import { rt } from '../i18n'
 import { abortIndexedDbTransactionOrReject } from './indexedDbAbortFailure'
+import { openIndexedDb } from './indexedDbOpen'
 
 const LOCAL_CRYPTO_DB_NAME = 'zerochat-local-crypto'
 const LOCAL_CRYPTO_DB_VERSION = 1
@@ -53,20 +54,15 @@ function aadFor(namespace: string): Uint8Array {
 }
 
 function openLocalCryptoDatabase(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(LOCAL_CRYPTO_DB_NAME, LOCAL_CRYPTO_DB_VERSION)
-
-    request.onupgradeneeded = () => {
-      const db = request.result
-
-      if (!db.objectStoreNames.contains(LOCAL_CRYPTO_STORE)) {
-        db.createObjectStore(LOCAL_CRYPTO_STORE)
+  return openIndexedDb(
+    LOCAL_CRYPTO_DB_NAME,
+    LOCAL_CRYPTO_DB_VERSION,
+    (database) => {
+      if (!database.objectStoreNames.contains(LOCAL_CRYPTO_STORE)) {
+        database.createObjectStore(LOCAL_CRYPTO_STORE)
       }
-    }
-
-    request.onerror = () => reject(request.error)
-    request.onsuccess = () => resolve(request.result)
-  })
+    },
+  )
 }
 
 function keyTransaction<T>(
