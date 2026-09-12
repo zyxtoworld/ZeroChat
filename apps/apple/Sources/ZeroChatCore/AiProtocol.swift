@@ -854,17 +854,19 @@ func chatText(from data: Data) -> String? {
 
     if let choices = root["choices"] as? [[String: Any]],
        let first = choices.first {
-        if let message = first["message"] as? [String: Any],
-           let content = openAIContentText(message["content"])
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !content.isEmpty {
-            return content
+        if let message = first["message"] as? [String: Any] {
+            let content = openAIContentText(message["content"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !content.isEmpty {
+                return content
+            }
         }
-        if let delta = first["delta"] as? [String: Any],
-           let content = openAIContentText(delta["content"])
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !content.isEmpty {
-            return content
+        if let delta = first["delta"] as? [String: Any] {
+            let content = openAIContentText(delta["content"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !content.isEmpty {
+                return content
+            }
         }
     }
 

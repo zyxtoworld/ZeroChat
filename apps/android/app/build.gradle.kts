@@ -30,6 +30,8 @@ android {
             "AndroidGradlePluginVersion",
             "GradleDependency",
             "NewerVersionAvailable",
+            // API 36 is the selected target; hosted lint may lag the installed preview API.
+            "OldTargetApi",
         )
     }
 

@@ -354,7 +354,7 @@ impl LinuxAppState {
                         }
                     }
                 },
-                || Err(BACKGROUND_TASK_DISCONNECTED.to_owned()),
+                || Err(anyhow::anyhow!(BACKGROUND_TASK_DISCONNECTED)),
             );
         }
     }

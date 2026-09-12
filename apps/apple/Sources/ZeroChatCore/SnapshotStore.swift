@@ -120,7 +120,7 @@ public actor SnapshotStore {
 
     public func save(_ snapshot: AppSnapshot) throws {
         guard hasUniqueSnapshotRecordIds(snapshot) else {
-            throw CocoaError(.fileWriteInvalidFile)
+            throw CocoaError(.fileWriteUnknown)
         }
         let data = try encoder.encode(snapshot)
         try assertLocalFileByteCount(data.count, maxBytes: maxBytes)

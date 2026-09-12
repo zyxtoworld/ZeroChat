@@ -2,7 +2,6 @@
 // Mirrors src/app/app.css: accent color and bubble radii. libadwaita keeps
 // control of widgets; this sheet only re-skins accents and chat bubbles.
 // Light/dark variants are swapped at runtime from `apply_theme_mode`.
-use adw::prelude::*;
 use gtk::gdk::Display;
 
 const THEME_CSS_LIGHT: &str = r"
@@ -44,7 +43,7 @@ const THEME_CSS_DARK: &str = r"
 
 fn install_provider(css: &str) {
     let provider = gtk::CssProvider::new();
-    provider.load_from_string(css);
+    provider.load_from_data(css);
     if let Some(display) = Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,

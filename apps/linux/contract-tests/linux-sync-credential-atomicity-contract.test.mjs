@@ -222,7 +222,7 @@ test('Linux Gist completion keeps its cursor revision and reloads the durable co
   )
   assert.match(
     enqueue,
-    /poll_background_result\(\s*receiver,[\s\S]*?BACKGROUND_TASK_DISCONNECTED\.to_owned\(\)/,
+    /poll_background_result\(\s*receiver,[\s\S]*?BACKGROUND_TASK_DISCONNECTED(?:\.to_owned\(\)|\))/,
     'auto-sync result polling must terminalize a disconnected worker with a fixed failure',
   )
   assert.match(enqueue, /match classify_synced_snapshot_reload\(loaded\)/)
