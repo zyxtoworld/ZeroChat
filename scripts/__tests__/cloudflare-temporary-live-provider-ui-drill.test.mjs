@@ -24,6 +24,8 @@ import {
   runTemporaryWorkerDeploymentLifecycle,
 } from '../cloudflare-temporary-live-provider-ui-drill.mjs'
 
+const itWindowsOnly = process.platform === 'win32' ? it : it.skip
+
 const projectTempRoot = path.resolve('.local/codex/tmp')
 
 async function makeProjectTempDirectory(prefix) {
@@ -580,9 +582,7 @@ describe('Cloudflare temporary live-provider UI drill', () => {
     }
   })
 
-  it('withholds delete when the Windows job launcher cannot establish ownership', async () => {
-    if (process.platform !== 'win32') return
-
+  itWindowsOnly('withholds delete when the Windows job launcher cannot establish ownership', async () => {
     const runtimeDirectory = await makeProjectTempDirectory(
       'zerochat-temporary-worker-launcher-failure-',
     )

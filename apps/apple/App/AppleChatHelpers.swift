@@ -7,7 +7,7 @@ func providerDisplayName(_ provider: ProviderConfig, _ i18n: NativeI18n) -> Stri
     isDefaultCustomOpenAiRelay(provider) ? i18n.t("provider.preset.custom-openai-relay") : provider.name
 }
 
-func preferredColorScheme(for theme: String) -> ColorScheme? {
+func applePreferredColorScheme(for theme: String) -> ColorScheme? {
     switch theme {
     case "light":
         return .light

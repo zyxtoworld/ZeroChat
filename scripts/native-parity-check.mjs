@@ -531,7 +531,7 @@ const platforms = [
       'providerDisplayName',
       'defaultProviders(customOpenAiRelayName:',
       'normalizeOfficialProviderContracts',
-      'preferredColorScheme(preferredColorScheme(for: model.snapshot.preferences.theme))',
+      'preferredColorScheme(applePreferredColorScheme(for: model.snapshot.preferences.theme))',
       'NSWindow.allowsAutomaticWindowTabbing = true',
       'AppleCommandCenter',
       'struct WindowActivationReporter: NSViewRepresentable',

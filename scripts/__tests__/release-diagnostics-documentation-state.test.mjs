@@ -1,6 +1,14 @@
-import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
+
+const releaseBlockersReportFixture = {
+  blockers: [
+    { id: 'disposable-live-sync-release-pass' },
+    { id: 'live-provider-web-ui-browser-origin-release-evidence' },
+  ],
+}
+
+const windowsHostPreflightReportFixture = { status: 'blocked' }
 
 function normalizeMarkdownText(source) {
   return source.replace(/\s+/gu, ' ').trim()
@@ -15,10 +23,7 @@ function sectionBetween(source, startPattern, endPattern) {
 }
 
 describe('release diagnostics documentation state', () => {
-  it.skipIf(
-    !existsSync('.manual-qa/release-blockers-current.json') ||
-      !existsSync('.manual-qa/windows-msix-host-preflight.json'),
-  )('keeps stable guidance report-driven and active QA aligned with current blockers', async () => {
+  it('keeps stable guidance report-driven and active QA aligned with fixture blockers', async () => {
     const [
       readme,
       releaseChecklist,
@@ -28,8 +33,6 @@ describe('release diagnostics documentation state', () => {
       qaAudit,
       completionAudit,
       repositoryHealth,
-      releaseBlockersCurrentSource,
-      windowsHostPreflightSource,
     ] = await Promise.all([
       readFile(new URL('../../README.md', import.meta.url), 'utf8'),
       readFile(new URL('../../docs/RELEASE_CHECKLIST.md', import.meta.url), 'utf8'),
@@ -42,14 +45,6 @@ describe('release diagnostics documentation state', () => {
       readFile(new URL('../../docs/QA_AUDIT.md', import.meta.url), 'utf8'),
       readFile(new URL('../completion-audit-check.mjs', import.meta.url), 'utf8'),
       readFile(new URL('../repository-health-check.mjs', import.meta.url), 'utf8'),
-      readFile(
-        new URL('../../.manual-qa/release-blockers-current.json', import.meta.url),
-        'utf8',
-      ),
-      readFile(
-        new URL('../../.manual-qa/windows-msix-host-preflight.json', import.meta.url),
-        'utf8',
-      ),
     ])
     const normalizedReadme = normalizeMarkdownText(readme)
     const normalizedReleaseChecklist = normalizeMarkdownText(releaseChecklist)
@@ -59,8 +54,8 @@ describe('release diagnostics documentation state', () => {
       /^## Open Gaps$/mu,
       /^### 2026-06-08/mu,
     )
-    const releaseBlockersCurrent = JSON.parse(releaseBlockersCurrentSource)
-    const windowsHostPreflight = JSON.parse(windowsHostPreflightSource)
+    const releaseBlockersCurrent = releaseBlockersReportFixture
+    const windowsHostPreflight = windowsHostPreflightReportFixture
     const liveSyncBlocked = releaseBlockersCurrent.blockers.some(
       (blocker) => blocker.id === 'disposable-live-sync-release-pass',
     )

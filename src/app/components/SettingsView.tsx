@@ -127,11 +127,13 @@ const MAX_SYNC_FOCUS_ATTEMPTS = 4
 
 function syncActionFocusWasAbandoned(owner: SyncActionFocusOwner): boolean {
   const activeElement = document.activeElement
+  const fallback = owner.fallbackTarget?.()
   if (
     !activeElement ||
     activeElement === document.body ||
     activeElement === owner.focusOwner ||
-    activeElement === owner.target
+    activeElement === owner.target ||
+    activeElement === fallback
   ) {
     return false
   }

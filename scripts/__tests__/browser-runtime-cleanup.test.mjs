@@ -27,6 +27,8 @@ const {
   stopWindowsProcessesUsingProfile,
 } = await import('../browser-runtime-cleanup.mjs')
 
+const itWindowsOnly = process.platform === 'win32' ? it : it.skip
+
 describe('browser runtime cleanup', () => {
   it('does not recover from a Windows tree error without exit and profile proof', async () => {
     const events = []
@@ -139,9 +141,7 @@ describe('browser runtime cleanup', () => {
     expect(events).toEqual(['tree', 'profile', 'preview'])
   })
 
-  it('fails closed when exact-profile process cleanup cannot confirm quiescence', async () => {
-    if (process.platform !== 'win32') return
-
+  itWindowsOnly('fails closed when exact-profile process cleanup cannot confirm quiescence', async () => {
     const profile = await mkdtemp(path.join(tmpdir(), 'zerochat-cleanup-unconfirmed-'))
     spawnSync.mockReset()
     spawnSync.mockReturnValue({ error: undefined, status: 3, stderr: '', stdout: '' })
@@ -277,9 +277,7 @@ describe('browser runtime cleanup', () => {
     rmSync(profile, { recursive: true, force: true })
   })
 
-  it('derives a complete post-order tree from one full process snapshot', () => {
-    if (process.platform !== 'win32') return
-
+  itWindowsOnly('derives a complete post-order tree from one full process snapshot', () => {
     spawnSync.mockReset()
     spawnSync.mockReturnValue({ error: undefined, status: 0, stderr: '', stdout: '' })
 
@@ -297,11 +295,9 @@ describe('browser runtime cleanup', () => {
     expect(command).toContain('$targetRoots')
     expect(command).toContain('function Add-PostOrder')
     expect(command).not.toContain('CommandLine LIKE')
-})
+  })
 
-  it('stops only browser processes whose user-data-dir argument exactly owns the target profile', async () => {
-    if (process.platform !== 'win32') return
-
+  itWindowsOnly('stops only browser processes whose user-data-dir argument exactly owns the target profile', async () => {
     const targetProfile = 'C:\\Users\\ZYX\\AppData\\Local\\Temp\\zerochat-cleanup-test'
     const fakePowerShell = [
       'function global:Get-CimInstance {',
@@ -351,9 +347,7 @@ describe('browser runtime cleanup', () => {
     expect(result.stdout).not.toContain('STOPPED:107')
   }, 60_000)
 
-  it('stops the complete exact-profile descendant tree in post-order', async () => {
-    if (process.platform !== 'win32') return
-
+  itWindowsOnly('stops the complete exact-profile descendant tree in post-order', async () => {
     const targetProfile = 'C:\\Users\\ZYX\\AppData\\Local\\Temp\\zerochat-cleanup-test'
     const otherProfile = 'C:\\Users\\ZYX\\AppData\\Local\\Temp\\other-profile'
     const fakePowerShell = [
@@ -401,9 +395,7 @@ describe('browser runtime cleanup', () => {
     expect(result.stdout).not.toContain('STOPPED:501')
   }, 60_000)
 
-  it('re-enumerates and sweeps descendants again after a failed deletion', async () => {
-    if (process.platform !== 'win32') return
-
+  itWindowsOnly('re-enumerates and sweeps descendants again after a failed deletion', async () => {
     spawnSync.mockReset()
     rm.mockReset()
     const profile = await mkdtemp(path.join(tmpdir(), 'zerochat-cleanup-retry-'))
@@ -451,9 +443,7 @@ describe('browser runtime cleanup', () => {
     rmSync(profile, { recursive: true, force: true })
   }, 60_000)
 
-  it('accepts quoted and separated argv values when the target profile contains spaces', async () => {
-    if (process.platform !== 'win32') return
-
+  itWindowsOnly('accepts quoted and separated argv values when the target profile contains spaces', async () => {
     const targetProfile = 'C:\\Users\\ZYX\\AppData\\Local\\Temp\\zerochat cleanup test'
     const fakePowerShell = [
       'function global:Get-CimInstance {',
