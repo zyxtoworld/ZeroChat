@@ -315,8 +315,8 @@ expect(
 expect(
   has(mainWindow, 'The verified Windows surface is the shared Web/PWA in WebView2') &&
     has(mainWindow, 'bool MainWindow::TryInitializeWebViewShell()') &&
-    has(mainWindow, /Content\(webShell\);\s*webView\.EnsureCoreWebView2Async\(\);\s*return true;/) &&
-    has(mainWindow, /if \(TryInitializeWebViewShell\(\)\)\s*\{\s*return;\s*\}/) &&
+    has(mainWindow, /Content\(webShell\);[\s\S]*?webView\.EnsureCoreWebView2Async\(\);[\s\S]*?return true;/) &&
+    has(mainWindow, /if \(TryInitializeWebViewShell\(\)\)\s*\{[\s\S]*?return;\s*\}/) &&
     has(project, '<ClCompile Include="MainWindowFallback.cpp" />') &&
     has(project, '<ClCompile Include="MainWindowFallbackControls.cpp" />') &&
     has(projectFilters, '<ClCompile Include="MainWindowFallback.cpp">') &&

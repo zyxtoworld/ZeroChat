@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import { describe, expect, it } from 'vitest'
@@ -125,21 +125,23 @@ describe('native prerequisite CLI', () => {
   })
 
   it('rejects case-variant refresh report paths before either report can change', async () => {
-    const reportPath = '.manual-qa/native-prereq-current.json'
+    const reportPath = '.manual-qa/native-prereq-current-' + process.pid + '.json'
     const reportFile = path.resolve(reportPath)
-    const before = await readFile(reportFile)
+    await mkdir(path.dirname(reportFile), { recursive: true })
+    await writeFile(reportFile, 'fixture-report\\n', 'utf8')
     const result = spawnSync(
       process.execPath,
       [
         path.resolve('scripts/native-prereq-report-refresh.mjs'),
         `--report=${reportPath}`,
-        '--report=.MANUAL-QA/NATIVE-PREREQ-CURRENT.JSON',
+        '--report=' + reportPath.toUpperCase(),
       ],
       { cwd: path.resolve(), encoding: 'utf8' },
     )
 
     expect(result.status).toBe(1)
-    await expect(readFile(reportFile)).resolves.toEqual(before)
+    await expect(readFile(reportFile)).resolves.toEqual(Buffer.from('fixture-report\\n'))
+    await rm(reportFile, { force: true })
   })
 
   it('documents supported flags and the no-write help contract', () => {

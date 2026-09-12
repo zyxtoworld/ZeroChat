@@ -65,13 +65,14 @@ export function androidGradleExecutionPaths(
     )
   }
 
-  const linkRoot = path.join(hostRoot, 'ZeroChat', 'android-gradle-junctions')
+  const pathApi = platform === 'win32' ? path.win32 : path
+  const linkRoot = pathApi.join(hostRoot, 'ZeroChat', 'android-gradle-junctions')
   const linkName = createHash('sha256')
-    .update(path.resolve(path.join(repoRoot ?? process.cwd(), '.local', 'codex')))
+    .update(pathApi.resolve(pathApi.join(repoRoot ?? process.cwd(), '.local', 'codex')))
     .digest('hex')
     .slice(0, 16)
-  const linkPath = path.join(linkRoot, linkName)
-  const localRoot = path.dirname(localPaths.tempRoot)
+  const linkPath = pathApi.join(linkRoot, linkName)
+  const localRoot = pathApi.dirname(localPaths.tempRoot)
 
   fs.mkdir(linkRoot, { recursive: true })
   if (fs.exists(linkPath)) {
@@ -80,7 +81,7 @@ export function androidGradleExecutionPaths(
       throw new Error(`Android Gradle ASCII junction is not a junction: ${linkPath}`)
     }
     const target = fs.readlink(linkPath)
-    if (path.resolve(target).toLowerCase() !== path.resolve(localRoot).toLowerCase()) {
+    if (pathApi.resolve(target).toLowerCase() !== pathApi.resolve(localRoot).toLowerCase()) {
       throw new Error(`Android Gradle ASCII junction points to an unexpected target: ${linkPath}`)
     }
   } else {
@@ -88,8 +89,8 @@ export function androidGradleExecutionPaths(
   }
 
   return Object.freeze({
-    tempRoot: path.join(linkPath, 'tmp'),
-    gradleUserHome: path.join(linkPath, 'private', 'gradle-home'),
+    tempRoot: pathApi.join(linkPath, 'tmp'),
+    gradleUserHome: pathApi.join(linkPath, 'private', 'gradle-home'),
   })
 }
 

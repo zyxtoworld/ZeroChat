@@ -94,6 +94,8 @@ test('hosted Apple CI treats Swift compiler warnings as build failures', async (
 
   assert.match(job, /run: pnpm run build:apple:debug/)
   assert.match(macosBuild, /swift build -Xswiftc -warnings-as-errors/)
+  assert.match(macosBuild, /SWIFT_SUPPRESS_WARNINGS=NO/)
   assert.match(macosBuild, /SWIFT_TREAT_WARNINGS_AS_ERRORS=YES/)
+  assert.match(simulatorBuild, /SWIFT_SUPPRESS_WARNINGS=NO/)
   assert.match(simulatorBuild, /SWIFT_TREAT_WARNINGS_AS_ERRORS=YES/)
 })

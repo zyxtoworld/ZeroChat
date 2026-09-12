@@ -300,6 +300,8 @@ describe('browser runtime cleanup', () => {
 })
 
   it('stops only browser processes whose user-data-dir argument exactly owns the target profile', async () => {
+    if (process.platform !== 'win32') return
+
     const targetProfile = 'C:\\Users\\ZYX\\AppData\\Local\\Temp\\zerochat-cleanup-test'
     const fakePowerShell = [
       'function global:Get-CimInstance {',
@@ -350,6 +352,8 @@ describe('browser runtime cleanup', () => {
   }, 60_000)
 
   it('stops the complete exact-profile descendant tree in post-order', async () => {
+    if (process.platform !== 'win32') return
+
     const targetProfile = 'C:\\Users\\ZYX\\AppData\\Local\\Temp\\zerochat-cleanup-test'
     const otherProfile = 'C:\\Users\\ZYX\\AppData\\Local\\Temp\\other-profile'
     const fakePowerShell = [
@@ -448,6 +452,8 @@ describe('browser runtime cleanup', () => {
   }, 60_000)
 
   it('accepts quoted and separated argv values when the target profile contains spaces', async () => {
+    if (process.platform !== 'win32') return
+
     const targetProfile = 'C:\\Users\\ZYX\\AppData\\Local\\Temp\\zerochat cleanup test'
     const fakePowerShell = [
       'function global:Get-CimInstance {',

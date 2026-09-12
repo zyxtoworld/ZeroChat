@@ -376,12 +376,13 @@ export function packageManagerCommand(
     requireDirectNodeEntry = false,
   } = {},
 ) {
+  const windowsPath = path.win32
   const packageManagerHint = `${npmExecPath} ${packageManagerUserAgent}`.toLowerCase()
 
   if (npmExecPath && packageManagerHint.includes('pnpm')) {
     if (platform === 'win32') {
-      const bundledCorepackPnpm = path.join(
-        path.dirname(execPath),
+      const bundledCorepackPnpm = windowsPath.join(
+        windowsPath.dirname(execPath),
         'node_modules',
         'corepack',
         'dist',
@@ -412,7 +413,7 @@ export function packageManagerCommand(
         )
       }
 
-      const bundledPnpmCommand = path.join(path.dirname(execPath), 'pnpm.cmd')
+      const bundledPnpmCommand = windowsPath.join(windowsPath.dirname(execPath), 'pnpm.cmd')
 
       return {
         command: fileExists(bundledPnpmCommand) ? bundledPnpmCommand : 'pnpm.cmd',
@@ -442,7 +443,7 @@ export function packageManagerCommand(
         )
       }
 
-      const bundledNpmCommand = path.join(path.dirname(execPath), 'npm.cmd')
+      const bundledNpmCommand = windowsPath.join(windowsPath.dirname(execPath), 'npm.cmd')
 
       return {
         command: fileExists(bundledNpmCommand) ? bundledNpmCommand : 'npm.cmd',
@@ -457,8 +458,8 @@ export function packageManagerCommand(
   }
 
   if (platform === 'win32') {
-    const bundledCorepackPnpm = path.join(
-      path.dirname(execPath),
+    const bundledCorepackPnpm = windowsPath.join(
+      windowsPath.dirname(execPath),
       'node_modules',
       'corepack',
       'dist',
@@ -478,7 +479,7 @@ export function packageManagerCommand(
       )
     }
 
-    const bundledPnpmCommand = path.join(path.dirname(execPath), 'pnpm.cmd')
+    const bundledPnpmCommand = windowsPath.join(windowsPath.dirname(execPath), 'pnpm.cmd')
 
     if (fileExists(bundledPnpmCommand)) {
       return {

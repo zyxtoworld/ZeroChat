@@ -491,6 +491,8 @@ namespace winrt::ZeroChat::implementation
                             return;
                         }
 
+                        window->ApplyWindowIcon();
+
                         const auto initializationException = args.Exception();
                         if (FAILED(initializationException))
                         {
@@ -524,6 +526,8 @@ namespace winrt::ZeroChat::implementation
                                         {
                                             return;
                                         }
+
+                                        currentWindow->ApplyWindowIcon();
                                         TryOpenAllowedExternalUri(args.Uri());
                                     }, [&]()
                                     {
@@ -742,6 +746,8 @@ namespace winrt::ZeroChat::implementation
         // native screen below is only a fallback and source-parity fixture.
         if (TryInitializeWebViewShell())
         {
+            ApplyWindowIcon();
+            DispatcherQueue().TryEnqueue([this]() { ApplyWindowIcon(); });
             return;
         }
 

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { rm, writeFile } from 'node:fs/promises'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -8,6 +8,8 @@ const checkerPath = path.resolve('scripts/windows-msix-host-preflight-check.mjs'
 const timestamp = '2026-01-01T00:00:00.000Z'
 const deletedTarget =
   'C:\\Program Files\\WindowsApps\\Deleted\\Fixture.Package_1.0.0.0_x64__fixture\\present.pri'
+
+await mkdir('.manual-qa', { recursive: true })
 
 function baseReport() {
   return {

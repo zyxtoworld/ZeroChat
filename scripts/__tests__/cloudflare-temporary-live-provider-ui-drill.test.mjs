@@ -531,7 +531,9 @@ describe('Cloudflare temporary live-provider UI drill', () => {
 
       await new Promise((resolve) => setTimeout(resolve, 700))
       expect(deploymentResult).toMatchObject({ code: 0 })
-      expect(deploymentResult.output).toContain('ZEROCHAT_WINDOWS_JOB_READY')
+      if (process.platform === 'win32') {
+        expect(deploymentResult.output).toContain('ZEROCHAT_WINDOWS_JOB_READY')
+      }
       expect(calls).toEqual(['deploy', 'delete'])
       await expect(readFile(eventLog, 'utf8')).resolves.toBe('late-complete\ndelete\n')
       await expect(readFile(lateMarker, 'utf8')).resolves.toBe('late-deployed')

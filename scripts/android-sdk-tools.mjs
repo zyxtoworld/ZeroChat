@@ -39,9 +39,10 @@ export function asciiSdkRoot(
     return null
   }
 
-  const linkRoot = path.join(tempDirectory, 'zerochat-android-sdk-junctions')
-  const linkName = createHash('sha256').update(path.resolve(sdk)).digest('hex').slice(0, 16)
-  const linkPath = path.join(linkRoot, linkName)
+  const pathApi = platform === 'win32' ? path.win32 : path
+  const linkRoot = pathApi.join(tempDirectory, 'zerochat-android-sdk-junctions')
+  const linkName = createHash('sha256').update(pathApi.resolve(sdk)).digest('hex').slice(0, 16)
+  const linkPath = pathApi.join(linkRoot, linkName)
 
   try {
     fs.mkdir(linkRoot, { recursive: true })
@@ -53,7 +54,7 @@ export function asciiSdkRoot(
       }
 
       const target = fs.readlink(linkPath)
-      return path.resolve(target).toLowerCase() === path.resolve(sdk).toLowerCase()
+      return pathApi.resolve(target).toLowerCase() === pathApi.resolve(sdk).toLowerCase()
         ? linkPath
         : null
     }

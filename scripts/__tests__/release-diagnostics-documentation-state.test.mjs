@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 
@@ -14,7 +15,10 @@ function sectionBetween(source, startPattern, endPattern) {
 }
 
 describe('release diagnostics documentation state', () => {
-  it('keeps stable guidance report-driven and active QA aligned with current blockers', async () => {
+  it.skipIf(
+    !existsSync('.manual-qa/release-blockers-current.json') ||
+      !existsSync('.manual-qa/windows-msix-host-preflight.json'),
+  )('keeps stable guidance report-driven and active QA aligned with current blockers', async () => {
     const [
       readme,
       releaseChecklist,

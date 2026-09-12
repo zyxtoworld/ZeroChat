@@ -57,7 +57,9 @@ it('binds Android Gradle child environment to the ASCII project-local junction',
     },
   })
 
-  expect(localPaths.gradleUserHome).toContain('E:\\项目\\ZeroChat')
+  expect(localPaths.gradleUserHome).toBe(
+    path.join(repoRoot, '.local', 'codex', 'private', 'gradle-home'),
+  )
   expect(childEnvironment.GRADLE_USER_HOME).not.toContain('E:\\项目')
   expect(childEnvironment.TEMP).not.toContain('E:\\项目')
   expect(childEnvironment.TMP).toBe(childEnvironment.TEMP)
