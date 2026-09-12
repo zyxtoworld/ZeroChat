@@ -10,7 +10,7 @@ import AppKit
 
 struct ChatView: View {
     @ObservedObject var model: ZeroChatViewModel
-    let openSettingsWindow: ((SettingsTab) -> Void)? = nil
+    let openSettingsWindow: ((SettingsTab) -> Void)?
     @Environment(\.scenePhase) private var scenePhase
 #if os(macOS)
     @ObservedObject var commandCenter: AppleCommandCenter
