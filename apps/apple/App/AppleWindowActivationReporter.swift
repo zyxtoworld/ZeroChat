@@ -43,10 +43,6 @@ struct WindowActivationReporter: NSViewRepresentable {
             self.commandCenter = commandCenter
         }
 
-        deinit {
-            removeObservers()
-        }
-
         func attach(to view: NSView) {
             attachmentGeneration &+= 1
             let generation = attachmentGeneration
