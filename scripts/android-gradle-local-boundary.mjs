@@ -22,13 +22,14 @@ function defaultFileSystem() {
   }
 }
 
-export function androidGradleLocalPaths(repoRoot) {
-  const normalizedRepoRoot = path.resolve(repoRoot)
-  const localRoot = path.join(normalizedRepoRoot, '.local', 'codex')
+export function androidGradleLocalPaths(repoRoot, { platform = process.platform } = {}) {
+  const pathApi = platform === 'win32' ? path.win32 : path
+  const normalizedRepoRoot = pathApi.resolve(repoRoot)
+  const localRoot = pathApi.join(normalizedRepoRoot, '.local', 'codex')
 
   return Object.freeze({
-    tempRoot: path.join(localRoot, 'tmp'),
-    gradleUserHome: path.join(localRoot, 'private', 'gradle-home'),
+    tempRoot: pathApi.join(localRoot, 'tmp'),
+    gradleUserHome: pathApi.join(localRoot, 'private', 'gradle-home'),
   })
 }
 
@@ -41,7 +42,7 @@ export function androidGradleExecutionPaths(
     fs = defaultFileSystem(),
   } = {},
 ) {
-  const localPaths = androidGradleLocalPaths(repoRoot ?? process.cwd())
+  const localPaths = androidGradleLocalPaths(repoRoot ?? process.cwd(), { platform })
 
   if (platform !== 'win32' || !hasNonAscii(localPaths.tempRoot)) {
     return localPaths

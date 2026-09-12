@@ -8,11 +8,11 @@ import AppKit
 
 // ZeroChat current design tokens (mirrors src/app/app.css).
 enum ZeroChatTheme {
-    static let accentLight = Color(hex: 0x0A7CFF)
+    static let accentLight = Color(hex: 0x0069E0)
     static let accentDark = Color(hex: 0x3B93FF)
     static let accent = Color.dynamic(light: accentLight, dark: accentDark)
 
-    static let accentHoverLight = Color(hex: 0x0069E0)
+    static let accentHoverLight = Color(hex: 0x005BBD)
     static let accentHoverDark = Color(hex: 0x63AAFF)
 
     static let bubbleUserTextLight = Color.white

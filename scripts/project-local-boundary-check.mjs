@@ -140,7 +140,7 @@ const androidBuild = readRepositoryFile('scripts/android-debug-build.mjs')
 requireText(
   'scripts/android-gradle-local-boundary.mjs',
   androidGradleBoundary,
-  "gradleUserHome: path.join(localRoot, 'private', 'gradle-home')",
+  "gradleUserHome: pathApi.join(localRoot, 'private', 'gradle-home')",
   'Android Gradle local boundary must derive GRADLE_USER_HOME under .local/codex/private/gradle-home.',
 )
 requireText(

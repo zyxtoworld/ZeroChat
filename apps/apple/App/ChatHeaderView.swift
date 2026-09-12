@@ -36,8 +36,8 @@ private struct ProviderModelMenu: View {
             ForEach(model.enabledProviders) { provider in
                 Section(providerDisplayName(provider, i18n)) {
                     let models = model.composerMode == .image
-                        ? model.imageModels(provider)
-                        : model.chatModels(provider)
+                        ? model.imageModelOptions(provider)
+                        : model.chatModelOptions(provider)
                     if models.isEmpty {
                         Text(
                             model.composerMode == .image

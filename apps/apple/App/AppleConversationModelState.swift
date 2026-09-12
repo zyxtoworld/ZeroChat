@@ -86,7 +86,7 @@ extension ZeroChatViewModel {
 
     @discardableResult
     func select(provider: ProviderConfig, model: String, conversationId: String?) -> String? {
-        guard chatModels(provider).contains(model) else { return nil }
+        guard chatModelOptions(provider).contains(model) else { return nil }
         let result = appleSnapshotBySelectingProviderModel(
             snapshot: snapshot,
             existingConversation: self.conversation(id: conversationId),
@@ -107,7 +107,7 @@ extension ZeroChatViewModel {
 
     @discardableResult
     func selectImageModel(provider: ProviderConfig, imageModel: String, conversationId: String?) -> String? {
-        guard imageModels(provider).contains(imageModel) else { return nil }
+        guard imageModelOptions(provider).contains(imageModel) else { return nil }
         let result = appleSnapshotBySelectingProviderModel(
             snapshot: snapshot,
             existingConversation: self.conversation(id: conversationId),
@@ -122,16 +122,16 @@ extension ZeroChatViewModel {
         return result.conversationId
     }
 
-    func configuredModels(_ provider: ProviderConfig?) -> [String] {
-        ZeroChatAppleApp.configuredModels(for: provider)
+    func configuredModelOptions(_ provider: ProviderConfig?) -> [String] {
+        configuredModels(for: provider)
     }
 
-    func chatModels(_ provider: ProviderConfig?) -> [String] {
-        ZeroChatAppleApp.chatModels(for: provider)
+    func chatModelOptions(_ provider: ProviderConfig?) -> [String] {
+        chatModels(for: provider)
     }
 
-    func imageModels(_ provider: ProviderConfig?) -> [String] {
-        ZeroChatAppleApp.imageModels(for: provider)
+    func imageModelOptions(_ provider: ProviderConfig?) -> [String] {
+        imageModels(for: provider)
     }
 
     func deleteMessage(_ id: String, conversationId: String? = nil) {

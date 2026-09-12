@@ -9,7 +9,7 @@ import {
   androidGradleLocalPaths,
 } from '../android-gradle-local-boundary.mjs'
 
-const repoRoot = path.resolve(import.meta.dirname, '../..')
+const simulatedWindowsRepoRoot = 'E:\\项目\\ZeroChat'
 
 function fakeFileSystem(existing = []) {
   const files = new Set(existing)
@@ -38,9 +38,9 @@ function fakeFileSystem(existing = []) {
 it('binds Android Gradle child environment to the ASCII project-local junction', () => {
   const asciiHostRoot = 'C:\\ZeroChatGradleHost'
   const fake = fakeFileSystem([asciiHostRoot])
-  const localPaths = androidGradleLocalPaths(repoRoot)
+  const localPaths = androidGradleLocalPaths(simulatedWindowsRepoRoot, { platform: 'win32' })
   const childEnvironment = androidGradleChildEnvironment({
-    repoRoot,
+    repoRoot: simulatedWindowsRepoRoot,
     sourceEnv: {
       ...process.env,
       USERPROFILE: 'C:\\Users\\ZYX',
@@ -58,7 +58,7 @@ it('binds Android Gradle child environment to the ASCII project-local junction',
   })
 
   expect(localPaths.gradleUserHome).toBe(
-    path.join(repoRoot, '.local', 'codex', 'private', 'gradle-home'),
+    path.win32.join(simulatedWindowsRepoRoot, '.local', 'codex', 'private', 'gradle-home'),
   )
   expect(childEnvironment.GRADLE_USER_HOME).not.toContain('E:\\项目')
   expect(childEnvironment.TEMP).not.toContain('E:\\项目')
@@ -66,7 +66,7 @@ it('binds Android Gradle child environment to the ASCII project-local junction',
   expect(childEnvironment.TMPDIR).toBe(childEnvironment.TEMP)
   expect(fake.links.size).toBe(1)
 
-  const executionPaths = androidGradleExecutionPaths(repoRoot, {
+  const executionPaths = androidGradleExecutionPaths(simulatedWindowsRepoRoot, {
     platform: 'win32',
     asciiHostRoot,
     fs: fake.fs,
@@ -80,7 +80,7 @@ it('binds Android Gradle child environment to the ASCII project-local junction',
     childEnvironment.TMP,
     childEnvironment.TMPDIR,
   ]) {
-    expect(path.isAbsolute(value)).toBe(true)
+    expect(path.win32.isAbsolute(value)).toBe(true)
     expect(value).not.toMatch(/[^\x00-\x7F]/u)
     expect(value.toLowerCase()).toContain(asciiHostRoot.toLowerCase())
     expect(value.toLowerCase()).not.toContain('c:\\users\\zyx')

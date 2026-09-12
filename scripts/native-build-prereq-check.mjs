@@ -460,6 +460,7 @@ function validAppleXcodeAppTarget() {
     'ChatView.swift',
     'SettingsView.swift',
     'NativeI18n.swift',
+    'Theme.swift in Sources',
     'XCLocalSwiftPackageReference',
     'productName = ZeroChatCore',
     'ZeroChatCore in Frameworks',

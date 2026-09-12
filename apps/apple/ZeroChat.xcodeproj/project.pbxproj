@@ -51,6 +51,7 @@
 		2D6F4D0A2A3E4C19000100D0 /* AppleCloudSyncStatusState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100D1 /* AppleCloudSyncStatusState.swift */; };
 		2D6F4D0A2A3E4C19000100D2 /* AppleSpotlightIndexState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100D3 /* AppleSpotlightIndexState.swift */; };
 		2D6F4D0A2A3E4C19000100D4 /* AppleBackupState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100D5 /* AppleBackupState.swift */; };
+		2D6F4D0A2A3E4C19000100D6 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C19000100D7 /* Theme.swift */; };
 		2D6F4D0A2A3E4C1900010005 /* ZeroChatCore in Frameworks */ = {isa = PBXBuildFile; productRef = 2D6F4D0A2A3E4C1900010031 /* ZeroChatCore */; };
 		2D6F4D0A2A3E4C1900010036 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010037 /* Assets.xcassets */; };
 		2D6F4D0A2A3E4C1900010040 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6F4D0A2A3E4C1900010045 /* ShareViewController.swift */; };
@@ -136,6 +137,7 @@
 		2D6F4D0A2A3E4C19000100D1 /* AppleCloudSyncStatusState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleCloudSyncStatusState.swift; sourceTree = "<group>"; };
 		2D6F4D0A2A3E4C19000100D3 /* AppleSpotlightIndexState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSpotlightIndexState.swift; sourceTree = "<group>"; };
 		2D6F4D0A2A3E4C19000100D5 /* AppleBackupState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleBackupState.swift; sourceTree = "<group>"; };
+		2D6F4D0A2A3E4C19000100D7 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		2D6F4D0A2A3E4C1900010015 /* Package.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Package.swift; sourceTree = "<group>"; };
 		2D6F4D0A2A3E4C1900010016 /* ZeroChat.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ZeroChat.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2D6F4D0A2A3E4C1900010037 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -237,6 +239,7 @@
 				2D6F4D0A2A3E4C190001009D /* DataSettingsView.swift */,
 				2D6F4D0A2A3E4C1900010089 /* ProviderEditor.swift */,
 				2D6F4D0A2A3E4C1900010014 /* NativeI18n.swift */,
+				2D6F4D0A2A3E4C19000100D7 /* Theme.swift */,
 				2D6F4D0A2A3E4C1900010037 /* Assets.xcassets */,
 			);
 			path = App;
@@ -423,6 +426,7 @@
 				2D6F4D0A2A3E4C19000100D0 /* AppleCloudSyncStatusState.swift in Sources */,
 				2D6F4D0A2A3E4C19000100D2 /* AppleSpotlightIndexState.swift in Sources */,
 				2D6F4D0A2A3E4C19000100D4 /* AppleBackupState.swift in Sources */,
+				2D6F4D0A2A3E4C19000100D6 /* Theme.swift in Sources */,
 				2D6F4D0A2A3E4C1900010080 /* MessageBubble.swift in Sources */,
 				2D6F4D0A2A3E4C1900010082 /* ComposerView.swift in Sources */,
 				2D6F4D0A2A3E4C19000100A2 /* AppleCloudSyncStatusStrip.swift in Sources */,
