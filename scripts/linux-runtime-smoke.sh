@@ -93,7 +93,22 @@ fi
 
 xdotool windowactivate "$window_id" >/dev/null 2>&1 || true
 sleep 0.5
-import -window "$window_id" "$ZEROCHAT_SCREENSHOT"
+ready=0
+for _ in $(seq 1 20); do
+  import -window "$window_id" "$ZEROCHAT_SCREENSHOT"
+  screenshot_bytes="$(wc -c < "$ZEROCHAT_SCREENSHOT" | tr -d '[:space:]')"
+  screenshot_colors="$(identify -format '%k' "$ZEROCHAT_SCREENSHOT")"
+  if [[ "$screenshot_bytes" -ge 10000 && "$screenshot_colors" -ge 24 ]]; then
+    ready=1
+    break
+  fi
+  sleep 0.5
+done
+
+if [[ "$ready" -ne 1 ]]; then
+  echo "Linux runtime window did not render a stable UI before screenshot timeout." >&2
+  exit 1
+fi
 printf 'windowId=%s\nwindowName=%s\nwindowWidth=%s\nwindowHeight=%s\n' \
   "$window_id" "$window_name" "$window_width" "$window_height" > "$ZEROCHAT_WINDOW_METADATA"
 SMOKE

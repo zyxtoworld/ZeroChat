@@ -28,6 +28,26 @@ struct ChatView: View {
     @State private var windowActiveConversationId: String?
     @FocusState private var composerFocused: Bool
 
+#if os(macOS)
+    init(
+        model: ZeroChatViewModel,
+        openSettingsWindow: ((SettingsTab) -> Void)? = nil,
+        commandCenter: AppleCommandCenter
+    ) {
+        _model = ObservedObject(wrappedValue: model)
+        self.openSettingsWindow = openSettingsWindow
+        _commandCenter = ObservedObject(wrappedValue: commandCenter)
+    }
+#else
+    init(
+        model: ZeroChatViewModel,
+        openSettingsWindow: ((SettingsTab) -> Void)? = nil
+    ) {
+        _model = ObservedObject(wrappedValue: model)
+        self.openSettingsWindow = openSettingsWindow
+    }
+#endif
+
     private var activeConversationId: String? {
         if let windowActiveConversationId,
            model.snapshot.conversations.contains(where: { $0.id == windowActiveConversationId }) {
@@ -260,10 +280,10 @@ struct ChatView: View {
             ensureWindowConversationSelection()
             focusComposerIfSharedTextArrived()
         }
-        .onChange(of: model.snapshot.conversations.map(\.id)) { _ in
+        .onChange(of: model.snapshot.conversations.map(\.id)) {
             ensureWindowConversationSelection()
         }
-        .onChange(of: scenePhase) { phase in
+        .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 focusComposerIfSharedTextArrived()
             }
@@ -305,13 +325,13 @@ struct ChatView: View {
             handleComposerFocusCommand()
             handleConversationSearchFocusCommand()
         }
-        .onChange(of: commandCenter.conversationSelectionRequest) { _ in
+        .onChange(of: commandCenter.conversationSelectionRequest) {
             handleConversationSelectionCommand()
         }
-        .onChange(of: commandCenter.composerFocusRequest) { _ in
+        .onChange(of: commandCenter.composerFocusRequest) {
             handleComposerFocusCommand()
         }
-        .onChange(of: commandCenter.conversationSearchFocusRequest) { _ in
+        .onChange(of: commandCenter.conversationSearchFocusRequest) {
             handleConversationSearchFocusCommand()
         }
 #endif

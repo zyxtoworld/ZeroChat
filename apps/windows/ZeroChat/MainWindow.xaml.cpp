@@ -728,6 +728,10 @@ namespace winrt::ZeroChat::implementation
         Title(L"ZeroChat");
         ApplyWindowIcon();
         DispatcherQueue().TryEnqueue([this]() { ApplyWindowIcon(); });
+        if (auto content = Content().try_as<Microsoft::UI::Xaml::FrameworkElement>())
+        {
+            content.Loaded([this](auto const&, auto const&) { ApplyWindowIcon(); });
+        }
         InitializeTrayIcon();
         ConfigureWindowsJumpList();
         using namespace Microsoft::UI::Xaml;
