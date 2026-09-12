@@ -7,7 +7,7 @@ import CoreSpotlight
 #endif
 
 #if canImport(UserNotifications)
-import UserNotifications
+@preconcurrency import UserNotifications
 #endif
 
 func displayConversationTitle(_ conversation: Conversation, _ i18n: NativeI18n) -> String {
@@ -122,24 +122,23 @@ enum AppleQuickAskRoute {
 #if canImport(UserNotifications)
 enum AppleSyncNotificationCenter {
     static func notifySyncComplete(title: String, body: String) {
-        let center = UNUserNotificationCenter.current()
-        center.getNotificationSettings { settings in
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
             switch settings.authorizationStatus {
             case .notDetermined:
-                center.requestAuthorization(options: [.alert]) { granted, _ in
+                UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { granted, _ in
                     if granted {
-                        post(center: center, title: title, body: body)
+                        post(title: title, body: body)
                     }
                 }
             case .authorized, .provisional:
-                post(center: center, title: title, body: body)
+                post(title: title, body: body)
             default:
                 break
             }
         }
     }
 
-    private static func post(center: UNUserNotificationCenter, title: String, body: String) {
+    private static func post(title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
@@ -149,7 +148,7 @@ enum AppleSyncNotificationCenter {
             content: content,
             trigger: nil
         )
-        center.add(request)
+        UNUserNotificationCenter.current().add(request)
     }
 }
 #endif

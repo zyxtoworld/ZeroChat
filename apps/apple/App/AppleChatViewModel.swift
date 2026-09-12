@@ -498,10 +498,10 @@ final class ZeroChatViewModel: ObservableObject {
                 providerIds: transition.providerIds,
                 values: recoveredProviderKeys,
                 providerKey: { providerId in
-                    try keychain.get(account: "provider:\(providerId)") ?? ""
+                    try self.keychain.get(account: "provider:\(providerId)") ?? ""
                 },
                 setProviderKey: { providerId, value in
-                    try keychain.set(value, account: "provider:\(providerId)")
+                    try self.keychain.set(value, account: "provider:\(providerId)")
                 }
             )
         }
@@ -1503,9 +1503,10 @@ final class ZeroChatViewModel: ObservableObject {
 
         chatStreamingTask = Task {
             defer {
-                guard generationSerial == generationToken else { return }
-                chatStreamingTask = nil
-                isChatStreaming = false
+                if generationSerial == generationToken {
+                    chatStreamingTask = nil
+                    isChatStreaming = false
+                }
             }
             var retryIndex = 0
             do {
@@ -1605,9 +1606,10 @@ final class ZeroChatViewModel: ObservableObject {
 
         imageGenerationTask = Task {
             defer {
-                guard generationSerial == generationToken else { return }
-                imageGenerationTask = nil
-                isChatStreaming = false
+                if generationSerial == generationToken {
+                    imageGenerationTask = nil
+                    isChatStreaming = false
+                }
             }
             do {
                 let image: GeneratedImage

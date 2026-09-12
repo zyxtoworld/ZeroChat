@@ -335,7 +335,7 @@ struct ChatView: View {
             handleConversationSearchFocusCommand()
         }
 #endif
-        .preferredColorScheme(preferredColorScheme(for: model.snapshot.preferences.theme))
+        .preferredColorScheme(ZeroChatAppleApp.preferredColorScheme(for: model.snapshot.preferences.theme))
         .environment(\.layoutDirection, nativeLayoutDirection(for: i18n))
     }
 }

@@ -1,6 +1,7 @@
 import SwiftUI
 import ZeroChatCore
 
+@MainActor
 struct AppleConversationSidebar: View {
     @ObservedObject var model: ZeroChatViewModel
     let i18n: NativeI18n
@@ -49,7 +50,7 @@ struct AppleConversationSidebar: View {
             } else {
                 List(selection: Binding(
                     get: { activeConversationId },
-                    set: selectConversation
+                    set: { value in selectConversation(value) }
                 )) {
                     ForEach(visibleConversations) { conversation in
                         HStack {

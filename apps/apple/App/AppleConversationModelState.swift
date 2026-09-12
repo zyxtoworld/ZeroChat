@@ -123,15 +123,15 @@ extension ZeroChatViewModel {
     }
 
     func configuredModels(_ provider: ProviderConfig?) -> [String] {
-        configuredModels(for: provider)
+        ZeroChatAppleApp.configuredModels(for: provider)
     }
 
     func chatModels(_ provider: ProviderConfig?) -> [String] {
-        chatModels(for: provider)
+        ZeroChatAppleApp.chatModels(for: provider)
     }
 
     func imageModels(_ provider: ProviderConfig?) -> [String] {
-        imageModels(for: provider)
+        ZeroChatAppleApp.imageModels(for: provider)
     }
 
     func deleteMessage(_ id: String, conversationId: String? = nil) {

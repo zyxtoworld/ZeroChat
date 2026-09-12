@@ -644,6 +644,11 @@ namespace winrt::ZeroChat::implementation
                     });
                 });
 
+            webShell.Loaded([this](auto const&, auto const&)
+            {
+                ApplyWindowIcon();
+                DispatcherQueue().TryEnqueue([this]() { ApplyWindowIcon(); });
+            });
             Content(webShell);
             webView.EnsureCoreWebView2Async();
             return true;
@@ -728,10 +733,6 @@ namespace winrt::ZeroChat::implementation
         Title(L"ZeroChat");
         ApplyWindowIcon();
         DispatcherQueue().TryEnqueue([this]() { ApplyWindowIcon(); });
-        if (auto content = Content().try_as<Microsoft::UI::Xaml::FrameworkElement>())
-        {
-            content.Loaded([this](auto const&, auto const&) { ApplyWindowIcon(); });
-        }
         InitializeTrayIcon();
         ConfigureWindowsJumpList();
         using namespace Microsoft::UI::Xaml;

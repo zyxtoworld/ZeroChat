@@ -39,6 +39,8 @@ trap cleanup EXIT
 
 export DISPLAY="$display"
 export GDK_BACKEND=x11
+export GSK_RENDERER="${GSK_RENDERER:-cairo}"
+export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
 export ZEROCHAT_BINARY="$binary"
 export ZEROCHAT_SCREENSHOT="$screenshot"
 export ZEROCHAT_WINDOW_METADATA="/tmp/zerochat-linux-window-metadata"

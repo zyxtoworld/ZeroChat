@@ -403,7 +403,15 @@ try {
 
   Start-Sleep -Seconds 8
 
-  $WindowIcon = Get-WindowIconEvidence -WindowHandle $WindowHandle -ExecutablePath $ExePath
+  $WindowIcon = $null
+  for ($Attempt = 0; $Attempt -lt 20; $Attempt += 1) {
+    $WindowIcon = Get-WindowIconEvidence -WindowHandle $WindowHandle -ExecutablePath $ExePath
+    if ($WindowIcon.executableIconPresent -and $WindowIcon.titleBarIconPresent) {
+      break
+    }
+    Start-Sleep -Milliseconds 500
+  }
+
   if (-not $WindowIcon.executableIconPresent) {
     throw "ZeroChat.exe does not expose an associated app icon."
   }

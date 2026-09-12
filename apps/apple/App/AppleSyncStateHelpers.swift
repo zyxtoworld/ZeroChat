@@ -112,10 +112,14 @@ func appleCloudSyncSummary(snapshot: AppSnapshot, i18n: NativeI18n) -> String {
         modeLabel = i18n.t("mode.local")
     }
 
-    let status = snapshot.sync.lastSyncStatus
-        .map { i18n.syncStatusMessage($0) }
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter { !$0.isEmpty }
+    let status: String?
+    if let lastSyncStatus = snapshot.sync.lastSyncStatus {
+        let message = i18n.syncStatusMessage(lastSyncStatus)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        status = message.isEmpty ? nil : message
+    } else {
+        status = nil
+    }
 
     if let status {
         return "\(modeLabel) · \(status)"

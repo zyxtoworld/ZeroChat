@@ -3,6 +3,7 @@ import SwiftUI
 #if os(macOS)
 import AppKit
 
+@MainActor
 struct WindowActivationReporter: NSViewRepresentable {
     let windowId: UUID
     @ObservedObject var commandCenter: AppleCommandCenter
@@ -27,6 +28,7 @@ struct WindowActivationReporter: NSViewRepresentable {
         coordinator.detach()
     }
 
+    @MainActor
     final class Coordinator {
         var windowId: UUID
         weak var commandCenter: AppleCommandCenter?
@@ -75,15 +77,19 @@ struct WindowActivationReporter: NSViewRepresentable {
                     object: nextWindow,
                     queue: .main
                 ) { [weak self] _ in
-                    guard let self else { return }
-                    self.commandCenter?.activateWindow(self.windowId)
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        self.commandCenter?.activateWindow(self.windowId)
+                    }
                 }
                 self.closeObserver = NotificationCenter.default.addObserver(
                     forName: NSWindow.willCloseNotification,
                     object: nextWindow,
                     queue: .main
                 ) { [weak self] _ in
-                    self?.detach()
+                    Task { @MainActor [weak self] in
+                        self?.detach()
+                    }
                 }
 
                 if nextWindow.isKeyWindow {
