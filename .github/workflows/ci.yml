@@ -32,12 +32,6 @@ jobs:
       - run: pnpm install --frozen-lockfile --prod=false
       - run: pnpm run check:project-local-boundary
       - run: pnpm run check:hosted-ci-workflow-contract
-      - name: Refresh native prerequisite diagnostic for Web-local verification
-        continue-on-error: true
-        run: node scripts/native-build-prereq-check.mjs --platform=all --report=.manual-qa/native-prereq-all-platforms.json
-      - name: Refresh strict preflight diagnostic for Web-local verification
-        continue-on-error: true
-        run: node scripts/strict-release-preflight-report.mjs
       - run: pnpm run verify:web-local
       - uses: actions/upload-artifact@v4
         if: always()

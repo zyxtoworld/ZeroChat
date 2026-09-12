@@ -213,7 +213,6 @@ const webLocalBaseCheckLabels = new Set([
   'Web production reachability',
   'Vite production build',
   'ESLint',
-  'Repository health',
   'Shared schema',
   'Icon/cloud-sync redlines',
   'Worker security',
@@ -1350,15 +1349,7 @@ async function main() {
 
     let runError = null
     try {
-      const webLocalChecks = checksWithReleaseDiagnosticsBootstrap(
-        webLocalBaseChecks,
-        releaseDiagnosticsFreshnessBootstrapCheck,
-        true,
-        [],
-        [verifyReleaseCheckpointBootstrapCheck, currentEvidencePreCheckpointSyncCheck],
-      )
-
-      for (const check of webLocalChecks) {
+      for (const check of webLocalBaseChecks) {
         await runCheck(check, checkOptions(check))
       }
 
@@ -1518,11 +1509,11 @@ async function main() {
 
 try {
   await main()
-  if (shouldRefreshVerifyReleaseCheckpoint) {
+  if (shouldRefreshVerifyReleaseCheckpoint && !webLocal) {
     await refreshCheckpointSyncDocsAndValidate('passed')
   }
 } catch (error) {
-  if (shouldRefreshVerifyReleaseCheckpoint) {
+  if (shouldRefreshVerifyReleaseCheckpoint && !webLocal) {
     try {
       await refreshCheckpointSyncDocsAndValidate('failed', error)
     } catch (checkpointError) {

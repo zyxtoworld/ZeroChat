@@ -39,23 +39,20 @@ describe('verify-release check order', () => {
     expect(result.filter(([label]) => label === bootstrapCheck[0])).toHaveLength(1)
   })
 
-  it('build-anchors the focused Web check sequence before expensive browser checks', () => {
-    const webLocalChecks = [
-      ['TypeScript', ['tsc']],
-      ['Vite production build', ['vite', 'build']],
-      ['ESLint', ['eslint']],
-      ['Browser smoke', ['browser-smoke']],
-    ]
+  it('keeps focused Web verification independent from native release diagnostics', async () => {
+    const verifyRelease = await readFile(
+      new URL('../verify-release.mjs', import.meta.url),
+      'utf8',
+    )
+    const webLocalStart = verifyRelease.indexOf('  if (webLocal) {')
+    const allPlatformStart = verifyRelease.indexOf('  if (allPlatforms) {', webLocalStart)
+    const webLocalBlock = verifyRelease.slice(webLocalStart, allPlatformStart)
 
-    const result = checksWithReleaseDiagnosticsBootstrap(webLocalChecks, bootstrapCheck, true)
-
-    expect(result.map(([label]) => label)).toEqual([
-      'TypeScript',
-      'Vite production build',
-      'Release diagnostics freshness bootstrap',
-      'ESLint',
-      'Browser smoke',
-    ])
+    expect(webLocalBlock).toContain('for (const check of webLocalBaseChecks)')
+    expect(webLocalBlock).not.toContain('checksWithReleaseDiagnosticsBootstrap')
+    expect(verifyRelease).toContain(
+      'if (shouldRefreshVerifyReleaseCheckpoint && !webLocal)',
+    )
   })
 
   it('refreshes the source-bound checkpoint before focused Web consumers', async () => {
@@ -72,7 +69,7 @@ describe('verify-release check order', () => {
       /const shouldRefreshVerifyReleaseCheckpoint = !skipVerifyReleaseCheckpoint/u,
     )
     expect(verifyRelease).toMatch(
-      /if \(webLocal\) \{[\s\S]*?const webLocalChecks = checksWithReleaseDiagnosticsBootstrap\([\s\S]*?webLocalBaseChecks[\s\S]*?verifyReleaseCheckpointBootstrapCheck[\s\S]*?currentEvidencePreCheckpointSyncCheck[\s\S]*?for \(const check of webLocalChecks\)/u,
+      /if \(webLocal\) \{[\s\S]*?for \(const check of webLocalBaseChecks\)/u,
     )
   })
 
