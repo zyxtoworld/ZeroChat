@@ -241,10 +241,19 @@ final class ZeroChatViewModel: ObservableObject {
     private var lastSyncNotificationAt: Int64 = 0
     private var snapshotRevision: UInt64 = 0
     private var dataReplacementEpoch: UInt64 = 0
+    private var activeGeneration: ActiveGeneration?
 
     private enum GenerationKind {
         case chat
         case image
+    }
+
+    private struct ActiveGeneration {
+        let token: Int
+        let kind: GenerationKind
+        let conversationId: String
+        let assistantId: String
+        let assistant: ChatMessage
     }
 
     var hasSourceImageUpload: Bool {
@@ -740,12 +749,62 @@ final class ZeroChatViewModel: ObservableObject {
     }
 
     func stopGenerating() {
+        invalidateGeneration()
+    }
+
+    private func beginGeneration() -> Int {
+        generationSerial &+= 1
+        isChatStreaming = true
+        return generationSerial
+    }
+
+    private func invalidateGeneration() {
         chatStreamingTask?.cancel()
         imageGenerationTask?.cancel()
+
+        if let activeGeneration {
+            switch activeGeneration.kind {
+            case .chat:
+                let partial = streamingAssistantContent(
+                    conversationId: activeGeneration.conversationId,
+                    assistantId: activeGeneration.assistantId
+                )
+                completeAssistantIfCurrent(
+                    generationToken: activeGeneration.token,
+                    conversationId: activeGeneration.conversationId,
+                    assistantId: activeGeneration.assistantId,
+                    message: appleStoppedAssistantMessage(
+                        assistant: activeGeneration.assistant,
+                        partialContent: partial,
+                        stoppedContent: i18n.t("message.generationStopped")
+                    )
+                )
+            case .image:
+                completeAssistantIfCurrent(
+                    generationToken: activeGeneration.token,
+                    conversationId: activeGeneration.conversationId,
+                    assistantId: activeGeneration.assistantId,
+                    message: appleStoppedImageMessage(
+                        assistant: activeGeneration.assistant,
+                        stoppedContent: i18n.t("message.generationStopped")
+                    )
+                )
+            }
+        }
+
+        generationSerial &+= 1
+        activeGeneration = nil
+        chatStreamingTask = nil
+        imageGenerationTask = nil
+        isChatStreaming = false
+    }
+
+    private func generationIsCurrent(_ generationToken: Int) -> Bool {
+        generationSerial == generationToken
     }
 
     private func finishGenerationIfCurrent(generationToken: Int, kind: GenerationKind) {
-        guard generationSerial == generationToken else { return }
+        guard generationIsCurrent(generationToken) else { return }
 
         switch kind {
         case .chat:
@@ -753,6 +812,7 @@ final class ZeroChatViewModel: ObservableObject {
         case .image:
             imageGenerationTask = nil
         }
+        activeGeneration = nil
         isChatStreaming = false
     }
 
@@ -1513,10 +1573,15 @@ final class ZeroChatViewModel: ObservableObject {
         replaceConversation(pendingConversation, autoSync: false)
         input = ""
         editingMessageId = nil
-        isChatStreaming = true
         lastStreamingCommitAt = 0
-        generationSerial += 1
-        let generationToken = generationSerial
+        let generationToken = beginGeneration()
+        activeGeneration = ActiveGeneration(
+            token: generationToken,
+            kind: .chat,
+            conversationId: conversation.id,
+            assistantId: assistant.id,
+            assistant: assistant
+        )
 
         chatStreamingTask = Task {
             defer {
@@ -1525,6 +1590,7 @@ final class ZeroChatViewModel: ObservableObject {
             var retryIndex = 0
             do {
                 while true {
+                    guard generationIsCurrent(generationToken) else { return }
                     do {
                         let text = try await ai.stream(
                             provider: requestProvider,
@@ -1535,19 +1601,27 @@ final class ZeroChatViewModel: ObservableObject {
                             proxyToken: proxyToken
                         ) { [weak self] partial in
                             await self?.updateStreamingAssistant(
+                                generationToken: generationToken,
                                 conversationId: conversation.id,
                                 assistantId: assistant.id,
                                 content: partial
                             )
                         }
                         try Task.checkCancellation()
+                        guard generationIsCurrent(generationToken) else { return }
                         var completed = assistant
                         completed.content = text
                         completed.status = "done"
                         completed.error = nil
-                        completeAssistant(conversationId: conversation.id, assistantId: assistant.id, message: completed)
+                        completeAssistantIfCurrent(
+                            generationToken: generationToken,
+                            conversationId: conversation.id,
+                            assistantId: assistant.id,
+                            message: completed
+                        )
                         return
                     } catch {
+                        guard generationIsCurrent(generationToken) else { return }
                         if error is CancellationError {
                             throw error
                         }
@@ -1567,25 +1641,38 @@ final class ZeroChatViewModel: ObservableObject {
                                 kind: .warning
                             )
                             try await Task.sleep(nanoseconds: chatAutoRetryDelayNanoseconds(retryIndex - 1))
+                            guard generationIsCurrent(generationToken) else { return }
                             continue
                         }
                         throw error
                     }
                 }
             } catch is CancellationError {
+                guard generationIsCurrent(generationToken) else { return }
                 let partial = streamingAssistantContent(conversationId: conversation.id, assistantId: assistant.id)
                 let stopped = appleStoppedAssistantMessage(
                     assistant: assistant,
                     partialContent: partial,
                     stoppedContent: i18n.t("message.generationStopped")
                 )
-                completeAssistant(conversationId: conversation.id, assistantId: assistant.id, message: stopped)
+                completeAssistantIfCurrent(
+                    generationToken: generationToken,
+                    conversationId: conversation.id,
+                    assistantId: assistant.id,
+                    message: stopped
+                )
             } catch {
+                guard generationIsCurrent(generationToken) else { return }
                 var failed = assistant
                 failed.content = i18n.t("message.generationFailed")
                 failed.status = "error"
                 failed.error = i18n.errorMessage(error)
-                completeAssistant(conversationId: conversation.id, assistantId: assistant.id, message: failed)
+                completeAssistantIfCurrent(
+                    generationToken: generationToken,
+                    conversationId: conversation.id,
+                    assistantId: assistant.id,
+                    message: failed
+                )
             }
         }
     }
@@ -1614,9 +1701,14 @@ final class ZeroChatViewModel: ObservableObject {
         )
         replaceConversation(pendingConversation)
         input = ""
-        isChatStreaming = true
-        generationSerial += 1
-        let generationToken = generationSerial
+        let generationToken = beginGeneration()
+        activeGeneration = ActiveGeneration(
+            token: generationToken,
+            kind: .image,
+            conversationId: conversation.id,
+            assistantId: assistant.id,
+            assistant: assistant
+        )
 
         imageGenerationTask = Task {
             defer {
@@ -1657,6 +1749,7 @@ final class ZeroChatViewModel: ObservableObject {
                     )
                 }
                 try Task.checkCancellation()
+                guard generationIsCurrent(generationToken) else { return }
 
                 let completed = appleCompletedGeneratedImageMessage(
                     assistant: assistant,
@@ -1665,30 +1758,49 @@ final class ZeroChatViewModel: ObservableObject {
                     attachmentId: UUID().uuidString,
                     now: nowMillis()
                 )
-                completeAssistant(conversationId: conversation.id, assistantId: assistant.id, message: completed)
+                completeAssistantIfCurrent(
+                    generationToken: generationToken,
+                    conversationId: conversation.id,
+                    assistantId: assistant.id,
+                    message: completed
+                )
             } catch is CancellationError {
+                guard generationIsCurrent(generationToken) else { return }
                 let stopped = appleStoppedImageMessage(
                     assistant: assistant,
                     stoppedContent: i18n.t("message.generationStopped")
                 )
-                completeAssistant(conversationId: conversation.id, assistantId: assistant.id, message: stopped)
+                completeAssistantIfCurrent(
+                    generationToken: generationToken,
+                    conversationId: conversation.id,
+                    assistantId: assistant.id,
+                    message: stopped
+                )
             } catch {
+                guard generationIsCurrent(generationToken) else { return }
                 let failed = appleFailedImageMessage(
                     assistant: assistant,
                     content: i18n.t("message.imageRequestFailed"),
                     error: i18n.errorMessage(error)
                 )
-                completeAssistant(conversationId: conversation.id, assistantId: assistant.id, message: failed)
+                completeAssistantIfCurrent(
+                    generationToken: generationToken,
+                    conversationId: conversation.id,
+                    assistantId: assistant.id,
+                    message: failed
+                )
             }
         }
     }
 
     private func updateStreamingAssistant(
+        generationToken: Int,
         conversationId: String,
         assistantId: String,
         content: String,
         force: Bool = false
     ) {
+        guard generationIsCurrent(generationToken) else { return }
         let now = nowMillis()
         if !force, now - lastStreamingCommitAt < STREAMING_UI_FRAME_MS {
             return
@@ -1716,7 +1828,13 @@ final class ZeroChatViewModel: ObservableObject {
         )
     }
 
-    private func completeAssistant(conversationId: String, assistantId: String, message: ChatMessage) {
+    private func completeAssistantIfCurrent(
+        generationToken: Int,
+        conversationId: String,
+        assistantId: String,
+        message: ChatMessage
+    ) {
+        guard generationIsCurrent(generationToken) else { return }
         guard let conversation = appleCompletedAssistantConversation(
             snapshot: snapshot,
             conversationId: conversationId,

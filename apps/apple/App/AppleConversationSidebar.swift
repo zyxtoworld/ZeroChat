@@ -16,7 +16,12 @@ struct AppleConversationSidebar: View {
     let openSyncSettings: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let selection = Binding<String?>(
+            get: { activeConversationId },
+            set: { value in selectConversation(value) }
+        )
+
+        return VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
                 Text("ZeroChat")
                     .font(.title2.weight(.semibold))
@@ -48,10 +53,7 @@ struct AppleConversationSidebar: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding()
             } else {
-                List(selection: Binding(
-                    get: { activeConversationId },
-                    set: selectConversation
-                )) {
+                List(selection: selection) {
                     ForEach(visibleConversations) { conversation in
                         HStack {
                             Text(displayConversationTitle(conversation, i18n))

@@ -3042,7 +3042,7 @@ const contracts = {
     ],
     [
       'Apple native generation terminal publication must recheck cancellation after Provider return.',
-      /ai\.stream\([\s\S]*?try Task\.checkCancellation\(\)[\s\S]*?completeAssistant\([\s\S]*?let image: GeneratedImage[\s\S]*?switch request\.kind[\s\S]*?try Task\.checkCancellation\(\)[\s\S]*?appleCompletedGeneratedImageMessage\(/,
+      /ai\.stream\([\s\S]*?try Task\.checkCancellation\(\)[\s\S]*?completeAssistantIfCurrent\([\s\S]*?let image: GeneratedImage[\s\S]*?switch request\.kind[\s\S]*?try Task\.checkCancellation\(\)[\s\S]*?appleCompletedGeneratedImageMessage\(/,
     ],
     [
       'Apple image generation must be owned by a cancellable generation task and Stop must terminalize cancellation.',
@@ -3063,7 +3063,7 @@ const contracts = {
         'private var generationSerial = 0',
         'private enum GenerationKind',
         'private func finishGenerationIfCurrent(generationToken: Int, kind: GenerationKind)',
-        'guard generationSerial == generationToken else { return }',
+        'guard generationIsCurrent(generationToken) else { return }',
         'finishGenerationIfCurrent(generationToken: generationToken, kind: .chat)',
         'finishGenerationIfCurrent(generationToken: generationToken, kind: .image)',
       ],
@@ -3165,7 +3165,10 @@ const contracts = {
     ],
     [
       'Apple streaming completion must return to normal auto-sync.',
-      'completeAssistant(conversationId: conversation.id, assistantId: assistant.id',
+      [
+        'completeAssistantIfCurrent(',
+        'replaceConversation(conversation)',
+      ],
     ],
     [
       'Apple message actions must use a native context menu instead of always-visible action buttons.',
@@ -3262,7 +3265,9 @@ const contracts = {
     [
       'Apple macOS sidebar selection must use a local Binding setter.',
       [
-        'set: selectConversation',
+        'let selection = Binding<String?>',
+        'set: { value in selectConversation(value) }',
+        'List(selection: selection)',
         'selectConversation: { windowActiveConversationId = $0 }',
       ],
     ],

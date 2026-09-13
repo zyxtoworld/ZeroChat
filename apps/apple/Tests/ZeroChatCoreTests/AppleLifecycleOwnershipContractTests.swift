@@ -81,17 +81,78 @@ import Testing
     #expect(source.contains("case chat"))
     #expect(source.contains("case image"))
     #expect(source.contains("private func finishGenerationIfCurrent(generationToken: Int, kind: GenerationKind)"))
-    #expect(source.contains("guard generationSerial == generationToken else { return }"))
+    #expect(source.contains("guard generationIsCurrent(generationToken) else { return }"))
     #expect(source.contains("finishGenerationIfCurrent(generationToken: generationToken, kind: .chat)"))
     #expect(source.contains("finishGenerationIfCurrent(generationToken: generationToken, kind: .image)"))
+}
+
+@Test func appleGenerationResultsRejectCancellationLateCallbacksAndSwitchedOwners() throws {
+    let source = try appleOwnershipSource("App/AppleChatViewModel.swift")
+
+    #expect(source.contains("private func beginGeneration() -> Int"))
+    #expect(source.contains("private func invalidateGeneration()"))
+    #expect(source.contains("private func generationIsCurrent(_ generationToken: Int) -> Bool"))
+    #expect(source.contains("private func completeAssistantIfCurrent("))
+    #expect(source.contains("generationSerial &+= 1"))
+
+    let stop = try appleOwnershipFunctionBody("func stopGenerating()", in: source)
+    #expect(stop.contains("invalidateGeneration()"))
+
+    let invalidate = try appleOwnershipFunctionBody(
+        "private func invalidateGeneration()",
+        in: source
+    )
+    #expect(invalidate.contains("activeGeneration"))
+    #expect(invalidate.contains("appleStoppedAssistantMessage("))
+    #expect(invalidate.contains("appleStoppedImageMessage("))
+    #expect(invalidate.components(separatedBy: "completeAssistantIfCurrent(").count - 1 == 2)
+    let terminalize = try #require(invalidate.range(of: "completeAssistantIfCurrent("))
+    let invalidateToken = try #require(invalidate.range(of: "generationSerial &+= 1"))
+    #expect(terminalize.lowerBound < invalidateToken.lowerBound)
+    #expect(invalidate.contains("activeGeneration = nil"))
+    #expect(invalidate.contains("chatStreamingTask = nil"))
+    #expect(invalidate.contains("imageGenerationTask = nil"))
+
+    let chat = try appleOwnershipFunctionBody(
+        "private func sendChat(in conversation: Conversation)",
+        in: source
+    )
+    let image = try appleOwnershipFunctionBody(
+        "private func sendImagePrompt(in conversation: Conversation)",
+        in: source
+    )
+    let streaming = try appleOwnershipFunctionBody(
+        "private func updateStreamingAssistant(",
+        in: source
+    )
+    let completion = try appleOwnershipFunctionBody(
+        "private func completeAssistantIfCurrent(",
+        in: source
+    )
+
+    #expect(chat.contains("let generationToken = beginGeneration()"))
+    #expect(image.contains("let generationToken = beginGeneration()"))
+    #expect(chat.contains("generationToken: generationToken"))
+    #expect(chat.components(separatedBy: "completeAssistantIfCurrent(").count - 1 == 3)
+    #expect(image.components(separatedBy: "completeAssistantIfCurrent(").count - 1 == 3)
+    #expect(chat.contains("guard generationIsCurrent(generationToken) else { return }"))
+    #expect(image.contains("guard generationIsCurrent(generationToken) else { return }"))
+    #expect(streaming.contains("generationToken: Int"))
+    #expect(streaming.contains("guard generationIsCurrent(generationToken) else { return }"))
+    #expect(completion.contains("guard generationIsCurrent(generationToken) else { return }"))
+    let imageCancellationCheck = try #require(image.range(of: "try Task.checkCancellation()"))
+    let imageOwnerCheck = try #require(image.range(of: "guard generationIsCurrent(generationToken) else { return }"))
+    #expect(imageCancellationCheck.lowerBound < imageOwnerCheck.lowerBound)
 }
 
 @Test func appleMacSidebarUsesTheWindowLocalSelectionBindingSetter() throws {
     let sidebar = try appleOwnershipSource("App/AppleConversationSidebar.swift")
     let chat = try appleOwnershipSource("App/ChatView.swift")
 
+    #expect(sidebar.contains("let selection = Binding<String?>("))
     #expect(sidebar.contains("get: { activeConversationId }"))
-    #expect(sidebar.contains("set: selectConversation"))
+    #expect(sidebar.contains("set: { value in selectConversation(value) }"))
+    #expect(sidebar.contains("List(selection: selection)"))
     #expect(chat.contains("selectConversation: { windowActiveConversationId = $0 }"))
 }
 

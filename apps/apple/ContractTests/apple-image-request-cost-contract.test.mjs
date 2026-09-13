@@ -77,7 +77,7 @@ test('Apple generation cleanup rejects stale chat and image task owners', () => 
   assert.match(source, /private enum GenerationKind\s*\{\s*case chat\s*case image\s*\}/)
   assert.match(
     source,
-    /private func finishGenerationIfCurrent\(generationToken: Int, kind: GenerationKind\)[\s\S]*?guard generationSerial == generationToken else \{ return \}[\s\S]*?switch kind/
+    /private func finishGenerationIfCurrent\(generationToken: Int, kind: GenerationKind\)[\s\S]*?guard generationIsCurrent\(generationToken\) else \{ return \}[\s\S]*?switch kind/
   )
   assert.equal(
     occurrences(source, 'finishGenerationIfCurrent(generationToken: generationToken, kind: .chat)'),
@@ -89,14 +89,47 @@ test('Apple generation cleanup rejects stale chat and image task owners', () => 
   )
 })
 
+test('Apple generation results stay behind the current token across cancellation and switches', () => {
+  const source = readAppleSource('App/AppleChatViewModel.swift')
+  const stop = functionBlock(source, '    func stopGenerating()')
+  const invalidate = functionBlock(source, '    private func invalidateGeneration()')
+  const chat = functionBlock(source, '    private func sendChat(in conversation: Conversation)')
+  const image = functionBlock(source, '    private func sendImagePrompt(in conversation: Conversation)')
+  const streaming = functionBlock(source, '    private func updateStreamingAssistant(')
+  const completion = functionBlock(source, '    private func completeAssistantIfCurrent(')
+
+  assert.match(source, /private func beginGeneration\(\) -> Int/)
+  assert.match(source, /private func invalidateGeneration\(\)/)
+  assert.match(stop, /invalidateGeneration\(\)/)
+  assert.match(invalidate, /activeGeneration/)
+  assert.match(invalidate, /appleStoppedAssistantMessage\(/)
+  assert.match(invalidate, /appleStoppedImageMessage\(/)
+  assert.equal((invalidate.match(/completeAssistantIfCurrent\(/g) ?? []).length, 2)
+  assertBefore(invalidate, 'completeAssistantIfCurrent(', 'generationSerial &+= 1')
+  assert.match(invalidate, /generationSerial &\+= 1[\s\S]*?activeGeneration = nil[\s\S]*?chatStreamingTask = nil[\s\S]*?imageGenerationTask = nil/)
+  assert.match(completion, /guard generationIsCurrent\(generationToken\) else \{ return \}/)
+  assert.match(streaming, /generationToken: Int/)
+  assert.match(streaming, /guard generationIsCurrent\(generationToken\) else \{ return \}/)
+  assert.match(chat, /let generationToken = beginGeneration\(\)/)
+  assert.match(image, /let generationToken = beginGeneration\(\)/)
+  assert.match(chat, /updateStreamingAssistant\([\s\S]*?generationToken: generationToken/)
+  assert.equal((chat.match(/completeAssistantIfCurrent\(/g) ?? []).length, 3)
+  assert.equal((image.match(/completeAssistantIfCurrent\(/g) ?? []).length, 3)
+  assert.match(chat, /guard generationIsCurrent\(generationToken\) else \{ return \}/)
+  assert.match(image, /guard generationIsCurrent\(generationToken\) else \{ return \}/)
+  assert.match(image, /try Task\.checkCancellation\(\)[\s\S]*?guard generationIsCurrent\(generationToken\) else \{ return \}/)
+})
+
 test('Apple macOS sidebar keeps selection in a window-local Binding setter', () => {
   const sidebar = readAppleSource('App/AppleConversationSidebar.swift')
   const chat = readAppleSource('App/ChatView.swift')
 
   assert.match(
     sidebar,
-    /List\(selection: Binding\([\s\S]*?get: \{ activeConversationId \}[\s\S]*?set: selectConversation/
+    /let selection = Binding<String\?>\([\s\S]*?get: \{ activeConversationId \}[\s\S]*?set: \{ value in selectConversation\(value\) \}/
   )
+  assert.match(sidebar, /List\(selection: selection\)/)
+  assert.equal(sidebar.includes('List(selection: Binding('), false)
   assert.match(chat, /selectConversation: \{ windowActiveConversationId = \$0 \}/)
 })
 
