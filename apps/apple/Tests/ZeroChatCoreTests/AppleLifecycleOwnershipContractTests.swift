@@ -74,6 +74,27 @@ import Testing
     #expect(tail.contains("composerFocused = true"))
 }
 
+@Test func appleGenerationCleanupUsesOneCurrentOwnerTokenForChatAndImage() throws {
+    let source = try appleOwnershipSource("App/AppleChatViewModel.swift")
+
+    #expect(source.contains("private enum GenerationKind"))
+    #expect(source.contains("case chat"))
+    #expect(source.contains("case image"))
+    #expect(source.contains("private func finishGenerationIfCurrent(generationToken: Int, kind: GenerationKind)"))
+    #expect(source.contains("guard generationSerial == generationToken else { return }"))
+    #expect(source.contains("finishGenerationIfCurrent(generationToken: generationToken, kind: .chat)"))
+    #expect(source.contains("finishGenerationIfCurrent(generationToken: generationToken, kind: .image)"))
+}
+
+@Test func appleMacSidebarUsesTheWindowLocalSelectionBindingSetter() throws {
+    let sidebar = try appleOwnershipSource("App/AppleConversationSidebar.swift")
+    let chat = try appleOwnershipSource("App/ChatView.swift")
+
+    #expect(sidebar.contains("get: { activeConversationId }"))
+    #expect(sidebar.contains("set: selectConversation"))
+    #expect(chat.contains("selectConversation: { windowActiveConversationId = $0 }"))
+}
+
 private enum AppleOwnershipContractError: Error {
     case markerMissing(String)
     case malformedFunction(String)

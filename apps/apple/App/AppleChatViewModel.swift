@@ -242,6 +242,11 @@ final class ZeroChatViewModel: ObservableObject {
     private var snapshotRevision: UInt64 = 0
     private var dataReplacementEpoch: UInt64 = 0
 
+    private enum GenerationKind {
+        case chat
+        case image
+    }
+
     var hasSourceImageUpload: Bool {
         sourceImage != nil
     }
@@ -737,6 +742,18 @@ final class ZeroChatViewModel: ObservableObject {
     func stopGenerating() {
         chatStreamingTask?.cancel()
         imageGenerationTask?.cancel()
+    }
+
+    private func finishGenerationIfCurrent(generationToken: Int, kind: GenerationKind) {
+        guard generationSerial == generationToken else { return }
+
+        switch kind {
+        case .chat:
+            chatStreamingTask = nil
+        case .image:
+            imageGenerationTask = nil
+        }
+        isChatStreaming = false
     }
 
     func stopSpeaking(showNotice: Bool = true) {
@@ -1503,10 +1520,7 @@ final class ZeroChatViewModel: ObservableObject {
 
         chatStreamingTask = Task {
             defer {
-                if generationSerial == generationToken {
-                    chatStreamingTask = nil
-                    isChatStreaming = false
-                }
+                finishGenerationIfCurrent(generationToken: generationToken, kind: .chat)
             }
             var retryIndex = 0
             do {
@@ -1606,10 +1620,7 @@ final class ZeroChatViewModel: ObservableObject {
 
         imageGenerationTask = Task {
             defer {
-                if generationSerial == generationToken {
-                    imageGenerationTask = nil
-                    isChatStreaming = false
-                }
+                finishGenerationIfCurrent(generationToken: generationToken, kind: .image)
             }
             do {
                 let image: GeneratedImage

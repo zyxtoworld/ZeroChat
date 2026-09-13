@@ -3046,11 +3046,27 @@ const contracts = {
     ],
     [
       'Apple image generation must be owned by a cancellable generation task and Stop must terminalize cancellation.',
-      /private var imageGenerationTask: Task<Void, Never>\?[\s\S]*?func stopGenerating\(\)[\s\S]*?chatStreamingTask\?\.cancel\(\)[\s\S]*?imageGenerationTask\?\.cancel\(\)[\s\S]*?imageGenerationTask = Task \{[\s\S]*?defer[\s\S]*?imageGenerationTask = nil[\s\S]*?isChatStreaming = false[\s\S]*?catch is CancellationError[\s\S]*?appleStoppedImageMessage\(/,
+      [
+        'private var imageGenerationTask: Task<Void, Never>?',
+        'func stopGenerating()',
+        'chatStreamingTask?.cancel()',
+        'imageGenerationTask?.cancel()',
+        'imageGenerationTask = Task {',
+        'finishGenerationIfCurrent(generationToken: generationToken, kind: .image)',
+        'catch is CancellationError',
+        'appleStoppedImageMessage(',
+      ],
     ],
     [
       'Apple chat and image generation cleanup must be guarded by one generation token so a late cancellation cannot clear a newer task.',
-      /(?=[\s\S]*private var generationSerial = 0)(?=[\s\S]*generationSerial \+= 1[\s\S]*let generationToken = generationSerial[\s\S]*chatStreamingTask = Task \{[\s\S]*?guard generationSerial == generationToken else \{ return \}[\s\S]*?imageGenerationTask = Task \{[\s\S]*?guard generationSerial == generationToken else \{ return \})/,
+      [
+        'private var generationSerial = 0',
+        'private enum GenerationKind',
+        'private func finishGenerationIfCurrent(generationToken: Int, kind: GenerationKind)',
+        'guard generationSerial == generationToken else { return }',
+        'finishGenerationIfCurrent(generationToken: generationToken, kind: .chat)',
+        'finishGenerationIfCurrent(generationToken: generationToken, kind: .image)',
+      ],
     ],
     [
       'Apple chat generation must auto-retry transient provider failures before any streamed text while preserving Stop cancellation.',

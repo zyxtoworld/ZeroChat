@@ -71,6 +71,35 @@ test('AppleChatViewModel sends each image action through one upper-layer request
   assert.match(functionBlock(source, '    private func sendChat(in conversation: Conversation)'), /while true/)
 })
 
+test('Apple generation cleanup rejects stale chat and image task owners', () => {
+  const source = readAppleSource('App/AppleChatViewModel.swift')
+
+  assert.match(source, /private enum GenerationKind\s*\{\s*case chat\s*case image\s*\}/)
+  assert.match(
+    source,
+    /private func finishGenerationIfCurrent\(generationToken: Int, kind: GenerationKind\)[\s\S]*?guard generationSerial == generationToken else \{ return \}[\s\S]*?switch kind/
+  )
+  assert.equal(
+    occurrences(source, 'finishGenerationIfCurrent(generationToken: generationToken, kind: .chat)'),
+    1
+  )
+  assert.equal(
+    occurrences(source, 'finishGenerationIfCurrent(generationToken: generationToken, kind: .image)'),
+    1
+  )
+})
+
+test('Apple macOS sidebar keeps selection in a window-local Binding setter', () => {
+  const sidebar = readAppleSource('App/AppleConversationSidebar.swift')
+  const chat = readAppleSource('App/ChatView.swift')
+
+  assert.match(
+    sidebar,
+    /List\(selection: Binding\([\s\S]*?get: \{ activeConversationId \}[\s\S]*?set: selectConversation/
+  )
+  assert.match(chat, /selectConversation: \{ windowActiveConversationId = \$0 \}/)
+})
+
 test('Apple chat retry uses typed HTTP status instead of failure text', () => {
   const source = readAppleSource('App/AppleChatViewModel.swift')
   const retryClassifier = source.slice(

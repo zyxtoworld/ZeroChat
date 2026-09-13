@@ -50,7 +50,7 @@ struct AppleConversationSidebar: View {
             } else {
                 List(selection: Binding(
                     get: { activeConversationId },
-                    set: { value in selectConversation(value) }
+                    set: selectConversation
                 )) {
                     ForEach(visibleConversations) { conversation in
                         HStack {
