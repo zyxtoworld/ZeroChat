@@ -2442,7 +2442,7 @@ mod tests {
         local_provider.insert("name".to_owned(), Value::String("Local".to_owned()));
         local_provider.insert("model".to_owned(), Value::String("local-model".to_owned()));
         local_provider.insert("models".to_owned(), json!(["local-model"]));
-        local_provider.insert("capabilities".to_owned(), json!(["image"]));
+        local_provider.insert("capabilities".to_owned(), json!(["image-generation"]));
         local_provider.insert("custom".to_owned(), Value::Bool(false));
         local_provider.insert("createdAt".to_owned(), Value::from(7));
         local_provider.insert("updatedAt".to_owned(), Value::from(20));
@@ -2512,7 +2512,10 @@ mod tests {
             provider["models"],
             json!(["local-model", "remote-model", "remote-image"])
         );
-        assert_eq!(provider["capabilities"], json!(["image", "chat"]));
+        assert_eq!(
+            provider["capabilities"],
+            json!(["image-generation", "chat"])
+        );
         assert_eq!(provider["custom"], true);
         assert_eq!(provider["createdAt"], 5);
         assert_eq!(provider["updatedAt"], 20);

@@ -974,7 +974,24 @@ pub(crate) fn model_for_provider_capability(
             .unwrap_or_default(),
     };
 
-    if !configured_model.is_empty() && models.iter().any(|model| model == configured_model) {
+    let configured_is_capability_compatible = match capability {
+        ProviderModelCapability::Chat => is_likely_chat_model(configured_model),
+        ProviderModelCapability::ImageGeneration => is_likely_image_model(configured_model),
+        ProviderModelCapability::ImageEditing => is_likely_image_editing_model(configured_model),
+        ProviderModelCapability::Embeddings => is_likely_embedding_model(configured_model),
+        ProviderModelCapability::Audio => is_likely_audio_model(configured_model),
+        ProviderModelCapability::Realtime => is_likely_realtime_model(configured_model),
+        ProviderModelCapability::Moderation => is_likely_moderation_model(configured_model),
+    };
+    let configured_is_opaque_model = model_capability_keys(configured_model)
+        .iter()
+        .all(|key| *key == "capability.chat");
+
+    if !configured_model.is_empty()
+        && models.iter().any(|model| model == configured_model)
+        && (configured_is_capability_compatible
+            || (configured_is_opaque_model && provider_declares_capability(provider, capability)))
+    {
         return configured_model.to_owned();
     }
 

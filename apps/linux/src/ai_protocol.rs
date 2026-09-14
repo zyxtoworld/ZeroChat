@@ -1684,17 +1684,18 @@ pub(crate) struct ImageGenerationRequest<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AnthropicRequest, AudioUpload, ImageUpload, OpenAiChatRequest, OpenAiResponsesRequest,
-        anthropic_chat_messages, apply_auth_headers, apply_proxy_headers, audio_speech_endpoint,
-        audio_speech_request, audio_transcription_endpoint, audio_transcription_request_parts,
-        chat_text_from_response, embeddings_endpoint, embeddings_request, endpoint_for,
-        generated_image_from_json, image_data_url, image_edit_endpoint, image_edit_upload_part,
-        image_responses_endpoint, model_list_endpoint, moderations_endpoint, moderations_request,
-        openai_chat_messages, process_sse_event, provider_proxy_access_key, provider_request,
-        realtime_client_secrets_endpoint, realtime_client_secrets_request, realtime_endpoint,
-        realtime_request, responses_chat_messages, responses_image_edit_request,
-        responses_image_generation_request, safe_generated_image_data_url,
-        safe_generated_image_url, select_context_messages, split_anthropic_messages,
+        AnthropicRequest, AudioUpload, ImageUpload, MAX_IMAGE_FILE_BYTES, OpenAiChatRequest,
+        OpenAiResponsesRequest, anthropic_chat_messages, apply_auth_headers, apply_proxy_headers,
+        audio_speech_endpoint, audio_speech_request, audio_transcription_endpoint,
+        audio_transcription_request_parts, chat_text_from_response, embeddings_endpoint,
+        embeddings_request, endpoint_for, generated_image_from_json, image_data_url,
+        image_edit_endpoint, image_edit_upload_part, image_responses_endpoint, model_list_endpoint,
+        moderations_endpoint, moderations_request, openai_chat_messages, process_sse_event,
+        provider_proxy_access_key, provider_request, realtime_client_secrets_endpoint,
+        realtime_client_secrets_request, realtime_endpoint, realtime_request,
+        responses_chat_messages, responses_image_edit_request, responses_image_generation_request,
+        safe_generated_image_data_url, safe_generated_image_url, select_context_messages,
+        split_anthropic_messages,
     };
     use crate::models::{
         ChatMessage, MessageAttachment, MessageRole, ProviderConfig, ProviderKind, SyncConfig,

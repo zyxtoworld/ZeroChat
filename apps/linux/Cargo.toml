@@ -10,6 +10,7 @@ anyhow = "1"
 base64 = "0.22"
 flate2 = "1"
 futures-util = "0.3"
+glib = "0.21"
 gtk = { package = "gtk4", version = "0.10" }
 pbkdf2 = "0.12"
 rand = "0.8"

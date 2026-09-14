@@ -666,7 +666,7 @@ mod tests {
         );
         assert_eq!(
             provider_settings_capability_readiness_summary("en-US", &missing_models_provider),
-            "Missing: Embeddings / Moderation / Text to speech / Audio transcription / Realtime"
+            "Missing: Embeddings / Moderation / Text to speech / Audio transcription / Realtime voice"
         );
         assert!(provider_settings_missing_capability_model_keys(&ready_provider).is_empty());
         assert_eq!(

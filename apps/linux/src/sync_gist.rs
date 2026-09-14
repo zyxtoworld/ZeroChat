@@ -384,6 +384,10 @@ async fn read_gist_file_content(
 }
 
 fn validated_github_gist_raw_url(raw_url: &str) -> Result<reqwest::Url> {
+    if !raw_url.starts_with("https://gist.githubusercontent.com/") {
+        bail!("GitHub Gist file URL is invalid.");
+    }
+
     let endpoint = reqwest::Url::parse(raw_url).context("GitHub Gist file URL is invalid.")?;
     if endpoint.scheme() != "https"
         || endpoint.host_str() != Some("gist.githubusercontent.com")

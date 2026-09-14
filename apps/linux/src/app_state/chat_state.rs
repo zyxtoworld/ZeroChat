@@ -796,6 +796,7 @@ mod tests {
         let mut snapshot = default_snapshot();
         let preferred_provider_id = snapshot.providers[0].id.clone();
         snapshot.providers[0].enabled = false;
+        snapshot.providers[1].enabled = true;
         assert!(
             snapshot
                 .providers
