@@ -326,7 +326,40 @@ namespace winrt::ZeroChat::implementation
                 width,
                 height,
                 LR_DEFAULTCOLOR));
-            return icon ? icon : LoadIconW(module, MAKEINTRESOURCEW(IDI_ZEROCHAT_APP));
+            if (icon)
+            {
+                return icon;
+            }
+
+            auto fallbackIcon = LoadIconW(module, MAKEINTRESOURCEW(IDI_ZEROCHAT_APP));
+            if (fallbackIcon)
+            {
+                return fallbackIcon;
+            }
+
+            std::wstring modulePath(32768, L'\0');
+            auto length = GetModuleFileNameW(
+                module,
+                modulePath.data(),
+                static_cast<DWORD>(modulePath.size()));
+            if (length > 0)
+            {
+                modulePath.resize(length);
+                SHFILEINFOW fileInfo{};
+                auto shellIconFlags = SHGFI_ICON |
+                    (width <= GetSystemMetrics(SM_CXSMICON) ? SHGFI_SMALLICON : SHGFI_LARGEICON);
+                if (SHGetFileInfoW(
+                        modulePath.c_str(),
+                        0,
+                        &fileInfo,
+                        sizeof(fileInfo),
+                        shellIconFlags))
+                {
+                    return fileInfo.hIcon;
+                }
+            }
+
+            return nullptr;
         }
 
         WindowsStartupRoute StartupRouteFromArguments(hstring const& startupArguments)

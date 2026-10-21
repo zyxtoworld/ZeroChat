@@ -718,10 +718,11 @@ async function main() {
     }
 
     const capture = async (name) => {
+      await evaluate('document.fonts?.ready ?? Promise.resolve()', true)
+      await waitForPaint()
       await assertPageGeometry(name)
       await assertToastGeometry(name)
       await waitForPaint()
-      await sleep(100)
       const index = screenshotIndex
       const result = await cdp.send('Page.captureScreenshot', {
         format: 'png',
