@@ -102,7 +102,7 @@ struct AppleChatConversationPane: View {
                 .refreshable {
                     await model.pullToRefreshSync()
                 }
-                .onChange(of: activeConversation?.messages.count ?? 0) {
+                .task(id: activeConversation?.messages.map(\.id)) {
                     if let id = activeConversation?.messages.last?.id {
                         proxy.scrollTo(id, anchor: .bottom)
                     }
