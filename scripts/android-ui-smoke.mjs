@@ -4323,8 +4323,14 @@ try {
     bullet: assertVisibleTextEvidence(['bullet proof'], 'rendered Markdown bullet list'),
     ordered: assertVisibleTextEvidence(['ordered visible proof'], 'rendered Markdown ordered list'),
     blockQuote: assertVisibleTextEvidence(['quote visible proof'], 'rendered Markdown blockquote'),
-    tableHeader: assertVisibleTextEvidence(['Status'], 'rendered Markdown table header'),
-    tableCell: assertVisibleTextEvidence(['ok'], 'rendered Markdown table cell'),
+    tableHeader: assertVisibleTextEvidenceWithMessageScroll(
+      ['Status'],
+      'rendered Markdown table header',
+    ),
+    tableCell: assertVisibleTextEvidenceWithMessageScroll(
+      ['ok'],
+      'rendered Markdown table cell',
+    ),
   }
   swipeMessageListUp()
   const markdownScrolledScreenshot = capture('android-ui-smoke-15a-markdown-rich-message-scrolled.png')
