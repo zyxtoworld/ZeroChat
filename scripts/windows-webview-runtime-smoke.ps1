@@ -550,7 +550,7 @@ try {
 
   $Metadata = [pscustomobject]@{
     Platform = "windows"
-    GeneratedAt = (Get-Date).ToUniversalTime().ToString("o")
+    GeneratedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'")
     Executable = (Resolve-Path $ExePath).Path
     WebIndex = (Resolve-Path $WebIndex).Path
     Screenshot = $Screenshot.FullName

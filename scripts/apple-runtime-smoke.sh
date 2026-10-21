@@ -287,7 +287,7 @@ with open(metadata, "w", encoding="utf-8") as handle:
     json.dump(
         {
             "platform": "apple",
-            "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "generatedAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             "appBundle": os.path.abspath(app),
             "appBundleManifest": app_bundle_manifest,
             "screenshot": os.path.abspath(path),

@@ -194,7 +194,7 @@ with open(metadata, "w", encoding="utf-8") as handle:
     json.dump(
         {
             "platform": "linux",
-            "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "generatedAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             "binary": os.path.abspath(binary),
             "binaryEvidence": file_evidence(binary),
             "screenshot": os.path.abspath(screenshot),
