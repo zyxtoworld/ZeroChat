@@ -345,6 +345,25 @@ namespace winrt::ZeroChat::implementation
             if (length > 0)
             {
                 modulePath.resize(length);
+                auto resourceModule = LoadLibraryExW(
+                    modulePath.c_str(),
+                    nullptr,
+                    LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+                if (resourceModule)
+                {
+                    auto resourceIcon = static_cast<HICON>(LoadImageW(
+                        resourceModule,
+                        MAKEINTRESOURCEW(IDI_ZEROCHAT_APP),
+                        IMAGE_ICON,
+                        width,
+                        height,
+                        LR_DEFAULTCOLOR));
+                    FreeLibrary(resourceModule);
+                    if (resourceIcon)
+                    {
+                        return resourceIcon;
+                    }
+                }
                 HICON extractedLarge = nullptr;
                 HICON extractedSmall = nullptr;
                 if (ExtractIconExW(

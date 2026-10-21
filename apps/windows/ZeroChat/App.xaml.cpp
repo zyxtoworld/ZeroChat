@@ -55,7 +55,7 @@ namespace winrt::ZeroChat::implementation
                 ApplyZeroChatWindowIcon(windowHandle);
             }
             ApplyZeroChatWindowIconToProcessWindows();
-            if (++retryCount >= 40)
+            if (++retryCount >= 120)
             {
                 iconRetryTimer.Stop();
             }
