@@ -27,7 +27,19 @@ rm -f "$metadata"
 
 Xvfb "$display" -screen 0 "${width}x${height}x24" -nolisten tcp >/tmp/zerochat-xvfb.log 2>&1 &
 xvfb_pid=$!
-sleep 0.5
+display_ready=0
+for _ in $(seq 1 20); do
+  if DISPLAY="$display" xdotool getdisplaygeometry >/dev/null 2>&1; then
+    display_ready=1
+    break
+  fi
+  sleep 0.25
+done
+if [[ "$display_ready" -ne 1 ]]; then
+  echo "Linux runtime smoke display did not become ready: $display" >&2
+  cat /tmp/zerochat-xvfb.log >&2 || true
+  exit 1
+fi
 
 cleanup() {
   if kill -0 "$xvfb_pid" >/dev/null 2>&1; then

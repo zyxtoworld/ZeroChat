@@ -23,6 +23,10 @@ namespace winrt::ZeroChat::implementation
     void App::OnLaunched(LaunchActivatedEventArgs const& args)
     {
         m_window = make<MainWindow>(args.Arguments());
+        m_window.Activated([](auto&&, auto&&)
+        {
+            ApplyZeroChatWindowIconToProcessWindows();
+        });
         m_window.Activate();
 
         auto nativeWindow = m_window.try_as<IWindowNative>();
