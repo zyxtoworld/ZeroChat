@@ -4371,12 +4371,19 @@ function validateReleaseBlockerSummary(
         windowsBlocker?.evidence?.currentMsixPackageCandidate ?? null
       const historicalTrustedQaPackage =
         windowsBlocker?.evidence?.historicalTrustedQaPackage ?? null
-      expect(
-        isObject(historicalTrustedQaPackage) &&
-          historicalTrustedQaPackage.evidenceType ===
-            'historical-trusted-msix-diagnostic-package-not-current-candidate',
-        'windows trusted MSIX blocker must label the historical trusted-QA package separately from the current package-candidate.',
-      )
+      if (sources.windowsTrustedMsixFailure?.missing === true) {
+        expect(
+          historicalTrustedQaPackage === null,
+          'windows trusted MSIX blocker must leave historical trusted-QA package null when no historical report exists.',
+        )
+      } else {
+        expect(
+          isObject(historicalTrustedQaPackage) &&
+            historicalTrustedQaPackage.evidenceType ===
+              'historical-trusted-msix-diagnostic-package-not-current-candidate',
+          'windows trusted MSIX blocker must label the historical trusted-QA package separately from the current package-candidate.',
+        )
+      }
       expect(
         !Object.prototype.hasOwnProperty.call(
           windowsBlocker?.evidence ?? {},
