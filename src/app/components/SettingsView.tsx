@@ -123,7 +123,7 @@ const SETTINGS_FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(', ')
 
-const MAX_SYNC_FOCUS_ATTEMPTS = 4
+const MAX_SYNC_FOCUS_ATTEMPTS = 12
 
 function syncActionFocusWasAbandoned(owner: SyncActionFocusOwner): boolean {
   const activeElement = document.activeElement
@@ -1998,7 +1998,12 @@ export function SyncTab() {
         syncFocusScheduleGenerationRef.current = schedule.generation
         syncFocusScheduleRef.current = schedule
       }
-      if (schedule.pending || schedule.attempt >= MAX_SYNC_FOCUS_ATTEMPTS) return
+      if (schedule.pending) return
+      if (schedule.attempt >= MAX_SYNC_FOCUS_ATTEMPTS) {
+        if (syncActionFocusWaitsForState(owner)) return
+        schedule.attempt = 0
+        schedule.stableFrames = 0
+      }
 
       const queueAttempt = (): void => {
         if (

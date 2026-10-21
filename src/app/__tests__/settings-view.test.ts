@@ -260,7 +260,6 @@ describe('settings draft persistence contract', () => {
     expect(settingsSource).toContain(
       'const syncFocusScheduleRef = useRef<SyncFocusSchedule | null>(null)',
     )
-    expect(settingsSource).toContain('const MAX_SYNC_FOCUS_ATTEMPTS = 4')
     expect(settingsSource).toContain('function syncActionFocusWasAbandoned(')
     expect(settingsSource).toContain('activeElement === fallback')
     expect(settingsSource).not.toContain('syncFocusRetryRef')

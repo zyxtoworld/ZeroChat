@@ -77,6 +77,9 @@ public static class ZeroChatWin32Smoke {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)]
   public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  public static extern IntPtr GetPropW(IntPtr hWnd, string lpString);
+
   [DllImport("user32.dll", EntryPoint = "GetClassLongPtrW", SetLastError = true)]
   private static extern IntPtr GetClassLongPtr64(IntPtr hWnd, int nIndex);
 
@@ -264,6 +267,7 @@ function Get-ZeroChatWindowHandle {
   param([int] $ProcessId)
 
   $script:ZeroChatWindowHandle = [IntPtr]::Zero
+  $script:ZeroChatFallbackWindowHandle = [IntPtr]::Zero
   $TargetProcessId = [uint32] $ProcessId
   $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 
@@ -276,12 +280,21 @@ function Get-ZeroChatWindowHandle {
       [ZeroChatWin32Smoke]::GetWindowThreadProcessId($WindowHandle, [ref] $WindowProcessId) | Out-Null
 
       if ($WindowProcessId -eq $TargetProcessId -and [ZeroChatWin32Smoke]::IsWindowVisible($WindowHandle)) {
-        $script:ZeroChatWindowHandle = $WindowHandle
-        return $false
+        if ([ZeroChatWin32Smoke]::GetPropW($WindowHandle, "ZeroChat.MainWindow") -ne [IntPtr]::Zero) {
+          $script:ZeroChatWindowHandle = $WindowHandle
+          return $false
+        }
+        if ($script:ZeroChatFallbackWindowHandle -eq [IntPtr]::Zero) {
+          $script:ZeroChatFallbackWindowHandle = $WindowHandle
+        }
       }
 
       return $true
     }, [IntPtr]::Zero) | Out-Null
+  }
+
+  if ($script:ZeroChatWindowHandle -eq [IntPtr]::Zero) {
+    $script:ZeroChatWindowHandle = $script:ZeroChatFallbackWindowHandle
   }
 
   return $script:ZeroChatWindowHandle
