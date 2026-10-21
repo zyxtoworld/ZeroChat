@@ -61,6 +61,8 @@ cleanup_app() {
 trap cleanup_app EXIT
 
 window_id=""
+window_width=""
+window_height=""
 for _ in $(seq 1 80); do
   if ! kill -0 "$app_pid" >/dev/null 2>&1; then
     echo "ZeroChat Linux app exited before a window was visible." >&2
@@ -68,16 +70,24 @@ for _ in $(seq 1 80); do
     exit 1
   fi
 
-  window_id="$(xdotool search --name '^ZeroChat$' 2>/dev/null | head -n 1 || true)"
-  if [[ -n "$window_id" ]]; then
-    break
+  candidate_window_id="$(xdotool search --name '^ZeroChat$' 2>/dev/null | head -n 1 || true)"
+  if [[ -n "$candidate_window_id" ]]; then
+    candidate_geometry="$(xdotool getwindowgeometry --shell "$candidate_window_id" 2>/dev/null || true)"
+    candidate_width="$(printf '%s\n' "$candidate_geometry" | awk -F= '$1 == "WIDTH" { print $2 }')"
+    candidate_height="$(printf '%s\n' "$candidate_geometry" | awk -F= '$1 == "HEIGHT" { print $2 }')"
+    if [[ -n "$candidate_width" && -n "$candidate_height" && "$candidate_width" -ge 360 && "$candidate_height" -ge 360 ]]; then
+      window_id="$candidate_window_id"
+      window_width="$candidate_width"
+      window_height="$candidate_height"
+      break
+    fi
   fi
 
   sleep 0.25
 done
 
 if [[ -z "$window_id" ]]; then
-  echo "ZeroChat Linux app did not expose a visible window in time." >&2
+  echo "ZeroChat Linux app did not expose a stable visible window in time." >&2
   cat /tmp/zerochat-linux-runtime.log >&2 || true
   exit 1
 fi
