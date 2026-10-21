@@ -30,6 +30,10 @@ namespace winrt::ZeroChat::implementation
         if (nativeWindow && SUCCEEDED(nativeWindow->get_WindowHandle(&windowHandle)))
         {
             ApplyZeroChatWindowIcon(windowHandle);
+            m_window.DispatcherQueue().TryEnqueue([windowHandle]()
+            {
+                ApplyZeroChatWindowIcon(windowHandle);
+            });
         }
     }
 
