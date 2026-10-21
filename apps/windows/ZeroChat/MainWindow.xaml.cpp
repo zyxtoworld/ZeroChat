@@ -345,6 +345,33 @@ namespace winrt::ZeroChat::implementation
             if (length > 0)
             {
                 modulePath.resize(length);
+                HICON extractedLarge = nullptr;
+                HICON extractedSmall = nullptr;
+                if (ExtractIconExW(
+                        modulePath.c_str(),
+                        0,
+                        &extractedLarge,
+                        &extractedSmall,
+                        1) > 0)
+                {
+                    const auto wantsSmall = width <= GetSystemMetrics(SM_CXSMICON);
+                    auto selected = wantsSmall
+                        ? (extractedSmall ? extractedSmall : extractedLarge)
+                        : (extractedLarge ? extractedLarge : extractedSmall);
+                    if (extractedSmall && extractedSmall != selected)
+                    {
+                        DestroyIcon(extractedSmall);
+                    }
+                    if (extractedLarge && extractedLarge != selected)
+                    {
+                        DestroyIcon(extractedLarge);
+                    }
+                    if (selected)
+                    {
+                        return selected;
+                    }
+                }
+
                 SHFILEINFOW fileInfo{};
                 auto shellIconFlags = SHGFI_ICON |
                     (width <= GetSystemMetrics(SM_CXSMICON) ? SHGFI_SMALLICON : SHGFI_LARGEICON);
