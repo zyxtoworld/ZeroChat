@@ -227,6 +227,12 @@ try {
     $OutputExe = Join-Path $PhysicalBuildRoot "output\$Platform\$Item\ZeroChat.exe"
     $OutputWebDir = Join-Path $PhysicalBuildRoot "output\$Platform\$Item\web"
     $OutputWeb = Join-Path $OutputWebDir "index.html"
+    $IconSource = Join-Path $RepoRoot "apps\windows\ZeroChat\ZeroChat.ico"
+    $OutputIcon = Join-Path $OutputDir "ZeroChat.ico"
+
+    if (-not (Test-Path $IconSource)) {
+      throw "Missing Windows title-bar icon source: $IconSource"
+    }
 
     if (-not (Test-Path $OutputExe)) {
       throw "Windows build did not produce $OutputExe"
@@ -235,6 +241,8 @@ try {
     if (-not (Test-Path $OutputWeb)) {
       throw "Windows build did not copy the Web/PWA bundle to $OutputWeb"
     }
+
+    Copy-Item -LiteralPath $IconSource -Destination $OutputIcon -Force
 
     if ($MsixReady) {
       Remove-WebView2RuntimeUserDataDirs $OutputDir

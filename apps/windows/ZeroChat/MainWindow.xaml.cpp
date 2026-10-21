@@ -551,7 +551,19 @@ namespace winrt::ZeroChat::implementation
         {
             auto windowId = winrt::Microsoft::UI::GetWindowIdFromWindow(windowHandle);
             auto appWindow = winrt::Microsoft::UI::Windowing::AppWindow::GetFromWindowId(windowId);
-            if (appWindow && bigIcon)
+            if (!appWindow)
+            {
+                return;
+            }
+
+            auto iconPath = ModuleDirectory() / L"ZeroChat.ico";
+            if (std::filesystem::exists(iconPath))
+            {
+                auto iconPathString = winrt::hstring{ iconPath.wstring() };
+                appWindow.SetIcon(iconPathString);
+                appWindow.SetTitleBarIcon(iconPathString);
+            }
+            if (bigIcon)
             {
                 auto iconId = winrt::Microsoft::UI::GetIconIdFromIcon(bigIcon);
                 auto titleBar = appWindow.TitleBar();
