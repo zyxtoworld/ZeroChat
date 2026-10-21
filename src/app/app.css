@@ -2460,7 +2460,9 @@ select {
   .image-source-preview {
     max-height: 150px;
   }
+}
 
+@media (max-height: 560px) {
   .zc-audio-composer {
     max-height: 160px;
     overflow-y: auto;

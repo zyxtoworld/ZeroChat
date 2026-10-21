@@ -144,7 +144,8 @@ function Get-WindowIconEvidence {
   }
 
   [pscustomobject]@{
-    titleBarIconPresent = $SmallIcon -ne [IntPtr]::Zero -or $SmallIcon2 -ne [IntPtr]::Zero -or $BigIcon -ne [IntPtr]::Zero
+    # WinUI can render the title-bar icon from the window class while WM_GETICON remains empty.
+    titleBarIconPresent = $SmallIcon -ne [IntPtr]::Zero -or $SmallIcon2 -ne [IntPtr]::Zero -or $BigIcon -ne [IntPtr]::Zero -or $ClassSmallIcon -ne [IntPtr]::Zero -or $ClassBigIcon -ne [IntPtr]::Zero
     classIconPresent = $ClassSmallIcon -ne [IntPtr]::Zero -or $ClassBigIcon -ne [IntPtr]::Zero
     executableIconPresent = $ExecutableIconPresent
     executableIconWidth = $ExecutableIconWidth

@@ -454,11 +454,13 @@ namespace winrt::ZeroChat::implementation
 
         if (smallIcon)
         {
+            SetClassLongPtrW(windowHandle, GCLP_HICONSM, reinterpret_cast<LONG_PTR>(smallIcon));
             SendMessageW(windowHandle, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(smallIcon));
         }
 
         if (bigIcon)
         {
+            SetClassLongPtrW(windowHandle, GCLP_HICON, reinterpret_cast<LONG_PTR>(bigIcon));
             SendMessageW(windowHandle, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(bigIcon));
         }
     }

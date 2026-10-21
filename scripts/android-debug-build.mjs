@@ -292,7 +292,9 @@ const stableJunctionArgs = usesAsciiJunction
       '--no-watch-fs',
       '-Pkotlin.compiler.execution.strategy=in-process',
     ]
-  : []
+  : process.env.CI === 'true'
+    ? ['--no-daemon']
+    : []
 const executionArgs = [...stableJunctionArgs, ...requestedTasks]
 
 console.log(`Using JAVA_HOME=${env.JAVA_HOME ?? 'PATH java'}`)
@@ -303,6 +305,8 @@ if (usesAsciiJunction) {
   console.log(
     'Using stable Gradle junction mode=--no-daemon --no-build-cache --no-watch-fs --in-process-kotlin',
   )
+} else if (process.env.CI === 'true') {
+  console.log('Using CI Gradle mode=--no-daemon')
 }
 console.log(`Running Gradle task: ${requestedTasks.join(' ')}`)
 

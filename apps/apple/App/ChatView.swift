@@ -280,10 +280,10 @@ struct ChatView: View {
             ensureWindowConversationSelection()
             focusComposerIfSharedTextArrived()
         }
-        .onChange(of: model.snapshot.conversations.map(\.id)) {
+        .onChange(of: model.snapshot.conversations.map(\.id)) { _ in
             ensureWindowConversationSelection()
         }
-        .onChange(of: scenePhase) { _, phase in
+        .onChange(of: scenePhase) { phase in
             if phase == .active {
                 focusComposerIfSharedTextArrived()
             }
