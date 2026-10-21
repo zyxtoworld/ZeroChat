@@ -1132,14 +1132,14 @@ const sourceReportRefreshSteps = [
     args: [
       'scripts/hosted-native-ci-evidence-check.mjs',
       '--refresh-diagnostic',
-      '--report=.manual-qa/hosted-native-ci-evidence.json',
+      '--report=.manual-qa/hosted-native-ci-evidence-diagnostic.json',
     ],
   },
   {
     label: 'Validate hosted native CI diagnostic report',
     args: [
       'scripts/hosted-native-ci-evidence-check.mjs',
-      '--report=.manual-qa/hosted-native-ci-evidence.json',
+      '--report=.manual-qa/hosted-native-ci-evidence-diagnostic.json',
     ],
   },
   {
