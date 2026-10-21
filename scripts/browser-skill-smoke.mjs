@@ -4501,6 +4501,10 @@ async function main() {
       'sync conflict resolution completion',
       20_000,
     )
+    await waitFor(
+      'document.activeElement === document.querySelector("[data-zc-sync-now=\\"true\\"]")',
+      'sync conflict resolution focus restoration',
+    )
     await evaluate(
       'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))',
       true,
