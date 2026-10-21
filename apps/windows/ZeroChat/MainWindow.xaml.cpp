@@ -489,8 +489,16 @@ namespace winrt::ZeroChat::implementation
             }
         }
 
-        static HICON smallIcon = LoadZeroChatIcon(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
-        static HICON bigIcon = LoadZeroChatIcon(GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
+        static HICON smallIcon = nullptr;
+        static HICON bigIcon = nullptr;
+        if (!smallIcon)
+        {
+            smallIcon = LoadZeroChatIcon(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+        }
+        if (!bigIcon)
+        {
+            bigIcon = LoadZeroChatIcon(GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
+        }
 
         if (smallIcon)
         {

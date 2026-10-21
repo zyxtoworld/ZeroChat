@@ -2343,9 +2343,13 @@ select {
   }
 
   .zc-settings-scroll > .zc-feature-hint .zc-btn {
-    flex: 1 1 100%;
+    flex: 0 0 100%;
+    width: 100%;
     min-width: 0;
+    box-sizing: border-box;
+    align-self: stretch;
     justify-content: center;
+    text-align: center;
   }
 
   .zc-composer-mode,
