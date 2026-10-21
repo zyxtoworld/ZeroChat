@@ -2057,12 +2057,9 @@ export function SyncTab() {
   useLayoutEffect(() => {
     if (syncing || syncSettingPending) return
     const owner = syncActionFocusOwnerRef.current
-    if (!owner || syncActionFocusWaitsForState(owner)) return
-    const target = resolveSyncActionFocus(owner)
-    if (target) focusInteractionElement(target)
+    if (!owner) return
     scheduleSyncActionFocus(owner)
   }, [
-    resolveSyncActionFocus,
     scheduleSyncActionFocus,
     syncConflict,
     syncing,
