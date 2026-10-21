@@ -2448,7 +2448,7 @@ select {
   }
 }
 
-@media (max-height: 560px) {
+@media (max-height: 700px) {
   .image-compose-panel {
     max-height: min(38svh, 210px);
     overflow-y: auto;

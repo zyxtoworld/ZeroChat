@@ -111,6 +111,18 @@ private enum ShareExtensionBridge {
     ]
 }
 
+@MainActor
+private final class ShareTextCollector {
+    private(set) var values: [String] = []
+
+    func append(_ value: String?) {
+        if let value {
+            values.append(value)
+        }
+    }
+}
+
+@MainActor
 @objc(ShareViewController)
 final class ShareViewController: UIViewController {
     private let statusLabel = UILabel()
@@ -153,19 +165,17 @@ final class ShareViewController: UIViewController {
             return
         }
 
-        var collected: [String] = []
+        let collector = ShareTextCollector()
         let group = DispatchGroup()
 
         for provider in providers {
-            loadText(from: provider, group: group) { value in
-                if let value {
-                    collected.append(value)
-                }
+            loadText(from: provider, group: group) { @MainActor value in
+                collector.append(value)
             }
         }
 
-        group.notify(queue: .main) { [weak self] in
-            let text = collected
+        group.notify(queue: .main) { [weak self, collector] in
+            let text = collector.values
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
                 .joined(separator: "\n\n")
@@ -187,13 +197,14 @@ final class ShareViewController: UIViewController {
     private func loadText(
         from provider: NSItemProvider,
         group: DispatchGroup,
-        completion: @escaping (String?) -> Void
+        completion: @escaping @MainActor @Sendable (String?) -> Void
     ) {
         if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
             group.enter()
             provider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { item, _ in
-                DispatchQueue.main.async {
-                    completion(Self.string(from: item))
+                let value = Self.string(from: item)
+                Task { @MainActor in
+                    completion(value)
                     group.leave()
                 }
             }
@@ -203,15 +214,16 @@ final class ShareViewController: UIViewController {
         if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
             group.enter()
             provider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { item, _ in
-                DispatchQueue.main.async {
-                    completion(Self.string(from: item))
+                let value = Self.string(from: item)
+                Task { @MainActor in
+                    completion(value)
                     group.leave()
                 }
             }
         }
     }
 
-    private static func string(from item: NSSecureCoding?) -> String? {
+    private nonisolated static func string(from item: NSSecureCoding?) -> String? {
         if let text = item as? String {
             return text
         }
@@ -238,11 +250,13 @@ final class ShareViewController: UIViewController {
             extensionContext.completeRequest(returningItems: nil)
             return
         }
-        extensionContext.open(openAppURL) { opened in
-            if !opened {
-                ShareExtensionBridge.clear()
+        extensionContext.open(openAppURL) { [weak self] opened in
+            Task { @MainActor [weak self] in
+                if !opened {
+                    ShareExtensionBridge.clear()
+                }
+                self?.extensionContext?.completeRequest(returningItems: nil)
             }
-            extensionContext.completeRequest(returningItems: nil)
         }
     }
 
