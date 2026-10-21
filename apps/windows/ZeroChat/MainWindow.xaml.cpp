@@ -345,6 +345,21 @@ namespace winrt::ZeroChat::implementation
             if (length > 0)
             {
                 modulePath.resize(length);
+                auto iconPath = ModuleDirectory() / L"ZeroChat.ico";
+                if (std::filesystem::exists(iconPath))
+                {
+                    auto fileIcon = static_cast<HICON>(LoadImageW(
+                        nullptr,
+                        iconPath.c_str(),
+                        IMAGE_ICON,
+                        width,
+                        height,
+                        LR_LOADFROMFILE | LR_DEFAULTCOLOR));
+                    if (fileIcon)
+                    {
+                        return fileIcon;
+                    }
+                }
                 auto resourceModule = LoadLibraryExW(
                     modulePath.c_str(),
                     nullptr,
