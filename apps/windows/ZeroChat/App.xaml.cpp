@@ -4,6 +4,7 @@
 #include "App.g.cpp"
 #endif
 #include "MainWindow.xaml.h"
+#include <chrono>
 #include <windows.h>
 #include <microsoft.ui.xaml.window.h>
 
@@ -44,6 +45,22 @@ namespace winrt::ZeroChat::implementation
             }
             ApplyZeroChatWindowIconToProcessWindows();
         });
+        auto iconRetryTimer = m_window.DispatcherQueue().CreateTimer();
+        iconRetryTimer.Interval(std::chrono::milliseconds(250));
+        iconRetryTimer.IsRepeating(true);
+        iconRetryTimer.Tick([iconRetryTimer, windowHandle, retryCount = 0](auto&&, auto&&) mutable
+        {
+            if (windowHandle)
+            {
+                ApplyZeroChatWindowIcon(windowHandle);
+            }
+            ApplyZeroChatWindowIconToProcessWindows();
+            if (++retryCount >= 40)
+            {
+                iconRetryTimer.Stop();
+            }
+        });
+        iconRetryTimer.Start();
     }
 
 }
