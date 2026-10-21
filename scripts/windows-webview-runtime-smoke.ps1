@@ -75,11 +75,13 @@ public static class ZeroChatWin32Smoke {
   public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
 
   [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-  public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+  public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
 
   [DllImport("user32.dll", CharSet = CharSet.Unicode)]
   public static extern IntPtr GetPropW(IntPtr hWnd, string lpString);
-
   [DllImport("user32.dll", EntryPoint = "GetClassLongPtrW", SetLastError = true)]
   private static extern IntPtr GetClassLongPtr64(IntPtr hWnd, int nIndex);
 
@@ -300,6 +302,38 @@ function Get-ZeroChatWindowHandle {
   return $script:ZeroChatWindowHandle
 }
 
+function Get-ProcessWindowIconEvidence {
+  param(
+    [int] $ProcessId,
+    [string] $ExecutablePath
+  )
+
+  $TargetProcessId = [uint32] $ProcessId
+  $script:ZeroChatWindowDiagnostics = @()
+  [ZeroChatWin32Smoke]::EnumWindows({
+    param($WindowHandle, $Param)
+
+    [uint32] $WindowProcessId = 0
+    [ZeroChatWin32Smoke]::GetWindowThreadProcessId($WindowHandle, [ref] $WindowProcessId) | Out-Null
+    if ($WindowProcessId -eq $TargetProcessId -and [ZeroChatWin32Smoke]::IsWindowVisible($WindowHandle)) {
+      $ClassName = [System.Text.StringBuilder]::new(256)
+      $WindowTitle = [System.Text.StringBuilder]::new(256)
+      [ZeroChatWin32Smoke]::GetClassName($WindowHandle, $ClassName, $ClassName.Capacity) | Out-Null
+      [ZeroChatWin32Smoke]::GetWindowText($WindowHandle, $WindowTitle, $WindowTitle.Capacity) | Out-Null
+      $script:ZeroChatWindowDiagnostics += [pscustomobject]@{
+        handle = $WindowHandle.ToInt64()
+        className = $ClassName.ToString()
+        windowTitle = $WindowTitle.ToString()
+        brandedPropertyPresent = [ZeroChatWin32Smoke]::GetPropW($WindowHandle, "ZeroChat.MainWindow") -ne [IntPtr]::Zero
+        icon = Get-WindowIconEvidence -WindowHandle $WindowHandle -ExecutablePath $ExecutablePath
+      }
+    }
+    return $true
+  }, [IntPtr]::Zero) | Out-Null
+
+  return @($script:ZeroChatWindowDiagnostics)
+}
+
 function Get-BitmapStats {
   param([System.Drawing.Bitmap] $Bitmap)
 
@@ -430,7 +464,10 @@ try {
     throw "ZeroChat.exe does not expose an associated app icon."
   }
   if (-not $WindowIcon.titleBarIconPresent) {
-    $Evidence = $WindowIcon | ConvertTo-Json -Compress
+    $Evidence = [pscustomobject]@{
+      selectedWindow = $WindowIcon
+      processWindows = @(Get-ProcessWindowIconEvidence -ProcessId $Process.Id -ExecutablePath $ExePath)
+    } | ConvertTo-Json -Compress -Depth 8
     throw "ZeroChat window did not expose the branded app icon to the title bar. Evidence: $Evidence"
   }
 
