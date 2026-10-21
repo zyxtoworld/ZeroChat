@@ -87,11 +87,11 @@ jobs:
         with:
           name: windows-release-shell
           path: |
-            .local\zerochat\artifacts\windows-build\output\x64\Release
-            .manual-qa\ZeroChat_*.msix
-            .manual-qa\windows-webview-runtime-smoke.png
-            .manual-qa\windows-webview-runtime-smoke.json
-            .manual-qa\native-prereq-windows.json
+            .local/zerochat/artifacts/windows-build/output/x64/Release
+            .manual-qa/ZeroChat_*.msix
+            .manual-qa/windows-webview-runtime-smoke.png
+            .manual-qa/windows-webview-runtime-smoke.json
+            .manual-qa/native-prereq-windows.json
 
   android-native:
     name: Android debug/release build
@@ -262,6 +262,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Refresh hosted native source fingerprint
+        run: node scripts/native-prereq-report-refresh.mjs
       - uses: actions/download-artifact@v4
         with:
           name: windows-release-shell
