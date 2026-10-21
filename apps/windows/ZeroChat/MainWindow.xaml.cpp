@@ -549,6 +549,21 @@ namespace winrt::ZeroChat::implementation
         }
     }
 
+    void ApplyZeroChatWindowIconToProcessWindows()
+    {
+        const auto processId = GetCurrentProcessId();
+        EnumWindows([](HWND windowHandle, LPARAM parameter) -> BOOL
+        {
+            DWORD windowProcessId = 0;
+            GetWindowThreadProcessId(windowHandle, &windowProcessId);
+            if (windowProcessId == static_cast<DWORD>(parameter))
+            {
+                ApplyZeroChatWindowIcon(windowHandle);
+            }
+            return TRUE;
+        }, static_cast<LPARAM>(processId));
+    }
+
     void MainWindow::ApplyWindowIcon()
     {
         HWND windowHandle = m_windowHandle;

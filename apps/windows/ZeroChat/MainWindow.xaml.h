@@ -7,6 +7,7 @@
 namespace winrt::ZeroChat::implementation
 {
     void ApplyZeroChatWindowIcon(HWND windowHandle);
+    void ApplyZeroChatWindowIconToProcessWindows();
     enum class WindowsStartupRoute
     {
         Chat,
