@@ -268,10 +268,11 @@ expect(
 )
 expect(
   has(project, '<WindowsPackageType Condition="\'$(ZeroChatMsixBuild)\'!=\'true\'">None</WindowsPackageType>') &&
+    has(project, '<WindowsAppSDKSelfContained Condition="\'$(ZeroChatMsixBuild)\'!=\'true\'">true</WindowsAppSDKSelfContained>') &&
     has(project, '<WindowsAppSdkBootstrapInitialize Condition="\'$(ZeroChatMsixBuild)\'==\'true\'">false</WindowsAppSdkBootstrapInitialize>') &&
     has(project, 'zerochat-build-mode.txt') &&
     has(project, 'ZeroChatMsixBuild=$(ZeroChatMsixBuild)'),
-  'Windows project must keep unpackaged local launch bootstrapper behavior separate from MSIX-ready package builds.',
+  'Windows project must keep unpackaged self-contained launch behavior separate from MSIX-ready package builds.',
 )
 expect(
   has(project, '<ApplicationIcon>ZeroChat.ico</ApplicationIcon>') &&
