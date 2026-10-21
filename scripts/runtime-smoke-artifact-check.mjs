@@ -107,9 +107,11 @@ const nativeSourceFingerprintExcludedDirectories = new Set([
   '.build',
   '.gradle',
   '.swiftpm',
+  'bin',
   'build',
   'DerivedData',
   'node_modules',
+  'obj',
   'target',
 ])
 const nativeSourceFingerprintAllowedExtensions = new Set([

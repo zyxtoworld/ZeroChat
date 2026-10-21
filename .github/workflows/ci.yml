@@ -251,7 +251,7 @@ jobs:
         with:
           include-hidden-files: true
           name: apple-ios-simulator-build
-          path: .manual-qa/apple-ios-simulator-derived-data/Build/Products/Debug-iphonesimulator/ZeroChat.app
+          path: .manual-qa/apple-ios-simulator-derived-data/Build/Products/Debug-iphonesimulator
 
   hosted-native-ci-evidence:
     name: Hosted native CI evidence report
