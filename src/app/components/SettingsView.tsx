@@ -11,7 +11,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent } from 'react'
 
 import { providerPresets } from '../../data/presets'
 import {
@@ -2054,12 +2054,22 @@ export function SyncTab() {
     [resolveSyncActionFocus],
   )
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (syncing || syncSettingPending) return
     const owner = syncActionFocusOwnerRef.current
-    if (!owner) return
+    if (!owner || syncActionFocusWaitsForState(owner)) return
+    const target = resolveSyncActionFocus(owner)
+    if (target) focusInteractionElement(target)
     scheduleSyncActionFocus(owner)
-  }, [scheduleSyncActionFocus, syncing, syncSettingPending])
+  }, [
+    resolveSyncActionFocus,
+    scheduleSyncActionFocus,
+    syncConflict,
+    syncing,
+    syncSettingPending,
+    sync?.lastSyncAt,
+    sync?.lastSyncStatus,
+  ])
 
   useEffect(
     () => () => {
