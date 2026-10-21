@@ -38,6 +38,7 @@ class AiClientCapabilityRuntimeTest {
                 input = "hello",
             )
         }
+        Unit
 
     }
     @Test

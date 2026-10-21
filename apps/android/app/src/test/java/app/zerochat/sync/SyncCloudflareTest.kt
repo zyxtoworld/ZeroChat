@@ -28,6 +28,8 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
+import org.junit.jupiter.api.AfterEach
+
 class SyncCloudflareTest {
     @Test
     fun normalizeWorkerEndpointAllowsHttpsAndLoopbackDebuggingOnly() {
@@ -64,7 +66,7 @@ class SyncCloudflareTest {
     @Test
     fun readSnapshotEnvelopeDrainsNotFoundBodyBeforeFallbackUpload() = runBlocking {
         val notFoundBody = ByteReadChannel("legacy snapshot missing")
-        val client = HttpClient(
+        val client = trackedHttpClient(
             MockEngine {
                 respond(
                     content = notFoundBody,
@@ -86,7 +88,7 @@ class SyncCloudflareTest {
         val envelope = snapshotEnvelope(updatedAt = 100)
         val serialized = Json.encodeToString(EncryptedSnapshotEnvelope.serializer(), envelope)
         val etag = "\"snapshot-sha256-${"a".repeat(64)}\""
-        val client = HttpClient(
+        val client = trackedHttpClient(
             MockEngine {
                 respond(
                     content = serialized,
@@ -169,7 +171,7 @@ class SyncCloudflareTest {
             manifestKey = "manifest-11111111-1111-4111-8111-111111111111.json",
             updatedAt = 100,
         )
-        val client = HttpClient(
+        val client = trackedHttpClient(
             MockEngine {
                 respond(
                     Json.encodeToString(IncrementalSyncHead.serializer(), head),
@@ -221,7 +223,7 @@ class SyncCloudflareTest {
 
     @Test
     fun readSnapshotEnvelopeReportsWorkerErrorBody() {
-        val client = HttpClient(
+        val client = trackedHttpClient(
             MockEngine {
                 respondError(HttpStatusCode.Forbidden, "bad access key")
             },
@@ -240,7 +242,7 @@ class SyncCloudflareTest {
     @Test
     fun readSnapshotEnvelopeCancelsChunkedBodiesPastTheSafetyLimit() {
         val oversizedBody = ByteReadChannel("x".repeat(MAX_SYNC_SNAPSHOT_BYTES + 1))
-        val client = HttpClient(
+        val client = trackedHttpClient(
             MockEngine {
                 respond(
                     content = oversizedBody,
@@ -269,7 +271,7 @@ class SyncCloudflareTest {
     @Test
     fun clearRemoteValidatesRotatedGenerationAndDrainsSuccessBody() = runBlocking {
         val successBody = ByteReadChannel("{\"cleared\":true}")
-        val client = HttpClient(
+        val client = trackedHttpClient(
             MockEngine { request ->
                 assertEquals(HttpMethod.Delete, request.method)
                 assertEquals("/sync/clear", request.url.encodedPath)
@@ -291,7 +293,7 @@ class SyncCloudflareTest {
     @Test
     fun clearRemoteRejectsSuccessWithoutRotatedGeneration() {
         val successBody = ByteReadChannel("{\"cleared\":true}")
-        val client = HttpClient(
+        val client = trackedHttpClient(
             MockEngine {
                 respond(
                     content = successBody,
@@ -319,7 +321,7 @@ class SyncCloudflareTest {
         val headDeleteBody = ByteReadChannel("head already empty")
         val snapshotMissingBody = ByteReadChannel("snapshot already empty")
         val calls = mutableListOf<String>()
-        val client = HttpClient(
+        val client = trackedHttpClient(
             MockEngine { request ->
                 calls += "${request.method.value} ${request.url.encodedPath}"
                 when {
@@ -376,7 +378,7 @@ class SyncCloudflareTest {
     @Test
     fun deleteIncrementalObjectDrainsMissingObjectBody() = runBlocking {
         val missingObjectBody = ByteReadChannel("chunk already gone")
-        val client = HttpClient(
+        val client = trackedHttpClient(
             MockEngine { request ->
                 assertEquals(HttpMethod.Delete, request.method)
                 assertEquals(TEST_GENERATION, request.headers[TEST_GENERATION_HEADER])
@@ -448,7 +450,7 @@ class SyncCloudflareTest {
     fun legacySnapshotFirstPublishUsesCreateOnlyCondition() = runBlocking {
         var ifNoneMatch: String? = null
         var ifMatch: String? = null
-        val client = HttpClient(
+        val client = trackedHttpClient(
             MockEngine { request ->
                 ifNoneMatch = request.headers[HttpHeaders.IfNoneMatch]
                 ifMatch = request.headers[HttpHeaders.IfMatch]
@@ -475,7 +477,7 @@ class SyncCloudflareTest {
         val etag = "\"snapshot-sha256-${"b".repeat(64)}\""
         var ifNoneMatch: String? = null
         var ifMatch: String? = null
-        val client = HttpClient(
+        val client = trackedHttpClient(
             MockEngine { request ->
                 ifNoneMatch = request.headers[HttpHeaders.IfNoneMatch]
                 ifMatch = request.headers[HttpHeaders.IfMatch]
@@ -1149,6 +1151,17 @@ class SyncCloudflareTest {
         HttpStatusCode.PreconditionFailed,
         HttpStatusCode(428, "Precondition Required"),
     )
+
+    private val trackedClients = mutableListOf<HttpClient>()
+
+    @AfterEach
+    fun closeTrackedClients() {
+        trackedClients.forEach(HttpClient::close)
+        trackedClients.clear()
+    }
+
+    private fun trackedHttpClient(engine: MockEngine): HttpClient =
+        HttpClient(engine).also(trackedClients::add)
 
     private companion object {
         const val TEST_GENERATION_HEADER = "x-zerochat-sync-generation"

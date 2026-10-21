@@ -471,10 +471,12 @@ namespace winrt::ZeroChat::implementation
             auto appWindow = winrt::Microsoft::UI::Windowing::AppWindow::GetFromWindowId(windowId);
             if (appWindow && bigIcon)
             {
+                auto iconId = winrt::Microsoft::UI::GetIconIdFromIcon(bigIcon);
                 auto titleBar = appWindow.TitleBar();
                 titleBar.IconShowOptions(
                     winrt::Microsoft::UI::Windowing::IconShowOptions::ShowIconAndSystemMenu);
-                appWindow.SetTitleBarIcon(winrt::Microsoft::UI::GetIconIdFromIcon(bigIcon));
+                appWindow.SetIcon(iconId);
+                appWindow.SetTitleBarIcon(iconId);
             }
         }
         catch (...)

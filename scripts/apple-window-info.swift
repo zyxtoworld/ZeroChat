@@ -51,7 +51,7 @@ else {
     exit(69)
 }
 
-var best: WindowCandidate?
+private var best: WindowCandidate?
 
 for window in windows {
     guard

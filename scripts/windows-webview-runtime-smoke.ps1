@@ -430,7 +430,8 @@ try {
     throw "ZeroChat.exe does not expose an associated app icon."
   }
   if (-not $WindowIcon.titleBarIconPresent) {
-    throw "ZeroChat window did not expose the branded app icon to the title bar."
+    $Evidence = $WindowIcon | ConvertTo-Json -Compress
+    throw "ZeroChat window did not expose the branded app icon to the title bar. Evidence: $Evidence"
   }
 
   $TrayProbe = [pscustomobject]@{
