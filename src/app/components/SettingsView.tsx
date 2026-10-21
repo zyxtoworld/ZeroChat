@@ -1272,7 +1272,7 @@ function ProvidersTab() {
             providerPresets.find((preset) => preset.id === presetId) ?? providerPresets[0],
           )}
           style={{
-            flex: '1 0 180px',
+            flex: '1 0 190px',
             minWidth: 0,
             maxWidth: '100%',
             padding: '9px 12px',
