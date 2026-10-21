@@ -65,8 +65,15 @@ const ANDROID_CLOUD_SYNC_SMOKE_TIMEOUT_MS = 2_700_000
 const ANDROID_CONTACT_SHEET_TIMEOUT_MS = 180_000
 const ANDROID_LAUNCHER_READINESS_TIMEOUT_MS = 180_000
 const ANDROID_LAUNCHER_READINESS_POLL_MS = 2_000
-const ANDROID_EMULATOR_MEMORY_MB = 4_096
-const ANDROID_EMULATOR_GPU = 'host'
+const ANDROID_EMULATOR_MEMORY_MB = Number(
+  optionValue('--memory') ??
+    process.env.ZEROCHAT_ANDROID_EMULATOR_MEMORY_MB ??
+    4_096,
+)
+const ANDROID_EMULATOR_GPU =
+  optionValue('--gpu') ??
+  process.env.ZEROCHAT_ANDROID_EMULATOR_GPU?.trim() ??
+  'host'
 const androidQaLockPath = path.join(
   repoRoot,
   '.local',
@@ -83,6 +90,20 @@ function optionValue(name) {
 
   const index = rawArgs.indexOf(name)
   return index >= 0 ? rawArgs[index + 1] : undefined
+}
+
+if (
+  !Number.isInteger(ANDROID_EMULATOR_MEMORY_MB) ||
+  ANDROID_EMULATOR_MEMORY_MB < 1_024 ||
+  ANDROID_EMULATOR_MEMORY_MB > 16_384
+) {
+  throw new Error('--memory must be an integer between 1024 and 16384 MB.')
+}
+
+if (!new Set(['host', 'swiftshader_indirect', 'software', 'angle_indirect']).has(ANDROID_EMULATOR_GPU)) {
+  throw new Error(
+    '--gpu must be one of host, swiftshader_indirect, software, or angle_indirect.',
+  )
 }
 
 function firstExisting(candidates) {
