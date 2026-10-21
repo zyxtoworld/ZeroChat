@@ -192,6 +192,10 @@ pnpm run build:windows:msix
 The direct PowerShell form remains available when you need custom parameters:
 `.\scripts\build-windows.ps1 -Configuration Release -Platform x64`.
 
+The unpackaged Release build is self-contained for Windows App SDK runtime
+files, so the runtime smoke can launch the copied output without relying on a
+machine-wide Windows App SDK installation.
+
 ```powershell
 pnpm run build
 msbuild apps\windows\ZeroChat.sln /restore /p:Configuration=Debug /p:Platform=x64
