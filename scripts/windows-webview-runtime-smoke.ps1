@@ -74,6 +74,9 @@ public static class ZeroChatWin32Smoke {
   [DllImport("user32.dll")]
   public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
 
+  [DllImport("user32.dll")]
+  public static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
   [DllImport("user32.dll", CharSet = CharSet.Unicode)]
   public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
 
