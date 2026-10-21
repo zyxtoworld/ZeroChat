@@ -4544,8 +4544,17 @@ async function main() {
     )
     await evaluate('window.__zerochatAppTest?.setSyncConflictFixture(true)')
     await waitFor(
-      'Boolean(document.querySelector(".zc-sync-conflict"))',
-      'second sync conflict resolution fixture',
+      `(() => {
+        const action = document.querySelector('.zc-sync-conflict .zc-btn')
+        const generalTab = document.querySelector('#settings-tab-general')
+        return (
+          action instanceof HTMLButtonElement &&
+          !action.disabled &&
+          generalTab instanceof HTMLButtonElement &&
+          !generalTab.disabled
+        )
+      })()`,
+      'second sync conflict actions ready',
     )
     const conflictUserFocusState = await evaluate(`(() => {
       const action = document.querySelector('.zc-sync-conflict .zc-btn')
