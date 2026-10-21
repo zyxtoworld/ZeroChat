@@ -2081,11 +2081,7 @@ export function SyncTab() {
       fallbackTarget,
     }
     syncActionFocusOwnerRef.current = owner
-    try {
-      return await action()
-    } finally {
-      scheduleSyncActionFocus(owner)
-    }
+    return action()
   }
 
   const commitSyncSetting = (
