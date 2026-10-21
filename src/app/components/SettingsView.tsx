@@ -2028,6 +2028,7 @@ export function SyncTab() {
           }
           schedule.attempt += 1
           const target = resolveSyncActionFocus(owner)
+          focusInteractionElement(target)
           if (!target) {
             schedule.stableFrames = 0
           } else {
