@@ -14,6 +14,8 @@
 #include <vector>
 #include <windows.h>
 #include <microsoft.ui.xaml.window.h>
+#include <winrt/Microsoft.UI.Interop.h>
+#include <winrt/Microsoft.UI.Windowing.h>
 #include <winrt/Windows.System.UserProfile.h>
 
 namespace winrt::ZeroChat::implementation
@@ -463,8 +465,22 @@ namespace winrt::ZeroChat::implementation
             SetClassLongPtrW(windowHandle, GCLP_HICON, reinterpret_cast<LONG_PTR>(bigIcon));
             SendMessageW(windowHandle, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(bigIcon));
         }
-    }
+        try
+        {
+            auto windowId = winrt::Microsoft::UI::GetWindowIdFromWindow(windowHandle);
+            auto appWindow = winrt::Microsoft::UI::Windowing::AppWindow::GetFromWindowId(windowId);
+            if (appWindow && bigIcon)
+            {
+                appWindow.SetTitleBarIcon(winrt::Microsoft::UI::GetIconIdFromIcon(bigIcon));
+            }
+        }
+        catch (...)
+        {
+            // WM_SETICON and the window class icon remain the compatibility path
+            // when the AppWindow projection is unavailable at startup.
+        }
 
+    }
     bool MainWindow::TryInitializeWebViewShell()
     {
         using namespace Microsoft::UI::Xaml::Controls;

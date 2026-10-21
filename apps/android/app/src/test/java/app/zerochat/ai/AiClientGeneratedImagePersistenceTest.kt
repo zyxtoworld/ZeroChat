@@ -52,12 +52,14 @@ class AiClientGeneratedImagePersistenceTest {
             },
         )
 
-        val image = AiClient(http).generateImage(
-            provider = provider(),
-            apiKey = "provider-key",
-            model = "gpt-image-2",
-            prompt = "Draw a durable image",
-        )
+        val image = AiClient(http).use { ai ->
+            ai.generateImage(
+                provider = provider(),
+                apiKey = "provider-key",
+                model = "gpt-image-2",
+                prompt = "Draw a durable image",
+            )
+        }
 
         assertEquals("data:image/png;base64,iVBORw0KGgoA", image.dataUrl)
         assertNull(image.url)
@@ -83,9 +85,11 @@ class AiClientGeneratedImagePersistenceTest {
 
         assertThrows(IllegalStateException::class.java) {
             runBlocking {
-                AiClient(http).materializeGeneratedImage(
-                    GeneratedImage(url = "https://cdn.example.test/oversized.png?token=temporary"),
-                )
+                AiClient(http).use { ai ->
+                    ai.materializeGeneratedImage(
+                        GeneratedImage(url = "https://cdn.example.test/oversized.png?token=temporary"),
+                    )
+                }
             }
         }
     }

@@ -29,15 +29,17 @@ class AiClientCapabilityRuntimeTest {
             },
         )
 
-        AiClient(http).createEmbedding(
-            provider = provider(needsApiKey = false),
-            apiKey = "stale-provider-key",
-            proxyToken = "access-key",
-            model = "text-embedding-3-large",
-            input = "hello",
-        )
-    }
+        AiClient(http).use { ai ->
+            ai.createEmbedding(
+                provider = provider(needsApiKey = false),
+                apiKey = "stale-provider-key",
+                proxyToken = "access-key",
+                model = "text-embedding-3-large",
+                input = "hello",
+            )
+        }
 
+    }
     @Test
     fun capabilityRuntimeRequestsUseProxyActions() = runBlocking {
         val seen = mutableListOf<String>()
@@ -57,7 +59,7 @@ class AiClientCapabilityRuntimeTest {
                 respondForAction(action)
             },
         )
-        val ai = AiClient(http)
+        AiClient(http).use { ai ->
         val provider = provider()
 
         assertEquals(
@@ -141,11 +143,12 @@ class AiClientCapabilityRuntimeTest {
             ),
             seen,
         )
+        }
     }
 
     @Test
     fun successfulTextSpeechResponsesFailBeforePlayback() {
-        val ai = AiClient(
+        AiClient(
             HttpClient(
                 MockEngine {
                     respond(
@@ -155,7 +158,7 @@ class AiClientCapabilityRuntimeTest {
                     )
                 },
             ),
-        )
+        ).use { ai ->
 
         assertThrows(IllegalArgumentException::class.java) {
             runBlocking {
@@ -166,6 +169,7 @@ class AiClientCapabilityRuntimeTest {
                     input = "hello",
                 )
             }
+        }
         }
     }
 

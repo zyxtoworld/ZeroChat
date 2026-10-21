@@ -34,7 +34,7 @@ struct ModelSettingsView: View {
 
                 TextField(i18n.t("placeholder.modelList"), text: $manualModel)
                     .onSubmit { addManualModels(provider) }
-                    .onChange(of: manualModel) {
+                    .task(id: manualModel) {
                         if manualModel.last?.isWhitespace == true {
                             addManualModels(provider)
                         }
@@ -82,10 +82,10 @@ struct ModelSettingsView: View {
             }
         }
         .onAppear(perform: repairSelectedProvider)
-        .onChange(of: model.snapshot.providers.map(\.id)) {
+        .task(id: model.snapshot.providers.map(\.id)) {
             repairSelectedProvider()
         }
-        .onChange(of: selectedProviderId) {
+        .task(id: selectedProviderId) {
             cancelModelFetch()
         }
         .onDisappear(perform: cancelModelFetch)

@@ -156,6 +156,8 @@ async function main() {
         '--headless=new',
         `--remote-debugging-port=${cdpPort}`,
         `--user-data-dir=${profileDir}`,
+        '--lang=zh-CN',
+        '--accept-lang=zh-CN',
         '--disable-gpu',
         '--disable-extensions',
         '--no-first-run',
