@@ -875,6 +875,16 @@ select {
   min-height: 32px;
 }
 
+.zc-feature-hint-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: max-content;
+  max-width: 100%;
+  margin-inline: auto;
+}
+
 .zc-main > .zc-feature-hint {
   width: calc(100% - 40px);
   max-width: 780px;

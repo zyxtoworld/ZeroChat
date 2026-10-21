@@ -5,6 +5,7 @@
 #endif
 #include "MainWindow.xaml.h"
 #include <windows.h>
+#include <microsoft.ui.xaml.window.h>
 
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
@@ -23,7 +24,15 @@ namespace winrt::ZeroChat::implementation
     {
         m_window = make<MainWindow>(args.Arguments());
         m_window.Activate();
+
+        auto nativeWindow = m_window.try_as<IWindowNative>();
+        HWND windowHandle = nullptr;
+        if (nativeWindow && SUCCEEDED(nativeWindow->get_WindowHandle(&windowHandle)))
+        {
+            ApplyZeroChatWindowIcon(windowHandle);
+        }
     }
+
 }
 
 int __stdcall wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)

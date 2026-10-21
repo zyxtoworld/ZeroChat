@@ -85,8 +85,10 @@ export function FeatureHint({
         disabled={dismissing}
         onClick={dismiss}
       >
-        <Check size={15} aria-hidden="true" />
-        {dismissLabel}
+        <span className="zc-feature-hint-action">
+          <Check size={15} aria-hidden="true" />
+          {dismissLabel}
+        </span>
       </button>
     </aside>
   )

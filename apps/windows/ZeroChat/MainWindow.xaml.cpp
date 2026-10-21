@@ -472,21 +472,11 @@ namespace winrt::ZeroChat::implementation
             session->load(std::memory_order_acquire);
     }
 
-    void MainWindow::ApplyWindowIcon()
+    void ApplyZeroChatWindowIcon(HWND windowHandle)
     {
-        HWND windowHandle = m_windowHandle;
         if (!windowHandle)
         {
-            auto nativeWindow = this->try_as<IWindowNative>();
-            if (!nativeWindow)
-            {
-                return;
-            }
-
-            if (FAILED(nativeWindow->get_WindowHandle(&windowHandle)) || !windowHandle)
-            {
-                return;
-            }
+            return;
         }
 
         static HICON smallIcon = nullptr;
@@ -530,7 +520,26 @@ namespace winrt::ZeroChat::implementation
             // WM_SETICON and the window class icon remain the compatibility path
             // when the AppWindow projection is unavailable at startup.
         }
+    }
 
+    void MainWindow::ApplyWindowIcon()
+    {
+        HWND windowHandle = m_windowHandle;
+        if (!windowHandle)
+        {
+            auto nativeWindow = this->try_as<IWindowNative>();
+            if (!nativeWindow)
+            {
+                return;
+            }
+
+            if (FAILED(nativeWindow->get_WindowHandle(&windowHandle)) || !windowHandle)
+            {
+                return;
+            }
+        }
+
+        ApplyZeroChatWindowIcon(windowHandle);
     }
     bool MainWindow::TryInitializeWebViewShell()
     {
