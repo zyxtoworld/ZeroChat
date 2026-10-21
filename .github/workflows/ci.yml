@@ -262,6 +262,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.1
+      - run: pnpm install --frozen-lockfile --prod=false
       - name: Refresh hosted native source fingerprint
         run: node scripts/native-prereq-report-refresh.mjs --report=.manual-qa/native-prereq-all-platforms.json
       - uses: actions/download-artifact@v4
