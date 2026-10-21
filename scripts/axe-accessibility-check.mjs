@@ -245,6 +245,20 @@ try {
         element.click()
         return this.textOf(element)
       },
+      async waitForSelector(selector) {
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          if (document.querySelector(selector)) return true
+          await new Promise((resolve) => setTimeout(resolve, 50))
+        }
+        throw new Error(
+          'Missing selector: ' +
+            selector +
+            '; available: ' +
+            Array.from(document.querySelectorAll('[id^="settings-tab-"]'))
+              .map((item) => item.id)
+              .join(' / '),
+        )
+      },
       clickSelector(selector) {
         const element = document.querySelector(selector)
         if (!element) throw new Error('Missing selector: ' + selector)
@@ -255,7 +269,9 @@ try {
         const select = Array.from(document.querySelectorAll('select'))
           .find((item) => Array.from(item.options).some((option) => option.value === value))
         if (!select) throw new Error('Missing select option: ' + value)
-        select.value = value
+        const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set
+        setter?.call(select, value)
+        select.dispatchEvent(new Event('input', { bubbles: true }))
         select.dispatchEvent(new Event('change', { bubbles: true }))
         return true
       },
@@ -282,11 +298,14 @@ try {
           }
           await new Promise((resolve) => setTimeout(resolve, 50))
         }
+        const languageSelect = document.querySelector('.zc-settings-overlay select option[value="ar-SA"]')?.parentElement
         throw new Error(
           'Document language did not settle: ' +
             document.documentElement.lang +
             '/' +
-            document.documentElement.dir,
+            document.documentElement.dir +
+            '; select=' +
+            (languageSelect instanceof HTMLSelectElement ? languageSelect.value : 'missing'),
         )
       },
     }
@@ -361,7 +380,9 @@ try {
   await evaluate(`window.__zeroChatAxe.waitForText(['Settings', '设置'])`, true)
   await runAxe('settings providers desktop')
 
+  await evaluate(`window.__zeroChatAxe.waitForSelector('#settings-tab-general')`, true)
   await evaluate(`window.__zeroChatAxe.clickSelector('#settings-tab-general')`)
+  await evaluate(`window.__zeroChatAxe.waitForSelector('.zc-settings-overlay select option[value="ar-SA"]')`, true)
   await evaluate(`window.__zeroChatAxe.setSelectValue('ar-SA')`)
   await evaluate(`window.__zeroChatAxe.waitForDocumentLanguage('ar-SA', 'rtl')`, true)
   await setViewport(390, 780, true)
