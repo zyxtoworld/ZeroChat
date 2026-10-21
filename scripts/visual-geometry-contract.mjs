@@ -130,6 +130,14 @@ export function renderedButtonContentIsCentered(
   resolveContentRects = (target) => {
     const document = target.ownerDocument ?? globalThis.document
     const rects = []
+    const centeredContent =
+      typeof target.querySelector === 'function'
+        ? target.querySelector('[data-centered-content="true"]')
+        : null
+    if (centeredContent) {
+      rects.push(centeredContent.getBoundingClientRect())
+      return rects
+    }
     const visit = (node) => {
       if (node.nodeType === 3) {
         if (!node.textContent?.trim()) return
