@@ -293,7 +293,7 @@ const stableJunctionArgs = usesAsciiJunction
       '-Pkotlin.compiler.execution.strategy=in-process',
     ]
   : process.env.CI === 'true'
-    ? ['--no-daemon']
+    ? ['--no-daemon', '-Pkotlin.compiler.execution.strategy=in-process']
     : []
 const executionArgs = [...stableJunctionArgs, ...requestedTasks]
 

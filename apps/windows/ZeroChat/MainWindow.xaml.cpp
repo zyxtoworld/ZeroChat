@@ -318,13 +318,15 @@ namespace winrt::ZeroChat::implementation
 
         HICON LoadZeroChatIcon(int width, int height)
         {
-            return static_cast<HICON>(LoadImageW(
-                GetModuleHandleW(nullptr),
+            auto module = GetModuleHandleW(nullptr);
+            auto icon = static_cast<HICON>(LoadImageW(
+                module,
                 MAKEINTRESOURCEW(IDI_ZEROCHAT_APP),
                 IMAGE_ICON,
                 width,
                 height,
                 LR_DEFAULTCOLOR));
+            return icon ? icon : LoadIconW(module, MAKEINTRESOURCEW(IDI_ZEROCHAT_APP));
         }
 
         WindowsStartupRoute StartupRouteFromArguments(hstring const& startupArguments)
@@ -439,16 +441,19 @@ namespace winrt::ZeroChat::implementation
 
     void MainWindow::ApplyWindowIcon()
     {
-        auto nativeWindow = this->try_as<IWindowNative>();
-        if (!nativeWindow)
+        HWND windowHandle = m_windowHandle;
+        if (!windowHandle)
         {
-            return;
-        }
+            auto nativeWindow = this->try_as<IWindowNative>();
+            if (!nativeWindow)
+            {
+                return;
+            }
 
-        HWND windowHandle = nullptr;
-        if (FAILED(nativeWindow->get_WindowHandle(&windowHandle)) || !windowHandle)
-        {
-            return;
+            if (FAILED(nativeWindow->get_WindowHandle(&windowHandle)) || !windowHandle)
+            {
+                return;
+            }
         }
 
         static HICON smallIcon = LoadZeroChatIcon(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
@@ -766,6 +771,7 @@ namespace winrt::ZeroChat::implementation
             DispatcherQueue().TryEnqueue([this]() { ApplyWindowIcon(); });
         });
         InitializeTrayIcon();
+        ApplyWindowIcon();
         ConfigureWindowsJumpList();
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;

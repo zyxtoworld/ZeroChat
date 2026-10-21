@@ -1275,7 +1275,7 @@ function ProvidersTab() {
             flex: '1 0 190px',
             minWidth: 0,
             maxWidth: '100%',
-            padding: '9px 8px',
+            padding: '9px 3px',
             border: '1px solid var(--border)',
             borderRadius: 'var(--radius-md)',
             background: 'var(--bg)',
