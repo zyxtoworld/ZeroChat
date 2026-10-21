@@ -148,6 +148,16 @@ const nativeSourceFingerprintAllowedExtensions = new Set([
   '.yml',
 ])
 const nativeSourceFingerprintAllowedBasenames = new Set(['gradlew', 'gradlew.bat'])
+const nativeSourceFingerprintBinaryExtensions = new Set(['.ico', '.png', '.ttf'])
+
+function nativeSourceFingerprintBuffer(file) {
+  const buffer = readFileSync(file)
+  if (nativeSourceFingerprintBinaryExtensions.has(path.extname(file).toLowerCase())) {
+    return buffer
+  }
+
+  return Buffer.from(buffer.toString('utf8').replace(/\r\n?/gu, '\n'), 'utf8')
+}
 
 const cliResult = parseNativeBuildPrereqCliArgs(process.argv.slice(2), {
   defaultReportPath: process.env.ZEROCHAT_NATIVE_PREREQ_REPORT,
@@ -293,7 +303,7 @@ function nativeSourceFingerprint() {
     ...new Set(nativeSourceFingerprintRoots.flatMap((root) => collectNativeSourceFingerprintFiles(root))),
   ].sort()
   const records = files.map((file) => {
-    const buffer = readFileSync(file)
+    const buffer = nativeSourceFingerprintBuffer(file)
     return {
       path: file,
       bytes: buffer.length,

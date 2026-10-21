@@ -150,6 +150,16 @@ const nativeSourceFingerprintAllowedExtensions = new Set([
   '.yml',
 ])
 const nativeSourceFingerprintAllowedBasenames = new Set(['gradlew', 'gradlew.bat'])
+const nativeSourceFingerprintBinaryExtensions = new Set(['.ico', '.png', '.ttf'])
+
+async function nativeSourceFingerprintBuffer(file) {
+  const buffer = await readFile(file)
+  if (nativeSourceFingerprintBinaryExtensions.has(path.extname(file).toLowerCase())) {
+    return buffer
+  }
+
+  return Buffer.from(buffer.toString('utf8').replace(/\r\n?/gu, '\n'), 'utf8')
+}
 const androidHomeProviderKeyActionLabels = new Set([
   'Add provider key',
   '填写 API Key',
@@ -1425,11 +1435,11 @@ async function readNativeSourceFingerprint() {
   const records = []
 
   for (const file of files) {
-    const evidence = await readFileEvidence(file)
+    const buffer = await nativeSourceFingerprintBuffer(file)
     records.push({
       path: file,
-      bytes: evidence.bytes,
-      sha256: evidence.sha256,
+      bytes: buffer.length,
+      sha256: createHash('sha256').update(buffer).digest('hex').toUpperCase(),
     })
   }
 
