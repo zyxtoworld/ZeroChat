@@ -1058,20 +1058,10 @@ function New-NextSteps {
     $LockHolderActions = @()
     if ($Classification.activeLockProcessCount -gt 0) {
       $LockHolderNames = @($Classification.activeLockApplicationNames) -join ", "
-      $CodexIsLockHolder = @($Classification.activeLockApplicationNames | Where-Object {
-        ([string] $_).IndexOf("codex", [System.StringComparison]::OrdinalIgnoreCase) -ge 0
-      }).Count -gt 0
-      $LockHolderActions = if ($CodexIsLockHolder) {
-        @(
-          "Codex is an active WindowsApps\Deleted lock holder. Do not interrupt an active Codex work session; use a fresh disposable Windows profile or VM for trusted MSIX QA, or rerun this preflight after Codex exits.",
-          "Rerun pnpm run report:windows-msix-host-preflight after using the disposable host or after Codex exits; if unlocked deleted-package targets still remain, repair the host AppX cleanup state or use a fresh disposable Windows profile/VM."
-        )
-      } else {
-        @(
-          "Close or restart the reported lock-holder applications ($LockHolderNames) so Windows can release their WindowsApps\Deleted package files.",
-          "Rerun pnpm run report:windows-msix-host-preflight after restarting the lock holders; if unlocked deleted-package targets still remain, repair the host AppX cleanup state or use a fresh disposable Windows profile/VM."
-        )
-      }
+      $LockHolderActions = @(
+        "Close or restart the reported lock-holder applications ($LockHolderNames) so Windows can release their WindowsApps\Deleted package files.",
+        "Rerun pnpm run report:windows-msix-host-preflight after restarting the lock holders; if unlocked deleted-package targets still remain, repair the host AppX cleanup state or use a fresh disposable Windows profile or VM."
+      )
     }
     return [pscustomobject]@{
       validationCommands = @(

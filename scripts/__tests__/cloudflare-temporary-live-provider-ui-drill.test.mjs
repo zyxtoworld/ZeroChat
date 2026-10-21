@@ -26,7 +26,7 @@ import {
 
 const itWindowsOnly = process.platform === 'win32' ? it : it.skip
 
-const projectTempRoot = path.resolve('.local/codex/tmp')
+const projectTempRoot = path.resolve('.local/zerochat/tmp')
 
 async function makeProjectTempDirectory(prefix) {
   await mkdir(projectTempRoot, { recursive: true })

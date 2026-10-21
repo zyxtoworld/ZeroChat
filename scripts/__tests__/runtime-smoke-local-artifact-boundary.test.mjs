@@ -11,11 +11,11 @@ import { isProjectLocalBoundaryPath } from '../project-local-boundary.mjs'
 
 describe('runtime smoke local artifact boundary', () => {
   it('scans only a canonical bounded artifact subtree and fails closed for unsafe roots', async () => {
-    const fixtureBase = await mkdtemp(
-      path.join(path.resolve('.local/codex/tmp'), 'runtime-artifact-boundary-'),
-    )
+    const fixtureParent = path.resolve('.local/zerochat/tmp')
+    await mkdir(fixtureParent, { recursive: true })
+    const fixtureBase = await mkdtemp(path.join(fixtureParent, 'runtime-artifact-boundary-'))
     const repoRoot = path.join(fixtureBase, 'repo')
-    const artifactRoot = path.join(repoRoot, '.local/codex/artifacts')
+    const artifactRoot = path.join(repoRoot, '.local/zerochat/artifacts')
     const allowedRoot = path.join(artifactRoot, 'runtime', 'web')
     const outsideRoot = path.join(fixtureBase, 'outside')
 
@@ -35,17 +35,17 @@ describe('runtime smoke local artifact boundary', () => {
       expect(manifest.manifest.fileCount).toBe(2)
       expect(manifest.manifest.totalBytes).toBeGreaterThan(0)
 
-      const defaultLocalCanary = path.join(repoRoot, '.local/codex/lint-canary.ts')
+      const defaultLocalCanary = path.join(repoRoot, '.local/zerochat/lint-canary.ts')
       expect(isProjectLocalBoundaryPath(defaultLocalCanary, repoRoot)).toBe(true)
       expect(isProjectLocalBoundaryPath(path.join(repoRoot, 'src/app.ts'), repoRoot)).toBe(false)
 
       const rejectedRoots = [
         [repoRoot, 'repository root'],
-        [path.join(repoRoot, '.local/codex'), 'local boundary ancestor'],
+        [path.join(repoRoot, '.local/zerochat'), 'local boundary ancestor'],
         [artifactRoot, 'artifacts root itself'],
-        [path.join(repoRoot, '.local/codex/artifacts-copy', 'web'), 'prefix collision'],
+        [path.join(repoRoot, '.local/zerochat/artifacts-copy', 'web'), 'prefix collision'],
         [outsideRoot, 'external absolute path'],
-        [path.join(repoRoot, '.local/codex/artifacts', '..', 'missing'), 'traversal path'],
+        [path.join(repoRoot, '.local/zerochat/artifacts', '..', 'missing'), 'traversal path'],
         [path.join(artifactRoot, 'missing', 'web'), 'missing root'],
       ]
 

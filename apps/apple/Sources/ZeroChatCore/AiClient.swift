@@ -135,6 +135,25 @@ public actor AiClient {
             throw AiError.missingAPIKey
         }
         guard !trimmedModel.isEmpty else { throw AiError.missingModel }
+        if provider.kind == .openAIResponses {
+            do {
+                if let received = try await streamResponsesWebSocket(
+                    session: session,
+                    provider: provider,
+                    apiKey: trimmedKey,
+                    model: trimmedModel,
+                    messages: messages,
+                    contextMessageLimit: contextMessageLimit,
+                    proxyToken: proxyToken,
+                    onPartial: onPartial
+                ) {
+                    return received
+                }
+            } catch is ResponsesWebSocketFallbackError {
+                // The HTTP/SSE path below owns fallback when the WS handshake fails before output.
+            }
+        }
+
 
         var request = providerRequest(
             url: try endpoint(for: provider),

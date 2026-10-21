@@ -130,7 +130,7 @@ describe('Android emulator cleanup ownership', () => {
 })
 
 describe('Android SDK path ownership', () => {
-  const sdk = 'E:\\项目\\ZeroChat\\.codex-android-tools\\sdk'
+  const sdk = 'E:\\项目\\ZeroChat\\.local\\zerochat\\toolchains\\android-sdk'
   const tempDirectory = 'C:\\Users\\ZYX\\AppData\\Local\\Temp'
 
   it('creates an ASCII junction for a non-ASCII SDK root', () => {

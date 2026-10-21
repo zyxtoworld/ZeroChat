@@ -18,10 +18,7 @@ dist-ssr
 .manual-qa/
 *.cpuprofile
 .i18n-qa/
-.codex-*/
-.codex-chrome-responsive-profile*/
-.codex-edge-qa-profile*/
-.codex-edge-ux-profile*/
+.zerochat-*/
 cloudflare/wrangler.toml
 
 # Native build outputs
@@ -46,7 +43,7 @@ apps/**/*.exe
 .pi/
 tmp/
 !/.local/
-/.local/codex/
+/.local/zerochat/
 
 # Editor directories and files
 .vscode/*

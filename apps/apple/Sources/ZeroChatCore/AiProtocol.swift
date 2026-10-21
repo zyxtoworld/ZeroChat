@@ -86,6 +86,21 @@ func endpoint(for provider: ProviderConfig) throws -> URL {
     }
     return url
 }
+func responsesWebSocketEndpoint(for provider: ProviderConfig) throws -> URL {
+    let root = if let proxyUrl = provider.proxyUrl,
+                   !proxyUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        try proxyRootURL(proxyUrl) + "/proxy/ws"
+    } else {
+        try providerAPIRoot(provider) + "/responses"
+    }
+    guard let parsedComponents = URLComponents(string: root) else {
+        throw AiError.invalidURL
+    }
+    var components = parsedComponents
+    components.scheme = components.scheme == "https" ? "wss" : "ws"
+    guard let url = components.url else { throw AiError.invalidURL }
+    return url
+}
 
 func modelListEndpoint(for provider: ProviderConfig) throws -> URL {
     if let proxyUrl = provider.proxyUrl, !proxyUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

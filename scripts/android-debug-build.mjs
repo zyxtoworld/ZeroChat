@@ -221,7 +221,7 @@ function findAndroidSdk() {
     process.env.ANDROID_HOME,
     process.env.ANDROID_SDK_ROOT,
     process.platform === 'win32' ? 'C:\\ZeroChatAndroidTools\\sdk' : undefined,
-    path.join(repoRoot, '.codex-android-tools', 'sdk'),
+    path.join(repoRoot, '.local', 'zerochat', 'toolchains', 'android-sdk'),
     process.env.LOCALAPPDATA
       ? path.join(process.env.LOCALAPPDATA, 'Android', 'Sdk')
       : undefined,
@@ -239,8 +239,8 @@ const discoveredJava = firstExisting([
   javaHomeExecutable,
   process.platform === 'win32' ? findJavaInDirectory('C:\\ZeroChatAndroidTools\\jdk17') : null,
   process.platform === 'win32' ? findJavaInDirectory('C:\\ZeroChatAndroidTools\\jdk') : null,
-  findJavaInDirectory(path.join(repoRoot, '.codex-android-tools', 'jdk17')),
-  findJavaInDirectory(path.join(repoRoot, '.codex-android-tools', 'jdk')),
+  findJavaInDirectory(path.join(repoRoot, '.local', 'zerochat', 'toolchains', 'jdk17')),
+  findJavaInDirectory(path.join(repoRoot, '.local', 'zerochat', 'toolchains', 'jdk')),
 ])
 const javaHome = process.env.JAVA_HOME ?? javaHomeFromExecutable(discoveredJava)
 const androidSdk = findAndroidSdk()

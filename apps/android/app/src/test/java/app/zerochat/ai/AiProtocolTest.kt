@@ -264,6 +264,22 @@ class AiProtocolTest {
     }
 
     @Test
+    fun responsesWebSocketEndpointUsesDirectAndProxyRoutes() {
+        assertEquals(
+            "https://api.example.com/v1/responses",
+            responsesWebSocketEndpointFor(provider(kind = ProviderKind.OpenAIResponses)),
+        )
+        assertEquals(
+            "https://worker.example/proxy/ws",
+            responsesWebSocketEndpointFor(
+                provider(kind = ProviderKind.OpenAIResponses).copy(
+                    proxyUrl = "https://worker.example/proxy",
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun remoteUrlSafetyRejectsSingleLabelAndAmbiguousNumericHosts() {
         for (baseUrl in listOf(
             "https://api/v1",

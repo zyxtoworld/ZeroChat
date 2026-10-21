@@ -1,5 +1,6 @@
 pub(crate) use crate::ai_protocol::{GeneratedImage, ImageUpload};
 
+use crate::responses_websocket::{ResponsesWebSocketFallback, stream_responses_websocket};
 use crate::{
     ai_protocol::{
         AnthropicRequest, AudioUpload, ImageGenerationRequest, OpenAiChatRequest,
@@ -104,7 +105,7 @@ impl fmt::Display for AiEmptyResponseFailure {
 
 impl Error for AiEmptyResponseFailure {}
 
-fn ensure_non_empty_chat_response(received: String) -> Result<String> {
+pub(crate) fn ensure_non_empty_chat_response(received: String) -> Result<String> {
     if received.trim().is_empty() {
         return Err(AiEmptyResponseFailure::new().into());
     }
@@ -261,6 +262,25 @@ impl AiClient {
         }
 
         let transport_messages = select_context_messages(messages, context_message_limit);
+        if matches!(provider.kind, ProviderKind::OpenaiResponses) {
+            match stream_responses_websocket(
+                provider,
+                api_key,
+                model,
+                messages,
+                context_message_limit,
+                access_key,
+                cancellation.clone(),
+                &mut on_partial,
+            )
+            .await
+            {
+                Ok(Some(received)) => return Ok(received),
+                Ok(None) => {}
+                Err(error) if error.downcast_ref::<ResponsesWebSocketFallback>().is_some() => {}
+                Err(error) => return Err(error),
+            }
+        }
 
         let mut request = self
             .http

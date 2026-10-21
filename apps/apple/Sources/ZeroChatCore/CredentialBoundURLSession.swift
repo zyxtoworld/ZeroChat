@@ -97,6 +97,9 @@ struct CredentialBoundURLSession: @unchecked Sendable {
             delegate: CredentialBoundURLSessionTaskDelegate.shared
         )
     }
+    func webSocketTask(for request: URLRequest) -> URLSessionWebSocketTask {
+        session.webSocketTask(with: request)
+    }
 
     func boundedData(
         for request: URLRequest,

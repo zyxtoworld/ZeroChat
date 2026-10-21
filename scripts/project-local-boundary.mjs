@@ -2,7 +2,7 @@ import path from 'node:path'
 
 // One boundary owns every local recovery, log, cache, worktree, and temporary
 // file. Consumers must use this predicate instead of inventing a second glob.
-export const projectLocalBoundaryRelativePath = '.local/codex'
+export const projectLocalBoundaryRelativePath = '.local/zerochat'
 export const projectLocalBoundaryGlob = `${projectLocalBoundaryRelativePath}/**`
 
 export function normalizeProjectRelativePath(value) {

@@ -139,6 +139,10 @@ const baseChecks = [
   ['Release report lock', [fromRoot('scripts/release-report-lock-check.mjs')]],
   ['Icon/cloud-sync redlines', [fromRoot('scripts/icon-sync-redline-check.mjs')]],
   ['Worker security', [fromRoot('scripts/worker-security-check.mjs')]],
+  [
+    'Worker Responses WebSocket contract',
+    ['--test', fromRoot('scripts/contract-tests/worker-responses-websocket-contract.test.mjs')],
+  ],
   ['Deployment readiness', [fromRoot('scripts/deploy-readiness-check.mjs')]],
   ['Cloudflare Pages deploy dry-run', [fromRoot('scripts/deploy-cloudflare-pages.mjs'), '--dry-run', '--skip-build']],
   ['Bundle size', [fromRoot('scripts/bundle-size-check.mjs')]],

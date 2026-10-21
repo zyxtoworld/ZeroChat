@@ -58,7 +58,7 @@ const liveProviderFingerprintCacheVersion =
   'zerochat.liveProviderSourceFingerprintCache.v1'
 const liveProviderFingerprintCacheDirectoryName = path.join(
   '.local',
-  'codex',
+  'zerochat',
   'artifacts',
   'cache',
   'live-provider-source-fingerprint',

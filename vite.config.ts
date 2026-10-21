@@ -89,7 +89,7 @@ export default defineConfig({
   server: {
     watch: {
       ignored: [
-        '**/.codex-*/**',
+        '**/.zerochat-*/**',
         '**/dist/**',
         projectLocalBoundaryGlob,
         (filePath) => isProjectLocalBoundaryPath(filePath, process.cwd()),

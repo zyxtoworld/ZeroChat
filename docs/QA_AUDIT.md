@@ -94,44 +94,44 @@ Current Web image submission is owned by the production store and Composer bound
 <!-- zerochat-current-evidence:qa-overlay:start -->
 Current diagnostic overlay: the latest aggregate diagnostic batch superseding
 older current-labelled diagnostic rows and the older long-form release-gates
-table row was generated on 2026-09-12 07:25 Asia/Shanghai by
+table row was generated on 2026-10-04 03:24 Asia/Shanghai by
 `D:\Node.js\pnpm.CMD run report:release-diagnostics` and summarized by
 `D:\Node.js\pnpm.CMD run report:current-evidence` after the current Web,
 Windows WebView, MSIX package-candidate, and release blocker refresh.
 `.manual-qa/release-diagnostics-current.json` is 19,761 bytes / SHA-256
-`FF8939C0EE4FB3A8ABB378CC12E5697526A38B79AD0A20148E630A503196ED41`, generatedAt `2026-09-11T23:25:05.891Z`
-(2026-09-12 07:25 Asia/Shanghai), status `blocked`, releaseEvidence
-false. `.manual-qa/release-blockers-current.json` is 50,715 bytes / SHA-256
-`3640541D5E5B595ED6383A9CAA97C845842A0731162EBEFB5882A1EF7AFC778C`, generatedAt `2026-09-11T23:25:00.874Z`
-(2026-09-12 07:25 Asia/Shanghai), status `blocked`, blockerCount `7`.
+`E6A28ABA517DC9BEAAC2CC1518C6DF91C4D6031C5A9F6FE64990B9736E928FC9`, generatedAt `2026-10-03T19:24:40.830Z`
+(2026-10-04 03:24 Asia/Shanghai), status `blocked`, releaseEvidence
+false. `.manual-qa/release-blockers-current.json` is 50,817 bytes / SHA-256
+`A708EA30231916A0B175784FDB021C128A4983A94715D4DF3EBCF05A3C67ADE8`, generatedAt `2026-10-03T19:23:26.088Z`
+(2026-10-04 03:23 Asia/Shanghai), status `blocked`, blockerCount `7`.
 Release blocker ownership matrix: `apple-target-runtime-qa` status `blocked`, blockerKind `missing-apple-target-runtime-prerequisites`, owner `target-host-macos-xcode-swift`; `linux-target-runtime-qa` status `blocked`, blockerKind `missing-linux-target-runtime-prerequisites`, owner `target-host-linux-gtk-secret-service`; `windows-trusted-msix-release-pass` status `blocked`, blockerKind `windows-appx-deployment-deleted-package-cleanup-access-denied`, owner `host-windows-appx-deployment-service`; `disposable-live-sync-release-pass` status `skipped`, blockerKind `missing-live-sync-release-inputs`, owner `release-operator-disposable-sync-credentials`; `hosted-native-ci-release-evidence` status `missing`, blockerKind `missing-hosted-native-ci-release-evidence`, owner `release-operator-github-actions`; `live-provider-full-capability-release-evidence` status `skipped`, blockerKind `missing-live-provider-release-inputs`, owner `external-provider-or-third-party-relay`; `live-provider-web-ui-browser-origin-release-evidence` status `skipped`, blockerKind `missing-live-provider-ui-release-inputs`, owner `browser-allowed-ai-proxy-or-cloudflare-worker`.
-`.manual-qa/verify-release-current.json` is 24,112 bytes / SHA-256
-`43CDBF3E942DB041A23EB5F0B994A9165AE0A2DDDBE46F210E6AC8BB6A69CD1B`, generatedAt `2026-09-11T23:25:06.974Z`
-(2026-09-12 07:25 Asia/Shanghai), status `failed`, failedStepLabels
-[`Runtime smoke artifacts`], and remains reproducibly checked by
+`.manual-qa/verify-release-current.json` is 14,516 bytes / SHA-256
+`555E818E3840172D5F87BAC0AE43E6753278546574377C7A1E8700ED79ADD8C6`, generatedAt `2026-10-03T19:24:45.724Z`
+(2026-10-04 03:24 Asia/Shanghai), status `failed`, failedStepLabels
+[`Runtime smoke artifacts`, `Axe accessibility`, `Local runtime cleanup`], and remains reproducibly checked by
 `pnpm run check:verify-release-checkpoint`.
-Verify-release checkpoint failure detail: failed `Runtime smoke artifacts` is expected blocker `windows-trusted-msix-release-pass-missing`; current release blockerKind is `windows-appx-deployment-deleted-package-cleanup-access-denied`, owner `host-windows-appx-deployment-service`; Windows host preflight status `blocked`, trustedMsixQaReadiness `host-blocked`; current MSIX package-candidate staged web matches dist: `true`, package-internal web matches dist: `true`, package-internal web matches stage: `true`; next proof gate `close or restart the reported lock-holder applications (WidgetService.exe), then rerun pnpm run report:windows-msix-host-preflight and pnpm run check:windows-msix-host-preflight; repair or replace the host only if unlocked deleted-package targets remain`; this is diagnostic-only and not release evidence.
-Windows trusted MSIX current blocker semantics: blockerKind `windows-appx-deployment-deleted-package-cleanup-access-denied`, owner `host-windows-appx-deployment-service`; currentTrustedQaState `host-preflight-blocked-or-unproven`; needsElevatedTrustedQaRerun false; nextProofGate `close or restart the reported lock-holder applications (WidgetService.exe), then rerun pnpm run report:windows-msix-host-preflight and pnpm run check:windows-msix-host-preflight; repair or replace the host only if unlocked deleted-package targets remain`; hostPreflight status `blocked`, trustedMsixQaReadiness `host-blocked`; historicalTrustedQaFailureKind `windows-appx-deployment-deleted-package-cleanup-access-denied`, historicalTrustedQaFailureOwner `host-windows-appx-deployment-service`.
-`.manual-qa/strict-release-preflight.json` is 6,372 bytes / SHA-256
-`A1958B5FDA68C6F350B631653BC87497B2D12424CA0254956BE7DE3EC897EA1E`, generatedAt `2026-09-11T23:18:31.084Z`
-(2026-09-12 07:18 Asia/Shanghai), status `blocked`.
+Verify-release checkpoint failure detail: failed `Runtime smoke artifacts` contains the Windows trusted-MSIX blocker plus independent blocker evidence and is intentionally not classified as Windows-only; matched additional blockers: `disposable-live-sync-release-pass` (`live-sync-current-source-release-pass-missing`); current Windows blockerKind is `windows-appx-deployment-deleted-package-cleanup-access-denied`, owner `host-windows-appx-deployment-service`, host preflight status `blocked`, trustedMsixQaReadiness `host-blocked`; next Windows proof gate `close or restart the reported lock-holder applications (System, WidgetService.exe), then rerun pnpm run report:windows-msix-host-preflight and pnpm run check:windows-msix-host-preflight; repair or replace the host only if unlocked deleted-package targets remain`; this checkpoint and aggregate are diagnostic-only and not release evidence.
+Windows trusted MSIX current blocker semantics: blockerKind `windows-appx-deployment-deleted-package-cleanup-access-denied`, owner `host-windows-appx-deployment-service`; currentTrustedQaState `host-preflight-blocked-or-unproven`; needsElevatedTrustedQaRerun false; nextProofGate `close or restart the reported lock-holder applications (System, WidgetService.exe), then rerun pnpm run report:windows-msix-host-preflight and pnpm run check:windows-msix-host-preflight; repair or replace the host only if unlocked deleted-package targets remain`; hostPreflight status `blocked`, trustedMsixQaReadiness `host-blocked`; historicalTrustedQaFailureKind `windows-appx-deployment-deleted-package-cleanup-access-denied`, historicalTrustedQaFailureOwner `host-windows-appx-deployment-service`.
+`.manual-qa/strict-release-preflight.json` is 6,322 bytes / SHA-256
+`7A743C4CC406CF0051445E8FE6A8C55AC77956C509F26280CCD74BC6B4AE7203`, generatedAt `2026-10-03T19:10:01.235Z`
+(2026-10-04 03:10 Asia/Shanghai), status `blocked`.
 Aggregate diagnostic child safety: 26/26 child summaries are `safeToPublish: true`, 25/26 are `releaseEvidence: false`, and 1/26 are validated child release evidence; `pnpm run check:release-diagnostics` rejects unsafe or invalid child summaries without promoting the aggregate.
 Expected red gate audit: runtimeArtifactExpectedBlocker.status = expected-blocker, actualExitCode = 1, unexpectedBulletLineCount = 0. Full runtime-artifact gate still fails on the current trusted MSIX host AppX cleanup blocker. The current sync source also needs a fresh disposable live-sync release drill.
 Aggregate diagnostic child hashes: Windows host preflight
-`173103F2C2B9CCE1BFD6BB8954250627683D4BC60407A1E78BE079F158FE846B`; Hosted native CI
+`5D7234EB64E7D2C01B5733AC2A027A20B3E79661AFE6099B28F41817665B2E7E`; Hosted native CI
 Windows trusted MSIX current pass `CABC8D113A4C0A0FE831269E2F2E1DFA623B8352939718EB321A56042B20BCFC`;
-`7F05D1BB2C04E8166CB614260303DA7BD8AA6C4808A0442E216017509165B669`; Live sync canonical release pass
-`496875247981F21F59784CEEB168E12C900C1B4E75DD157C7E2A7BF69C8106CF`; Live sync current diagnostic `E4AF8250C019B178025E687AF204BDCEDDA8362228E04E68C13190A504864CFD`;
-Live provider ordinary API `7A17F2A6F88530E1EE879892819F060BD3E43F29F1563B09D09D90DDA6B8E53C`;
-Live provider current diagnostic `7A17F2A6F88530E1EE879892819F060BD3E43F29F1563B09D09D90DDA6B8E53C`;
+`E541D6A761E03D228733E9A7B2E2009EE2669945F6BB83E1DD121FF3FA121C10`; Live sync canonical release pass
+`496875247981F21F59784CEEB168E12C900C1B4E75DD157C7E2A7BF69C8106CF`; Live sync current diagnostic `CD99FCDE64508B25F15E8983DBE8A1E53BD92936CE2D7208E68B636D20916DB8`;
+Live provider ordinary API `8B7A8DF273915DD466429A7894174B9D0921BB1EB3FFAD330BE48DA01492A07E`;
+Live provider current diagnostic `8B7A8DF273915DD466429A7894174B9D0921BB1EB3FFAD330BE48DA01492A07E`;
 Live provider credential-confirmed full-capability attempt `F284A79F80C6F5EE0B7F35A9CA0EB08E35CF777A69ED444373A83D12F3776D61`;
-Live provider UI current `754FCD8FAA3D1C087C81F721647F8577901A544B4440211145423611E19AAEEA`;
+Live provider UI current `2257BFBE90CFE2B0C9AB26E0B6E91303A5A55F1AE9D4A8E8AA3952EDD712F647`;
 Live provider UI preserved attempt `D4688430106EEA0240A304D877E59E846998AC44BF874F3092D37F32A08E047D`;
-Native prereq `71ECA0011C402054C6EF2303749238446FF13277C78DA5CCD2D19217FFCAA731`.
-Hosted native CI handoff coverage: current-source coverage `gitWorktreeDirty: true`, `nativeSourceWorktreeDirty: true`, `gitStatusEntryCount: 909`, `nativeSourceStatusEntryCount: 160`, `hostedCiCoversCurrentWorktree: false`, `hostedCiCoversCurrentNativeSource: false`, `releaseEvidenceHandoffReady: false`; current missing aliases `clean-git-worktree` / `clean-native-source-worktree`.
+Native prereq `2C446118749BD5D33DAAA92D9D398FABC3303AEC0E34F9CF1C7DAF4C8D7F416B`.
+Hosted native CI handoff coverage: current-source coverage `gitWorktreeDirty: true`, `nativeSourceWorktreeDirty: false`, `gitStatusEntryCount: 2`, `nativeSourceStatusEntryCount: 0`, `hostedCiCoversCurrentWorktree: false`, `hostedCiCoversCurrentNativeSource: true`, `releaseEvidenceHandoffReady: false`; current missing aliases `clean-git-worktree`.
 Apple target-host runtime evidence: targetRuntimeEvidenceRequired true; targetHost `macOS with Xcode/Swift`; currentHostSatisfiesTargetRuntime false; localPreflightIsRuntimeEvidence false; runtimeQaMustRunOnTargetHost true; requiredHostTools `swift` / `xcodebuild`; requiredProof `target-host build log` / `target-host runtime screenshot` / `target-host visual QA` / `target-host sync QA` / `target-host package-size evidence`.
 Linux target-host runtime evidence: targetRuntimeEvidenceRequired true; targetHost `Linux or WSL with GTK4/libadwaita and Secret Service`; currentHostSatisfiesTargetRuntime false; localPreflightIsRuntimeEvidence false; runtimeQaMustRunOnTargetHost true; requiredHostTools `cargo` / `pkg-config` / `secret-tool` / `pkg-config gtk4` / `pkg-config libadwaita-1`; deferredTargetChecks `cargo` / `pkg-config` / `secret-tool` / `pkg-config gtk4` / `pkg-config libadwaita-1`; requiredProof `target-host build log` / `target-host runtime screenshot` / `target-host visual QA` / `target-host sync QA` / `target-host Secret Service QA` / `target-host package-size evidence`.
-Live sync canonical release pass is missing or not current-passed at `.manual-qa/live-sync-release-drill.json` (status `passed`, releaseEvidence true, SHA-256 `496875247981F21F59784CEEB168E12C900C1B4E75DD157C7E2A7BF69C8106CF`); the current sanitized diagnostic is `.manual-qa/live-sync-release-drill-current-diagnostic.json` (status `skipped`, SHA-256 `E4AF8250C019B178025E687AF204BDCEDDA8362228E04E68C13190A504864CFD`). Live sync release-pass input binding: blockerKind `missing-live-sync-release-inputs`; mode `none`; remoteTouched false; missingInputKeys `liveSyncMode` / `providerSpecificDisposableCredential` / `destructiveConfirmation` / `throwawaySyncPassphrase`; supportedModes `cloudflare` / `gist`; sourceFingerprint.current true, 65 files / 1,017,099 bytes / SHA-256 `CF06D480593C9D0A77345314F0277C95F6170972AC950BD515CC578912B22B79`.
+Live sync canonical release pass is missing or not current-passed at `.manual-qa/live-sync-release-drill.json` (status `passed`, releaseEvidence true, SHA-256 `496875247981F21F59784CEEB168E12C900C1B4E75DD157C7E2A7BF69C8106CF`); the current sanitized diagnostic is `.manual-qa/live-sync-release-drill-current-diagnostic.json` (status `skipped`, SHA-256 `CD99FCDE64508B25F15E8983DBE8A1E53BD92936CE2D7208E68B636D20916DB8`). Live sync release-pass input binding: blockerKind `missing-live-sync-release-inputs`; mode `none`; remoteTouched false; missingInputKeys `liveSyncMode` / `providerSpecificDisposableCredential` / `destructiveConfirmation` / `throwawaySyncPassphrase`; supportedModes `cloudflare` / `gist`; sourceFingerprint.current true, 65 files / 1,017,099 bytes / SHA-256 `CF06D480593C9D0A77345314F0277C95F6170972AC950BD515CC578912B22B79`.
 Live provider full-capability evidence source binding: preferredProviderBlockerSource `current-diagnostic`; blockerKind `missing-live-provider-release-inputs`; selectedSourceReport `.manual-qa/live-provider-smoke-current-diagnostic.json`, status `skipped`, releaseEvidence false, releaseEndpointEligible false, sourceFingerprintCurrent true, hasCredentialConfirmedProviderAttempt false, hasFullCapabilityAttempt false; currentDiagnosticReport `.manual-qa/live-provider-smoke-current-diagnostic.json`, status `skipped`, releaseEvidence false, releaseEndpointEligible false, sourceFingerprintCurrent true, hasFullCapabilityAttempt false; credentialConfirmedAttemptReport `.manual-qa/live-provider-smoke-attempt-current.json`, status `failed`, releaseEvidence false, releaseEndpointEligible true, sourceFingerprintCurrent false, hasCredentialConfirmedProviderAttempt true, hasFullCapabilityAttempt true, hasReleaseEligibleProviderAttempt true, requestedCapabilities chat true, image true, audio true, lowCost true, realtime true; selectedModels chat `unknown` (unknown), image `unknown` (unknown), audioSpeech `unknown`, audioTranscription `unknown`, embedding `unknown`, moderation `unknown`, realtime `unknown`; capabilityFailureModelAttempts none; capabilityFailureSummary.total 0, affectedCapabilities `none`, routeHealthBlockers `none`.
 Live provider full-capability required remediation: source `none`; capabilityFailureSummary.total 0; affectedCapabilities `none`; routeHealthBlockers `none`; capabilityRemediationHintCount 0; reportRemediationHintCount 0; remediationTargets `none`; rerunCommands `pnpm run drill:live-provider` / `pnpm run check:live-provider-report` / `pnpm run check:live-provider-full-capability`.
 Live provider UI browser-origin proxy preflight semantics: top-level browserOriginProven false; proxyPreflight.status `passed`, transportPath `node-to-provider`, browserOriginProven false, selectedModel `gpt-5-6-pro`, chatStatus `200`; Node-side preflight is not browser-origin release evidence.
@@ -140,12 +140,12 @@ Live provider UI browser-origin evidence source binding: preferredUiBlockerSourc
 Live provider UI required remediation: kind `missing-live-provider-ui-inputs`; browserAllowedProxyRequired true; requiresProxyUrl true; requiresSyncPassphrase true; requiresWorkerHostedProviderKey true; actionCount 4; actions `Configure a browser-allowed AI proxy/Cloudflare Worker root through ZEROCHAT_LIVE_PROVIDER_UI_PROXY_URL; direct provider mode is diagnostic-only and cannot produce browser-origin release evidence.` / `Provide ZEROCHAT_LIVE_PROVIDER_UI_SYNC_PASSPHRASE so the browser can derive the Worker access key.` / `Set ZEROCHAT_LIVE_PROVIDER_UI_WORKER_HOSTS_KEY=true, store the provider key as a Worker secret, and do not inject the provider key into the browser.` / `Provide remaining release UI inputs (providerBaseUrl, sendConfirmation) before rerunning pnpm run drill:live-provider-ui.`.
 Current Web/Windows evidence: Web .opus MIME parity and Windows trusted MSIX host AppX blocker refresh remain diagnostic-only.
 Web source digest
-  `0C2C62F58D91910406F7A33DC89880BB7FB879CA7A5E478EC04BA76EB7C9D213`
-Web current-page QA report hash `359E489EEB7DCA930019C5E5BDE472BD9275D8DA7163601DA389B80BA8B43D2D`; current-page visual-audit manifest hash `255898BC7AFD68C35B5770AE89DD6643CE2E45AB8FFCCC4E7B4002E27B29E077`; release visual-audit manifest hash `CBD55083EBA0E54FD61558A77A073086194FBE7FA3BF3BB6B26F9026403B0C8E`.
-Android emulator runtime QA 当前 2026-09-12 04:20 Asia/Shanghai 通过 70 screenshots（UI 55 / Cloudflare sync 15），`.manual-qa/android-emulator-qa.json` 为 8,837 bytes / SHA-256 `1C3A29709AEC176068D045EBFABAD56EDB350708B4F1C32BA4776B5F54F88E07`，UI smoke 为 21,010 bytes / SHA-256 `5484810442011CF50BEA374A10F63A5E3C46954D9C3DE83ADA776932D05A01A6`，Cloudflare sync smoke 为 9,857 bytes / SHA-256 `AF12AFE552F06C2DA4DDFCF94F8CFAABFDD67716FC6AF58A65CF0B387FBE0D11`，contact sheet report 为 25,201 bytes / SHA-256 `A17EE52B25E3023D41F31518585B425A127817251A28F167039CF65AB2ED2189`，contact sheet PNG 为 1,537,976 bytes / SHA-256 `674AA40EA70FD0379BF9121A87BED4B97E524C4DDE37EF23332FB9F9264AEE42`，debug APK SHA-256 `D5BEE232CF68572256D459BF8058E5CA7AD7A6CE6D78865D0AEAF0B0DC5FBA7F`。三份 Android runtime 报告均绑定当前 source-bound debug APK（16,209,973 bytes / SHA-256 `D5BEE232CF68572256D459BF8058E5CA7AD7A6CE6D78865D0AEAF0B0DC5FBA7F`）和同一 Android source fingerprint。QA marker: Current Android runtime evidence refuses stale APK reports.
-Current Web/Windows refresh recorded release-build `dist/index.html` SHA-256 `E87FB0C503E89906C7E681171D30289EBF982F1AC8D976077AC0E598447C166F`.
-Current MSIX package-candidate `.manual-qa/ZeroChat_0.0.1.0_x64.msix` is 1,383,402 bytes / SHA-256 `90F77DF52BAA566178C883FF79E81FB3052AC41A1D33A4615D7ACBA7ACFC104A`; staged MSIX web tree matches current `dist` at 53 files / 1,035,835 bytes / SHA-256 `805A29698D3BAA8B1670AF05187A9EF084194E1B479F37EC172EA4DB67DD5877`, stageWebMatchesDist: true; package-internal web tree matches current `dist` and stage at 53 files / 1,035,835 bytes / SHA-256 `805A29698D3BAA8B1670AF05187A9EF084194E1B479F37EC172EA4DB67DD5877`, packageWebMatchesDist: true, packageWebMatchesStage: true. This is package-candidate freshness only, not trusted install/update/uninstall release evidence.
-Current Web QA timestamp: 2026-09-12 07:16 Asia/Shanghai.
+  `4A7AB406636F3F5D93096501003BA51B4A431592B235EF8465E89C6CA9A7C029`
+Web current-page QA report hash `3ECCDC503D69313D212FAD9973CFFFA0C4F61C945652FAA4477AA3FE5A94AC1D`; current-page visual-audit manifest hash `347B26E68215589DFE9B1C8311833BDACE05C6A8CB69AACB48DC3E02D8E95534`; release visual-audit manifest hash `289198DB9E07B232C71DAF49EC966B4222B7948DCECBFC3F64A11A83554B4427`.
+Android emulator runtime QA 当前 2026-09-13 10:53 Asia/Shanghai 通过 70 screenshots（UI 55 / Cloudflare sync 15），`.manual-qa/android-emulator-qa.json` 为 8,744 bytes / SHA-256 `CAD884F03CBD9348C9487C11216319CEECB132B469D2B82A3E7EAE8E34441E80`，UI smoke 为 21,100 bytes / SHA-256 `F6ECA29E54C4279F5EA8E0EF08D8F30EEEC74DCDFCD98394EE678F6B31EDCB05`，Cloudflare sync smoke 为 9,850 bytes / SHA-256 `04F620BD1A43B5F2E654AEF8ED494411B24A420D89224A8E5506988C12258B17`，contact sheet report 为 25,202 bytes / SHA-256 `CE2A455FD2030614DCBA668CB3258A8DD772DF6DDADF3415192F6B64AABBF3DE`，contact sheet PNG 为 1,527,474 bytes / SHA-256 `06FA8577CC7788CB99454AF5968CD3DA9EB74A04BA6626457DF848B73958C87B`，debug APK SHA-256 `D5BEE232CF68572256D459BF8058E5CA7AD7A6CE6D78865D0AEAF0B0DC5FBA7F`。三份 Android runtime 报告均绑定当前 source-bound debug APK（16,209,973 bytes / SHA-256 `D5BEE232CF68572256D459BF8058E5CA7AD7A6CE6D78865D0AEAF0B0DC5FBA7F`）和同一 Android source fingerprint。QA marker: Current Android runtime evidence refuses stale APK reports.
+Current Web/Windows refresh recorded release-build `dist/index.html` SHA-256 `E67AEE671EB254FB02E38AE0921789D3CC8BC02A284CDF55782BEA0D1409B484`.
+Current MSIX package-candidate `.manual-qa/ZeroChat_0.0.1.0_x64.msix` is 1,384,889 bytes / SHA-256 `44FFC93CD6DB6709C8D4B94ACC0245A1D6C4E9E8BFB3BB3320BF8A55FEB1B7F3`; staged MSIX web tree matches current `dist` at 53 files / 1,035,865 bytes / SHA-256 `337B5BF8036C37EC739836C599FAD460A73DBF7ADFCBB3B25EB2CA907EE3A560`, stageWebMatchesDist: true; package-internal web tree matches current `dist` and stage at 53 files / 1,035,865 bytes / SHA-256 `337B5BF8036C37EC739836C599FAD460A73DBF7ADFCBB3B25EB2CA907EE3A560`, packageWebMatchesDist: true, packageWebMatchesStage: true. This is package-candidate freshness only, not trusted install/update/uninstall release evidence.
+Current Web QA timestamp: 2026-09-12 12:21 Asia/Shanghai.
 - Windows trusted MSIX install/update/uninstall 当前 runtime QA：当前 host 状态以 `.manual-qa/windows-msix-host-preflight.json` 为准（status: `blocked`, hostReadyForTrustedMsix: false, currentShellElevated: false）。
 
 Current product contract / QA markers:
@@ -182,7 +182,7 @@ Current live-provider API/UI smoke safety contract:
 - Live provider full-capability current source fingerprint guard and Live provider diagnostic current source fingerprint guard bind sanitized evidence to the current source tree.
 - Live provider API smoke report artifact is sanitized before validation or upload; sourceFingerprint and model-selection source evidence remain current-source bound.
 historical trusted MSIX diagnostic evidence is preserved separately from current release evidence.
-Windows trusted MSIX run `20260615-092543` remains the current host AppXDeploymentServer `windows-appx-deployment-deleted-package-cleanup-access-denied` diagnostic for the historical 31-file `951885`-byte `dist`, does not match the current 53-file `1035835`-byte `dist`, and trusted install/update was not rerun because host preflight is still blocked
+Windows trusted MSIX run `20260615-092543` remains the current host AppXDeploymentServer `windows-appx-deployment-deleted-package-cleanup-access-denied` diagnostic for the historical 31-file `951885`-byte `dist`, does not match the current 53-file `1035865`-byte `dist`, and trusted install/update was not rerun because host preflight is still blocked
 current Windows MSIX same-bundle diagnostic evidence in `.manual-qa/windows-msix-current-trusted-install-update-qa.failure.json` remains report-derived and is not a trusted release pass.
 current trusted MSIX install/update/uninstall release-pass remains blocked by the host AppX cleanup diagnostic; releaseEvidence remains false.
 The current trusted MSIX self-signed install/update/uninstall attempt only produced `.manual-qa\windows-msix-current-trusted-install-update-qa.failure.json` diagnostic evidence.
@@ -197,27 +197,27 @@ Web/PWA src/app/store.ts owns the production Skill mutation boundary
 Web/PWA SettingsView.tsx owns the production Skill settings shell
 Web/PWA current store tests lock durable add/import/edit/delete and stale ref cleanup
 current trusted MSIX install/update/uninstall release-pass remains blocked
-Windows trusted MSIX historical run `20260615-092543` remains stale-dist AppXDeploymentServer diagnostic context `windows-appx-deployment-deleted-package-cleanup-access-denied` for the historical 31-file `951885`-byte `dist`; it does not match the current 53-file `1035835`-byte `dist`, and the current blocker is the missing elevated current-source trusted MSIX release-pass.
-The current Web current-page refresh covers digest `0C2C62F58D91910406F7A33DC89880BB7FB879CA7A5E478EC04BA76EB7C9D213`, recorded by focused Web-local current-page QA, and the latest Windows WebView runtime evidence now targets the 53-file `1035835`-byte `dist`; the full release gate currently stops at Runtime smoke artifacts on the Windows trusted MSIX blocker plus additional blocker(s) `disposable-live-sync-release-pass`.
+Windows trusted MSIX historical run `20260615-092543` remains stale-dist AppXDeploymentServer diagnostic context `windows-appx-deployment-deleted-package-cleanup-access-denied` for the historical 31-file `951885`-byte `dist`; it does not match the current 53-file `1035865`-byte `dist`, and the current blocker is the missing elevated current-source trusted MSIX release-pass.
+The current Web current-page refresh covers digest `4A7AB406636F3F5D93096501003BA51B4A431592B235EF8465E89C6CA9A7C029`, recorded by focused Web-local current-page QA, and the latest Windows WebView runtime evidence now targets the 53-file `1035865`-byte `dist`; the full release gate currently stops at Runtime smoke artifacts on the Windows trusted MSIX blocker plus additional blocker(s) `disposable-live-sync-release-pass`.
 Windows trusted MSIX run `20260615-092543` is a host AppX deployment diagnostic, not release evidence. Report: `.manual-qa/windows-msix-current-trusted-install-update-qa.failure.json`, SHA-256 `B9C3EABF2BD707B375818C79D89E4BE52634853C9F8477A3EF74F8B6E0E942C4`.
 Live-provider route remediation boundary: owner `external-provider-or-third-party-relay`; ZeroChat Worker coverage `covered-by-cloudflare-sync-worker-and-check-security`, guarded by `pnpm run check:security`; Worker proxy action paths `image-generations->/images/generations`, `image-edits->/images/edits`, `image-responses->/responses`, `audio-speech->/audio/speech`, `audio-transcriptions->/audio/transcriptions`, `embeddings->/embeddings`, `moderations->/moderations`, `realtime->/realtime`, `realtime-client-secrets->/realtime/client_secrets`. Third-party relay/provider 404/503 route or service failures remain external remediation and cannot be counted as ZeroChat release evidence.
 Live-provider source fingerprint schema `zerochat.liveProviderSourceFingerprint.v1`; 112 files / 1,891,434 bytes; SHA-256 `328C7468893055D6ED5F631208007945DCF45FE8F7309028641E44B2ABB6CABB`.
 Live-provider UI source fingerprint schema `zerochat.liveProviderUiSourceFingerprint.v1`; 261 files / 2,805,890 bytes; SHA-256 `93CDA924607AE98B60E18A400981D476EC4D9E63D6858B70B2FF40CC3A58113D`.
 Live-sync source fingerprint schema `zerochat.liveSyncSourceFingerprint.v1`; 65 files / 1,017,099 bytes; SHA-256 `CF06D480593C9D0A77345314F0277C95F6170972AC950BD515CC578912B22B79`.
-Native source fingerprint: 461 files / 5,634,598 bytes; SHA-256 `A064B4668DE1986ED340D2C8709008F1467EF11CA5E66739F2395445AF261C10`.
+Native source fingerprint: 461 files / 5,647,191 bytes; SHA-256 `7101891A93A064DF06FA13BA97DF2F252094BB7A4EBF2AB08B0E4052D840EF83`.
 Native README and platform docs now scope clear-cloud-data; copy guard rejects the old unqualified native clear-cloud-data wording, and Cloudflare remote-clear wording remains platform-scoped.
 Windows now uses the shared PWA Skill UI through WebView2; Linux now wires Skill settings and the shared snapshot store in source, while target-host runtime QA remains required.
-Current diagnostic timestamps: native prereq 2026-09-12 07:18 Asia/Shanghai;
-live sync diagnostic 2026-09-12 07:18 Asia/Shanghai; live provider diagnostic
-2026-09-12 07:18 Asia/Shanghai; hosted native CI diagnostic 2026-09-12 07:18 Asia/Shanghai.
+Current diagnostic timestamps: native prereq 2026-10-04 03:09 Asia/Shanghai;
+live sync diagnostic 2026-10-04 03:09 Asia/Shanghai; live provider diagnostic
+2026-10-04 03:09 Asia/Shanghai; hosted native CI diagnostic 2026-10-04 03:09 Asia/Shanghai.
 Completion verdict: not complete as an all-platform release because the
 current
 2026-08-18 01:21 Asia/Shanghai live-provider full-current report is a failed
 full-capability diagnostic.
-Current full release verifier checkpoint: `.manual-qa/verify-release-current.json` was refreshed at 2026-09-12 07:25 Asia/Shanghai
-(`2026-09-11T23:25:06.974Z`), is 24,112 bytes / SHA-256
-`43CDBF3E942DB041A23EB5F0B994A9165AE0A2DDDBE46F210E6AC8BB6A69CD1B`, status `failed`, releaseEvidence false, failedStepLabels [`Runtime smoke artifacts`],
-Verify-release checkpoint failure detail: failed `Runtime smoke artifacts` is expected blocker `windows-trusted-msix-release-pass-missing`; current release blockerKind is `windows-appx-deployment-deleted-package-cleanup-access-denied`, owner `host-windows-appx-deployment-service`; Windows host preflight status `blocked`, trustedMsixQaReadiness `host-blocked`; current MSIX package-candidate staged web matches dist: `true`, package-internal web matches dist: `true`, package-internal web matches stage: `true`; next proof gate `close or restart the reported lock-holder applications (WidgetService.exe), then rerun pnpm run report:windows-msix-host-preflight and pnpm run check:windows-msix-host-preflight; repair or replace the host only if unlocked deleted-package targets remain`; this is diagnostic-only and not release evidence. It is rechecked by `pnpm run check:verify-release-checkpoint`.
+Current full release verifier checkpoint: `.manual-qa/verify-release-current.json` was refreshed at 2026-10-04 03:24 Asia/Shanghai
+(`2026-10-03T19:24:45.724Z`), is 14,516 bytes / SHA-256
+`555E818E3840172D5F87BAC0AE43E6753278546574377C7A1E8700ED79ADD8C6`, status `failed`, releaseEvidence false, failedStepLabels [`Runtime smoke artifacts`, `Axe accessibility`, `Local runtime cleanup`],
+Verify-release checkpoint failure detail: failed `Runtime smoke artifacts` contains the Windows trusted-MSIX blocker plus independent blocker evidence and is intentionally not classified as Windows-only; matched additional blockers: `disposable-live-sync-release-pass` (`live-sync-current-source-release-pass-missing`); current Windows blockerKind is `windows-appx-deployment-deleted-package-cleanup-access-denied`, owner `host-windows-appx-deployment-service`, host preflight status `blocked`, trustedMsixQaReadiness `host-blocked`; next Windows proof gate `close or restart the reported lock-holder applications (System, WidgetService.exe), then rerun pnpm run report:windows-msix-host-preflight and pnpm run check:windows-msix-host-preflight; repair or replace the host only if unlocked deleted-package targets remain`; this checkpoint and aggregate are diagnostic-only and not release evidence. It is rechecked by `pnpm run check:verify-release-checkpoint`.
 <!-- zerochat-current-evidence:qa-overlay:end -->
 
 ## 当前发布残余清单
@@ -226,7 +226,7 @@ Verify-release checkpoint failure detail: failed `Runtime smoke artifacts` is ex
 - [ ] 当前 release blocker `linux-target-runtime-qa`：status `blocked`，blockerKind `missing-linux-target-runtime-prerequisites`，owner `target-host-linux-gtk-secret-service`；next action：Run the Linux QA entry inside Linux or WSL with GTK4/libadwaita and Secret Service available.
 - [ ] 当前 release blocker `windows-trusted-msix-release-pass`：status `blocked`，blockerKind `windows-appx-deployment-deleted-package-cleanup-access-denied`，owner `host-windows-appx-deployment-service`；next action：Treat this as external lock-holder/AppX package lifecycle state, not as ZeroChat release-pass evidence.
 - [ ] 当前 release blocker `disposable-live-sync-release-pass`：status `skipped`，blockerKind `missing-live-sync-release-inputs`，owner `release-operator-disposable-sync-credentials`；next action：Configure disposable Cloudflare or Gist sync credentials, use the destructive confirmation value, then rerun the live sync release drill.
-- [ ] 当前 release blocker `hosted-native-ci-release-evidence`：status `missing`，blockerKind `missing-hosted-native-ci-release-evidence`，owner `release-operator-github-actions`；next action：Resolve hosted native CI local prerequisites (clean-git-worktree, clean-native-source-worktree) before claiming artifact evidence.
+- [ ] 当前 release blocker `hosted-native-ci-release-evidence`：status `missing`，blockerKind `missing-hosted-native-ci-release-evidence`，owner `release-operator-github-actions`；next action：Resolve hosted native CI local prerequisites (clean-git-worktree) before claiming artifact evidence.
 - [ ] 当前 release blocker `live-provider-full-capability-release-evidence`：status `skipped`，blockerKind `missing-live-provider-release-inputs`，owner `external-provider-or-third-party-relay`；next action：Treat the preserved credential-confirmed full-capability API attempt as historical diagnostic context; rerun pnpm run drill:live-provider after applying its route/service remediation so the report matches the current source fingerprint.
 - [ ] 当前 release blocker `live-provider-web-ui-browser-origin-release-evidence`：status `skipped`，blockerKind `missing-live-provider-ui-release-inputs`，owner `browser-allowed-ai-proxy-or-cloudflare-worker`；next action：Configure a browser-allowed AI proxy/Cloudflare Worker root through ZEROCHAT_LIVE_PROVIDER_UI_PROXY_URL; direct provider mode is diagnostic-only and cannot produce browser-origin release evidence.
 
@@ -243,7 +243,7 @@ Top current blocker summary: 7 residual blockers remain:
   `20260615-092543` remains diagnostic-only host AppX
   evidence for the historical 31-file
   `951885`-byte `dist`; it does not match the current
-  53-file `1035835`-byte `dist`, and trusted install/update was
+  53-file `1035865`-byte `dist`, and trusted install/update was
   not rerun while host preflight is blocked
 
 - Current trusted MSIX install/update/uninstall release-pass is still missing:
@@ -251,34 +251,34 @@ Top current blocker summary: 7 residual blockers remain:
   host AppX
   evidence for the historical 31-file
   `951885`-byte `dist`; it does not match the current
-  53-file `1035835`-byte `dist`, and trusted install/update was
+  53-file `1035865`-byte `dist`, and trusted install/update was
   not rerun while host preflight is blocked.
   The historical trusted-MSIX AppX failure is stale-dist diagnostic context, not the current blocker root.
   Windows trusted MSIX run
   `20260615-092543` remains a historical AppXDeploymentServer
   `windows-appx-deployment-deleted-package-cleanup-access-denied`
   diagnostic for the historical 31-file `951885`-byte `dist`, does not
-  match the current 53-file `1035835`-byte `dist`, and trusted install/update was
+  match the current 53-file `1035865`-byte `dist`, and trusted install/update was
   not rerun while host preflight is blocked. Current host preflight
   `.manual-qa/windows-msix-host-preflight.json` was refreshed at
-  2026-09-12 07:18 Asia/Shanghai (`2026-09-11T23:18:02.2091625Z`) with
+  2026-10-04 03:08 Asia/Shanghai (`2026-10-03T19:08:40.3227552Z`) with
   `status: "blocked"`, `hostReadyForTrustedMsix: false`,
   `currentShellElevated: false`, `trustedMsixQaReadiness: "host-blocked"`,
   blockerClassification `windows-appx-deployment-deleted-package-cleanup-access-denied`,
   and SHA-256
-  `173103F2C2B9CCE1BFD6BB8954250627683D4BC60407A1E78BE079F158FE846B`. The current package candidate is
-  `.manual-qa/ZeroChat_0.0.1.0_x64.msix` (1,383,402 bytes / SHA-256
-  `90F77DF52BAA566178C883FF79E81FB3052AC41A1D33A4615D7ACBA7ACFC104A`) with a staged web tree matching current `dist` at
-  53 files / 1,035,835 bytes / SHA-256
-  `805A29698D3BAA8B1670AF05187A9EF084194E1B479F37EC172EA4DB67DD5877`, stageWebMatchesDist: true.
+  `5D7234EB64E7D2C01B5733AC2A027A20B3E79661AFE6099B28F41817665B2E7E`. The current package candidate is
+  `.manual-qa/ZeroChat_0.0.1.0_x64.msix` (1,384,889 bytes / SHA-256
+  `44FFC93CD6DB6709C8D4B94ACC0245A1D6C4E9E8BFB3BB3320BF8A55FEB1B7F3`) with a staged web tree matching current `dist` at
+  53 files / 1,035,865 bytes / SHA-256
+  `337B5BF8036C37EC739836C599FAD460A73DBF7ADFCBB3B25EB2CA907EE3A560`, stageWebMatchesDist: true.
   The package-internal web tree matches current `dist` and staged web at
-  53 files / 1,035,835 bytes / SHA-256
-  `805A29698D3BAA8B1670AF05187A9EF084194E1B479F37EC172EA4DB67DD5877`, packageWebMatchesDist: true, packageWebMatchesStage: true.
+  53 files / 1,035,865 bytes / SHA-256
+  `337B5BF8036C37EC739836C599FAD460A73DBF7ADFCBB3B25EB2CA907EE3A560`, packageWebMatchesDist: true, packageWebMatchesStage: true.
 - The active host path is report-derived from `.manual-qa/windows-msix-host-preflight.json`; current trusted MSIX release evidence remains blocked until that report and target-host proof pass.
 - This remains packaging freshness, not release-pass evidence; current trusted
   install/update/uninstall release-pass evidence is still missing, while run
   `20260615-092543` is historical diagnostic context; currentShellElevated: false.
-  Windows trusted MSIX current blocker semantics: blockerKind `windows-appx-deployment-deleted-package-cleanup-access-denied`, owner `host-windows-appx-deployment-service`; currentTrustedQaState `host-preflight-blocked-or-unproven`; needsElevatedTrustedQaRerun false; nextProofGate `close or restart the reported lock-holder applications (WidgetService.exe), then rerun pnpm run report:windows-msix-host-preflight and pnpm run check:windows-msix-host-preflight; repair or replace the host only if unlocked deleted-package targets remain`; hostPreflight status `blocked`, trustedMsixQaReadiness `host-blocked`; historicalTrustedQaFailureKind `windows-appx-deployment-deleted-package-cleanup-access-denied`, historicalTrustedQaFailureOwner `host-windows-appx-deployment-service`.
+  Windows trusted MSIX current blocker semantics: blockerKind `windows-appx-deployment-deleted-package-cleanup-access-denied`, owner `host-windows-appx-deployment-service`; currentTrustedQaState `host-preflight-blocked-or-unproven`; needsElevatedTrustedQaRerun false; nextProofGate `close or restart the reported lock-holder applications (System, WidgetService.exe), then rerun pnpm run report:windows-msix-host-preflight and pnpm run check:windows-msix-host-preflight; repair or replace the host only if unlocked deleted-package targets remain`; hostPreflight status `blocked`, trustedMsixQaReadiness `host-blocked`; historicalTrustedQaFailureKind `windows-appx-deployment-deleted-package-cleanup-access-denied`, historicalTrustedQaFailureOwner `host-windows-appx-deployment-service`.
   blocked by Windows AppXDeploymentServer cleanup access-denied state, so that
   run is historical diagnostic evidence only and the next proof must come from
   a repaired or clean disposable Windows host before trusted MSIX QA can be
@@ -294,8 +294,8 @@ Top current blocker summary: 7 residual blockers remain:
   `pnpm run check:runtime-artifacts`, and `pnpm run check:local-cleanup`.
 - Live-provider full-capability release evidence remains open: current 2026-08-18 01:21 Asia/Shanghai
   full-current report status is `failed`; current
-  no-credential diagnostic refreshed at 2026-09-12 07:18 Asia/Shanghai has SHA-256
-  `7A17F2A6F88530E1EE879892819F060BD3E43F29F1563B09D09D90DDA6B8E53C`, while Live provider credential-confirmed full-capability attempt SHA-256 is
+  no-credential diagnostic refreshed at 2026-10-04 03:09 Asia/Shanghai has SHA-256
+  `8B7A8DF273915DD466429A7894174B9D0921BB1EB3FFAD330BE48DA01492A07E`, while Live provider credential-confirmed full-capability attempt SHA-256 is
   `F284A79F80C6F5EE0B7F35A9CA0EB08E35CF777A69ED444373A83D12F3776D61`, with source fingerprint 112 files / 1,891,434 / SHA-256
   `328C7468893055D6ED5F631208007945DCF45FE8F7309028641E44B2ABB6CABB`.
   Live provider full-capability required remediation: source `none`; capabilityFailureSummary.total 0; affectedCapabilities `none`; routeHealthBlockers `none`; capabilityRemediationHintCount 0; reportRemediationHintCount 0; remediationTargets `none`; rerunCommands `pnpm run drill:live-provider` / `pnpm run check:live-provider-report` / `pnpm run check:live-provider-full-capability`.
@@ -306,9 +306,9 @@ Top current blocker summary: 7 residual blockers remain:
   a browser-allowed AI proxy or Cloudflare Worker root before release-pass UI
   evidence can exist.
   Live provider UI required remediation: kind `missing-live-provider-ui-inputs`; browserAllowedProxyRequired true; requiresProxyUrl true; requiresSyncPassphrase true; requiresWorkerHostedProviderKey true; actionCount 4; actions `Configure a browser-allowed AI proxy/Cloudflare Worker root through ZEROCHAT_LIVE_PROVIDER_UI_PROXY_URL; direct provider mode is diagnostic-only and cannot produce browser-origin release evidence.` / `Provide ZEROCHAT_LIVE_PROVIDER_UI_SYNC_PASSPHRASE so the browser can derive the Worker access key.` / `Set ZEROCHAT_LIVE_PROVIDER_UI_WORKER_HOSTS_KEY=true, store the provider key as a Worker secret, and do not inject the provider key into the browser.` / `Provide remaining release UI inputs (providerBaseUrl, sendConfirmation) before rerunning pnpm run drill:live-provider-ui.`.
-- Disposable Cloudflare/Gist live-sync release-pass and hosted native CI remain open. Current 2026-09-12 07:18 Asia/Shanghai
-  live-sync diagnostic hash is `E4AF8250C019B178025E687AF204BDCEDDA8362228E04E68C13190A504864CFD`, with source fingerprint
+- Disposable Cloudflare/Gist live-sync release-pass and hosted native CI remain open. Current 2026-10-04 03:09 Asia/Shanghai
+  live-sync diagnostic hash is `CD99FCDE64508B25F15E8983DBE8A1E53BD92936CE2D7208E68B636D20916DB8`, with source fingerprint
   65 files / 1,017,099 /
-  SHA-256 `CF06D480593C9D0A77345314F0277C95F6170972AC950BD515CC578912B22B79`; current 2026-09-12 07:18 Asia/Shanghai
-  hosted native CI diagnostic hash is `7F05D1BB2C04E8166CB614260303DA7BD8AA6C4808A0442E216017509165B669`.
-- Native prerequisite diagnostic remains current at 2026-09-12 07:18 Asia/Shanghai; Apple and Linux target runtime QA still require target hosts.
+  SHA-256 `CF06D480593C9D0A77345314F0277C95F6170972AC950BD515CC578912B22B79`; current 2026-10-04 03:09 Asia/Shanghai
+  hosted native CI diagnostic hash is `E541D6A761E03D228733E9A7B2E2009EE2669945F6BB83E1DD121FF3FA121C10`.
+- Native prerequisite diagnostic remains current at 2026-10-04 03:09 Asia/Shanghai; Apple and Linux target runtime QA still require target hosts.

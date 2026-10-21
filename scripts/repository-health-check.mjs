@@ -103,7 +103,7 @@ for (const pattern of ['.manual-qa/', '.visual-audit/', '*.log', '*.cpuprofile',
   if (!gitignore.includes(pattern)) failures.push(`.gitignore must include ${pattern}.`)
 }
 if (!gitignore.includes('!/.local/') || !gitignore.includes(`/${projectLocalBoundaryRelativePath}/`)) {
-  failures.push('Repository local-state boundary must be explicitly ignored at /.local/codex/.')
+  failures.push(`Repository local-state boundary must be explicitly ignored at /${projectLocalBoundaryRelativePath}/.`)
 }
 
 if (Buffer.byteLength(requirements, 'utf8') > 500_000 || Buffer.byteLength(qaAudit, 'utf8') > 300_000) {

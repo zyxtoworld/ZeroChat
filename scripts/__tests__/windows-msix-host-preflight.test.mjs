@@ -238,26 +238,4 @@ describe('Windows MSIX host preflight checker', () => {
     )
   })
 
-  it('requires active-work-session guidance when Codex holds a deleted package target', async () => {
-    const report = blockedReport()
-    report.blockerClassification.activeLockProcesses[0].appName = 'Codex'
-    report.blockerClassification.activeLockApplicationNames = ['Codex']
-    report.nextSteps.hostActions = [
-      'Codex is an active WindowsApps\\Deleted lock holder. Do not interrupt an active Codex work session; use a fresh disposable Windows profile or VM for trusted MSIX QA, or rerun this preflight after Codex exits.',
-      'After host repair, use -SkipKnownHostBlockerPreflight only for the historical failure report.',
-    ]
-    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`)
-
-    expect(runChecker().status).toBe(0)
-
-    report.nextSteps.hostActions[0] =
-      'Close or restart the reported lock-holder applications (Codex) before host repair.'
-    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`)
-
-    const result = runChecker()
-    expect(result.status).toBe(1)
-    expect(`${result.stdout}\n${result.stderr}`).toContain(
-      'blocked Codex lock-holder diagnostics must preserve active-work-session remediation.',
-    )
-  })
 })

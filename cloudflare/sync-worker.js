@@ -60,6 +60,7 @@ const PROXY_ACTION_PATHS = {
   realtime: '/realtime',
   'realtime-client-secrets': '/realtime/client_secrets',
 }
+const PROXY_WEBSOCKET_PATH = '/proxy/ws'
 const KNOWN_UPSTREAM_PATHS = [
   '/chat/completions',
   '/responses',
@@ -75,6 +76,9 @@ export default {
     const url = new URL(request.url)
     const cors = await resolveCorsContext(request, env)
     const corsHeaders = buildCorsHeaders(cors)
+    const websocketProxyRequest =
+      url.pathname === PROXY_WEBSOCKET_PATH &&
+      request.headers.get('upgrade')?.toLowerCase() === 'websocket'
 
     if (request.method === 'OPTIONS') {
       if (!cors.canPreflight) {
@@ -87,7 +91,10 @@ export default {
       return new Response(null, { headers: corsHeaders })
     }
 
-    if (routeRequiresAccessKey(url.pathname) && !configuredAccessKey(env)) {
+    if (
+      (routeRequiresAccessKey(url.pathname) || url.pathname === PROXY_WEBSOCKET_PATH) &&
+      !configuredAccessKey(env)
+    ) {
       return new Response(SETUP_ACCESS_KEY_ERROR, {
         status: 501,
         headers: corsHeaders,
@@ -98,7 +105,7 @@ export default {
       !cors.allowed &&
       !(
         cors.canEnroll &&
-        hasValidRouteToken(request, env, url.pathname)
+        (hasValidRouteToken(request, env, url.pathname) || websocketProxyRequest)
       )
     ) {
       return new Response('Origin not allowed', {
@@ -107,12 +114,16 @@ export default {
       })
     }
 
-    if (cors.canEnroll) {
+    if (cors.canEnroll && !websocketProxyRequest) {
       await rememberAllowedOrigin(env, cors.origin)
     }
 
     if (url.pathname === '/proxy/hosts') {
       return handleProxyHosts(request, env, corsHeaders)
+    }
+
+    if (url.pathname === PROXY_WEBSOCKET_PATH) {
+      return proxyAiWebSocket(request, env, corsHeaders, cors)
     }
 
     if (url.pathname === '/proxy') {
@@ -947,6 +958,176 @@ async function handleIncrementalObject(request, env, corsHeaders, url) {
 
   return new Response('Method not allowed', {
     status: 405,
+    headers: corsHeaders,
+  })
+}
+
+async function proxyAiWebSocket(request, env, corsHeaders, cors) {
+  if (request.method !== 'GET' || request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
+    return new Response('WebSocket upgrade required', {
+      status: 426,
+      headers: corsHeaders,
+    })
+  }
+
+  const pair = new WebSocketPair()
+  const client = pair[0]
+  const server = pair[1]
+  server.accept()
+  let authenticated = false
+  let upstream = null
+  let closed = false
+
+  const closeBoth = (code = 1000, reason = '') => {
+    if (closed) return
+    closed = true
+    try {
+      server.close(code, reason)
+    } catch {
+      // Client teardown is best-effort.
+    }
+    try {
+      upstream?.close(code, reason)
+    } catch {
+      // Upstream teardown is best-effort.
+    }
+  }
+
+  const sendError = (message, status) => {
+    try {
+      server.send(JSON.stringify({
+        type: 'zerochat.proxy.error',
+        ...(status ? { status } : {}),
+        error: { message },
+      }))
+    } catch {
+      closeBoth(1011, 'proxy error')
+    }
+  }
+
+  server.addEventListener('message', async (event) => {
+    if (closed) return
+
+    let value
+    try {
+      value = JSON.parse(
+        typeof event.data === 'string'
+          ? event.data
+          : new TextDecoder().decode(event.data),
+      )
+    } catch {
+      sendError('Invalid WebSocket JSON message', 400)
+      closeBoth(1003, 'invalid message')
+      return
+    }
+
+    if (!authenticated) {
+      if (value?.type !== 'zerochat.proxy.authorize') {
+        sendError('WebSocket authorization is required', 401)
+        closeBoth(1008, 'unauthorized')
+        return
+      }
+
+      if (!timingSafeEqual(String(value.accessKey ?? '').trim(), configuredAccessKey(env))) {
+        sendError('Unauthorized', 401)
+        closeBoth(1008, 'unauthorized')
+        return
+      }
+
+      if (value.providerKind !== 'openai-responses') {
+        sendError('Responses WebSocket requires an OpenAI Responses provider', 400)
+        closeBoth(1003, 'unsupported provider')
+        return
+      }
+
+      let upstreamUrl
+      try {
+        upstreamUrl = buildUpstreamUrl(String(value.baseUrl ?? ''), 'openai-responses')
+      } catch {
+        sendError('Invalid upstream URL', 400)
+        closeBoth(1008, 'invalid upstream')
+        return
+      }
+
+      const upstreamUrlObject = new URL(upstreamUrl)
+      const upstreamHost = upstreamUrlObject.host.toLowerCase()
+      const allowedHosts = await allowedProxyHosts(env)
+      if (!allowedHosts.includes(upstreamHost)) {
+        if (!(await canAutoAllowProxyHost(env, upstreamHost))) {
+          sendError('Host is not allowed', 403)
+          closeBoth(1008, 'host not allowed')
+          return
+        }
+        await rememberAllowedProxyHost(env, upstreamHost)
+      }
+
+      const providerKey = String(value.apiKey ?? '').trim() || resolveHostedProviderKey(env, {
+        host: upstreamUrlObject.host,
+        hostname: upstreamUrlObject.hostname,
+      })
+      if (!providerKey && !envFlag(env.ALLOW_KEYLESS_UPSTREAMS)) {
+        sendError('Missing provider authorization', 401)
+        closeBoth(1008, 'missing authorization')
+        return
+      }
+
+      if (cors.canEnroll) await rememberAllowedOrigin(env, cors.origin)
+
+      let upstreamResponse
+      try {
+        upstreamResponse = await fetch(upstreamUrlObject.toString(), {
+          headers: {
+            ...(providerKey ? { Authorization: `Bearer ${providerKey}` } : {}),
+            Upgrade: 'websocket',
+          },
+        })
+      } catch {
+        sendError('Upstream WebSocket connection failed', 502)
+        closeBoth(1011, 'upstream connection failed')
+        return
+      }
+
+      upstream = upstreamResponse.webSocket
+      if (upstreamResponse.status !== 101 || !upstream) {
+        sendError('Upstream WebSocket is unavailable', upstreamResponse.status)
+        closeBoth(1011, 'upstream unavailable')
+        return
+      }
+
+      upstream.accept()
+      authenticated = true
+      upstream.addEventListener('message', (upstreamEvent) => {
+        try {
+          server.send(upstreamEvent.data)
+        } catch {
+          closeBoth(1011, 'proxy send failed')
+        }
+      })
+      upstream.addEventListener('close', () => closeBoth(1000, 'upstream closed'))
+      upstream.addEventListener('error', () => closeBoth(1011, 'upstream error'))
+      server.send(JSON.stringify({ type: 'zerochat.proxy.ready' }))
+      return
+    }
+
+    if (!upstream || upstream.readyState !== WebSocket.OPEN) {
+      sendError('Upstream WebSocket is not ready', 502)
+      closeBoth(1011, 'upstream not ready')
+      return
+    }
+
+    try {
+      upstream.send(event.data)
+    } catch {
+      closeBoth(1011, 'proxy send failed')
+    }
+  })
+
+  server.addEventListener('close', () => closeBoth(1000, 'client closed'))
+  server.addEventListener('error', () => closeBoth(1011, 'client error'))
+
+  return new Response(null, {
+    status: 101,
+    webSocket: client,
     headers: corsHeaders,
   })
 }

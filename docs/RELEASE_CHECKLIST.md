@@ -3,6 +3,16 @@
 Use this checklist before publishing Web, Worker, or native builds. Keep it short
 enough that every release can actually run it.
 
+## `.manual-qa/` Layout
+
+`.manual-qa/` is ignored local release evidence. Keep the canonical current
+reports and artifacts at the directory root because the release checkers use
+stable paths; do not move or rename them into subdirectories.
+
+- `hosted-native-ci/`: downloaded GitHub Actions native artifacts.
+- `web-current-page-visual-audit/`: current Web/PWA screenshots, gallery, and contact sheet.
+- `archive/`: historical logs and superseded local attempts only; never use it as current evidence.
+
 ## Required Gate
 
 ```bash
@@ -829,10 +839,8 @@ recent AppXDeploymentServer cleanup events, AppX service state, sanitized
 Windows Restart Manager lock holders, and host-specific next actions without
 importing certificates or installing packages. Restart reported lock-holder
 applications and rerun the preflight before escalating to wider AppX repair or
-a fresh disposable profile/VM. When the current failure report lists Codex as
-the holder, do not interrupt an active Codex work session; use a fresh
-disposable profile/VM or rerun the preflight after Codex exits. When it
-classifies `windows-appx-deployment-deleted-package-cleanup-access-denied`, the
+a fresh disposable Windows profile/VM. If it classifies
+`windows-appx-deployment-deleted-package-cleanup-access-denied`, the
 trusted QA helper fails fast before creating a new temp run so reviewers do not
 wait through another install timeout on the same host. After repairing the host
 or moving to a fresh disposable Windows profile/VM, rerun

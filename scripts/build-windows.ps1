@@ -2,7 +2,7 @@ param(
   [ValidateSet("Debug", "Release", "All")]
   [string] $Configuration = "Release",
   [string] $Platform = "x64",
-  [string] $BuildRoot = ".local\codex\artifacts\windows-build",
+  [string] $BuildRoot = ".local\zerochat\artifacts\windows-build",
   [switch] $SkipWebBuild,
   [switch] $MsixReady
 )
@@ -61,7 +61,7 @@ function Get-AsciiBuildRoot {
     return [pscustomobject]@{ Path = $PhysicalBuildRoot; Drive = $null }
   }
 
-  $ArtifactsRoot = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot ".local\codex\artifacts"))
+  $ArtifactsRoot = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot ".local\zerochat\artifacts"))
   $ArtifactsUri = [System.Uri]::new("$($ArtifactsRoot.TrimEnd('\'))\")
   $PhysicalBuildUri = [System.Uri]::new("$($PhysicalBuildRoot.TrimEnd('\'))\")
   $Relative = [System.Uri]::UnescapeDataString(
@@ -75,7 +75,7 @@ function Get-AsciiBuildRoot {
     $Relative.StartsWith("..$([System.IO.Path]::DirectorySeparatorChar)") -or
     [System.IO.Path]::IsPathRooted($Relative)
   ) {
-    throw "Windows build output must stay under the project-local .local\codex\artifacts directory: $PhysicalBuildRoot"
+    throw "Windows build output must stay under the project-local .local\zerochat\artifacts directory: $PhysicalBuildRoot"
   }
 
   foreach ($Letter in @("Z", "Y", "X", "W", "V")) {

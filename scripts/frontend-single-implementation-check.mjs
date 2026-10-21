@@ -200,7 +200,7 @@ function listTextFiles(root, directory = root) {
       (ignoredDirectories.has(entry.name) ||
       entry.name === '.claude' ||
       entry.name === '__tests__' ||
-        entry.name.startsWith('.codex-'))
+        entry.name.startsWith('.zerochat-'))
     ) continue
     const file = path.join(directory, entry.name)
     if (isProjectLocalBoundaryPath(relative(root, file))) continue

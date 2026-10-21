@@ -1,5 +1,5 @@
 param(
-  [string] $BuildRoot = ".local\codex\artifacts\windows-build",
+  [string] $BuildRoot = ".local\zerochat\artifacts\windows-build",
   [string] $Configuration = "Release",
   [string] $Platform = "x64",
   [string] $OutputPath = "",

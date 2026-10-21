@@ -31,6 +31,7 @@ mod model_settings;
 mod models;
 mod provider_settings;
 mod providers;
+mod responses_websocket;
 mod secret_store;
 mod settings_window;
 mod sidebar;

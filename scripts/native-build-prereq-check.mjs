@@ -521,7 +521,7 @@ const androidSdkCandidates = [
   process.env.ANDROID_HOME,
   process.env.ANDROID_SDK_ROOT,
   process.platform === 'win32' ? 'C:\\ZeroChatAndroidTools\\sdk' : undefined,
-  path.resolve('.codex-android-tools', 'sdk'),
+  path.resolve('.local', 'zerochat', 'toolchains', 'android-sdk'),
   process.env.LOCALAPPDATA
     ? path.join(process.env.LOCALAPPDATA, 'Android', 'Sdk')
     : undefined,
@@ -537,8 +537,8 @@ const androidDiscoveredJava = existingPath([
   androidJavaFromJavaHome,
   process.platform === 'win32' ? findJavaInDirectory('C:\\ZeroChatAndroidTools\\jdk17') : undefined,
   process.platform === 'win32' ? findJavaInDirectory('C:\\ZeroChatAndroidTools\\jdk') : undefined,
-  findJavaInDirectory(path.resolve('.codex-android-tools', 'jdk17')),
-  findJavaInDirectory(path.resolve('.codex-android-tools', 'jdk')),
+  findJavaInDirectory(path.resolve('.local', 'zerochat', 'toolchains', 'jdk17')),
+  findJavaInDirectory(path.resolve('.local', 'zerochat', 'toolchains', 'jdk')),
 ])
 const androidGradleCanFindJava =
   androidJavaFromPath || Boolean(androidDiscoveredJava)

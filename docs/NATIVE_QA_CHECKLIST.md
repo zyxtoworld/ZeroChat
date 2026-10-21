@@ -649,9 +649,6 @@ Windows Restart Manager lock holders, and whether the known WindowsApps
 Deleted cleanup blocker is still visible. Restart reported lock-holder
 applications first; if unlocked targets remain after the next preflight, then
 repair the wider AppX state or use a fresh disposable profile/VM.
-When the reported holder is Codex itself, do not interrupt an active Codex work
-session; use a fresh disposable profile/VM or rerun the preflight after Codex
-exits.
 When that current failure report is still present, the trusted QA helper fails
 fast before creating another temp run. After verifying the host has been
 repaired, rerun

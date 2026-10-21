@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { lstat, readdir, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 
-const projectLocalArtifactRelativePath = '.local/codex/artifacts'
+const projectLocalArtifactRelativePath = '.local/zerochat/artifacts'
 
 // Runtime bundles are small and known. These limits make a stale or malicious
 // report fail closed before it can turn the validator into a general-purpose

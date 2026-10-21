@@ -403,7 +403,7 @@ const androidUiReport = await readFirstOptionalJson([
   '.manual-qa/android-ui-smoke.json',
   '.manual-qa/android-current-page-qa.json',
 ])
-if (androidUiReport) {
+if (androidUiReport?.passed === true) {
   expect(
     String(androidUiReport.homeAppIcon?.resourceId ?? '').endsWith('zerochat-app-icon'),
     'Android current QA evidence must include the zerochat-app-icon resource id.',

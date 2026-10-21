@@ -327,7 +327,7 @@ expect(
   'vite.config.ts must use relative base paths for GitHub Pages project URLs.',
 )
 expect(
-  viteConfig.includes('**/.codex-*/**'),
+  viteConfig.includes('**/.zerochat-*/**'),
   'vite.config.ts should ignore local browser QA profiles during development.',
 )
 expect(
@@ -531,7 +531,7 @@ expect(
     ciWorkflow.includes('microsoft/setup-msbuild@v2') &&
     ciWorkflow.includes('node scripts\\native-build-prereq-check.mjs --platform=windows') &&
     ciWorkflow.includes('.\\scripts\\build-windows.ps1 -Configuration Release -SkipWebBuild -MsixReady') &&
-    ciWorkflow.includes('.\\scripts\\package-windows-msix.ps1 -BuildRoot .local\\codex\\artifacts\\windows-build -Configuration Release -Platform x64') &&
+    ciWorkflow.includes('.\\scripts\\package-windows-msix.ps1 -BuildRoot .local\\zerochat\\artifacts\\windows-build -Configuration Release -Platform x64') &&
     ciWorkflow.includes('.\\scripts\\windows-msix-install-qa.ps1') &&
     ciWorkflow.includes('windows-release-shell'),
   'CI workflow must keep a Windows native Release build, unsigned MSIX packaging dry-run, and artifact upload.',

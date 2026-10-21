@@ -536,6 +536,11 @@ internal fun endpointFor(provider: ProviderConfig): String {
         ProviderKind.OpenAICompatible -> "$root/chat/completions"
     }
 }
+internal fun responsesWebSocketEndpointFor(provider: ProviderConfig): String {
+    val root = provider.proxyUrl?.takeIf { it.isNotBlank() }?.let { proxyRootUrl(it) }
+        ?: providerApiRoot(provider)
+    return if (provider.proxyUrl.isNullOrBlank()) "$root/responses" else "$root/proxy/ws"
+}
 
 internal fun modelsEndpointFor(provider: ProviderConfig): String {
     provider.proxyUrl?.takeIf { it.isNotBlank() }?.let {

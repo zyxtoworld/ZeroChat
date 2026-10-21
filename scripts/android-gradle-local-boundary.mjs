@@ -25,7 +25,7 @@ function defaultFileSystem() {
 export function androidGradleLocalPaths(repoRoot, { platform = process.platform } = {}) {
   const pathApi = platform === 'win32' ? path.win32 : path
   const normalizedRepoRoot = pathApi.resolve(repoRoot)
-  const localRoot = pathApi.join(normalizedRepoRoot, '.local', 'codex')
+  const localRoot = pathApi.join(normalizedRepoRoot, '.local', 'zerochat')
 
   return Object.freeze({
     tempRoot: pathApi.join(localRoot, 'tmp'),
@@ -69,7 +69,7 @@ export function androidGradleExecutionPaths(
   const pathApi = platform === 'win32' ? path.win32 : path
   const linkRoot = pathApi.join(hostRoot, 'ZeroChat', 'android-gradle-junctions')
   const linkName = createHash('sha256')
-    .update(pathApi.resolve(pathApi.join(repoRoot ?? process.cwd(), '.local', 'codex')))
+    .update(pathApi.resolve(pathApi.join(repoRoot ?? process.cwd(), '.local', 'zerochat')))
     .digest('hex')
     .slice(0, 16)
   const linkPath = pathApi.join(linkRoot, linkName)

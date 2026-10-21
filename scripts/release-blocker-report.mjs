@@ -82,6 +82,35 @@ const optionalSourceReportPaths = {
   liveProviderUiLocalProxy:
     '.manual-qa/live-provider-ui-local-proxy-diagnostic.json',
 }
+const missingSourceReportOptions = {
+  windowsTrustedMsixFailure: {
+    allowMissing: true,
+    kind: 'zerochat.windowsTrustedMsixFailureReport',
+    requiredAction:
+      'Run trusted Windows MSIX install/update/uninstall QA on a clear elevated disposable host and retain its diagnostic or passing report.',
+  },
+  liveProvider: {
+    allowMissing: true,
+    kind: 'zerochat.liveProviderSmoke',
+    requiredAction:
+      'Run the full-capability live provider smoke with disposable credentials and retain the current-source report.',
+    report: {
+      releaseEndpointEligible: false,
+      sourceFingerprint: {
+        kind: 'zerochat.liveProviderSourceFingerprint.v1',
+        roots: [],
+        fileCount: 0,
+        totalBytes: 0,
+        sha256: null,
+      },
+      nextSteps: {
+        drillCommands: ['pnpm run drill:live-provider'],
+        validationCommands: ['pnpm run check:live-provider-full-capability'],
+      },
+      requiredInputs: ['Disposable provider base URL', 'Disposable provider API key'],
+    },
+  },
+}
 let currentLiveProviderSourceFingerprint = null
 let currentLiveProviderUiSourceFingerprint = null
 let currentLiveProviderUiLocalProxySourceFingerprint = null
@@ -164,6 +193,9 @@ const validationCommands = [
             ],
             [
               '.manual-qa/windows-msix-host-preflight.json current host preflight status=blocked',
+            ],
+            [
+              'windows-msix-trusted: required trusted MSIX install/update/uninstall artifact is missing',
             ],
           ],
         },
@@ -1237,12 +1269,35 @@ function validateLiveProviderUiLocalProxySource(source, sourcePath) {
       }
 }
 
-async function readSourceReport(path) {
-  const bytes = await readFile(resolve(root, path))
-  return {
-    report: JSON.parse(bytes.toString('utf8')),
-    sha256: createHash('sha256').update(bytes).digest('hex').toUpperCase(),
-    bytes: bytes.length,
+async function readSourceReport(path, options = {}) {
+  try {
+    const bytes = await readFile(resolve(root, path))
+    return {
+      report: JSON.parse(bytes.toString('utf8')),
+      sha256: createHash('sha256').update(bytes).digest('hex').toUpperCase(),
+      bytes: bytes.length,
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT' || options.allowMissing !== true) {
+      throw error
+    }
+
+    return {
+      missing: true,
+      report: {
+        kind: options.kind,
+        version: 1,
+        status: 'missing',
+        passed: false,
+        releaseEvidence: false,
+        safeToPublish: true,
+        evidenceType: 'required-source-report-missing',
+        requiredAction: options.requiredAction,
+        ...options.report,
+      },
+      sha256: null,
+      bytes: 0,
+    }
   }
 }
 
@@ -2377,6 +2432,7 @@ function buildWindowsTrustedMsixBlocker(
   currentMsixPackageWebAssets,
 ) {
   const report = source.report
+  const historicalEvidenceMissing = source.missing === true
   const hostReport = hostPreflightSource?.report ?? {}
   const cleanup = report.cleanupVerified ?? {}
   const blockerClassification = report.blockerClassification ?? {}
@@ -2415,11 +2471,14 @@ function buildWindowsTrustedMsixBlocker(
     : null
   const trustedQaWebAssetsMatchRecordedDist = report.webAssetsMatchDist === true
   const trustedQaPackageMatchesCurrentDist =
+    !historicalEvidenceMissing &&
     trustedQaWebAssetsMatchRecordedDist &&
     webAssetSummariesMatch(historicalTrustedQaDistWebAssets, currentDistWebAssetsSummary)
-  const trustedQaEvidenceFreshness = trustedQaPackageMatchesCurrentDist
-    ? 'current-dist'
-    : 'historical-stale-dist'
+  const trustedQaEvidenceFreshness = historicalEvidenceMissing
+    ? 'missing'
+    : trustedQaPackageMatchesCurrentDist
+      ? 'current-dist'
+      : 'historical-stale-dist'
   const hostReadyForTrustedMsix =
     hostReport.status === 'clear' && hostReport.hostReadyForTrustedMsix === true
   const currentShellElevated = hostReport.currentShellElevated === true
@@ -2488,9 +2547,11 @@ function buildWindowsTrustedMsixBlocker(
     : hostClassification.summary ??
       blockerClassification.summary ??
       'Windows trusted MSIX install/update/uninstall is blocked or unproven on the current Windows host.'
-  const freshnessSummary = trustedQaPackageMatchesCurrentDist
-    ? ''
-    : ` The summarized trusted QA package is historical diagnostic evidence for a ${historicalTrustedQaDistWebAssets?.totalBytes ?? 'unknown'}-byte dist and does not match the current ${currentDistWebAssetsSummary?.totalBytes ?? 'unknown'}-byte dist.`
+  const freshnessSummary = historicalEvidenceMissing
+    ? ' No trusted MSIX QA report is present; trusted install/update/uninstall evidence must be generated on a clear elevated disposable host.'
+    : trustedQaPackageMatchesCurrentDist
+      ? ''
+      : ` The summarized trusted QA package is historical diagnostic evidence for a ${historicalTrustedQaDistWebAssets?.totalBytes ?? 'unknown'}-byte dist and does not match the current ${currentDistWebAssetsSummary?.totalBytes ?? 'unknown'}-byte dist.`
   const candidateSummary = currentMsixPackageCandidateEvidence
     ? ` Current MSIX package-candidate evidence exists at ${currentMsixPackageCandidateEvidence.path} (${currentMsixPackageCandidateEvidence.bytes} bytes / SHA-256 ${currentMsixPackageCandidateEvidence.sha256}); its staged web tree ${currentMsixStageWebMatchesDist ? 'matches' : 'does not match'} the current dist with directory-manifest fingerprint ${webAssetSummaryPhrase(currentMsixStageWebAssetsSummary)}, and its package-internal web tree ${currentMsixPackageWebMatchesDist ? 'matches' : 'does not match'} the current dist and ${currentMsixPackageWebMatchesStage ? 'matches' : 'does not match'} the staged web tree with package-manifest fingerprint ${webAssetSummaryPhrase(currentMsixPackageWebAssetsSummary)}; this is packaging freshness evidence only, not trusted install/update/uninstall release evidence.`
     : ''
@@ -2557,15 +2618,18 @@ function buildWindowsTrustedMsixBlocker(
       currentDistWebAssets: currentDistWebAssetsSummary,
       currentMsixPackageCandidate: currentMsixPackageCandidateEvidence,
       cleanupVerified: {
-        zeroChatPackageAbsent: cleanup.packageInstalled === false,
-        testCertificatesAbsent:
-          cleanup.currentUserTrustedPeople === false &&
-          cleanup.localMachineTrustedPeople === false &&
-          cleanup.localMachineRoot === false &&
-          cleanup.currentUserMy === false,
-        privatePfxAbsent: cleanup.privatePfxExists === false,
-        packageDataAbsent: cleanup.packageLocalDataExists === false,
-        temporaryDirectoryAbsent: cleanup.temporaryDirectoryExists === false,
+        zeroChatPackageAbsent: historicalEvidenceMissing ? null : cleanup.packageInstalled === false,
+        testCertificatesAbsent: historicalEvidenceMissing
+          ? null
+          : cleanup.currentUserTrustedPeople === false &&
+            cleanup.localMachineTrustedPeople === false &&
+            cleanup.localMachineRoot === false &&
+            cleanup.currentUserMy === false,
+        privatePfxAbsent: historicalEvidenceMissing ? null : cleanup.privatePfxExists === false,
+        packageDataAbsent: historicalEvidenceMissing ? null : cleanup.packageLocalDataExists === false,
+        temporaryDirectoryAbsent: historicalEvidenceMissing
+          ? null
+          : cleanup.temporaryDirectoryExists === false,
       },
       hostPreflight: {
         status: hostReport.status ?? null,
@@ -3794,11 +3858,12 @@ function validateReleaseBlockerSummary(
   const failures = []
   const summaryGeneratedAtMs = Date.parse(report.generatedAt ?? '')
   const expectedSourceReportIds = Object.keys(summarySourceReportPaths)
+  const expectedOptionalValidationCommands = optionalValidationCommands.filter(
+    ([id]) => !sources[id]?.missing,
+  )
   const expectedValidationIds = [
     ...validationCommands.map(([id]) => id),
-    ...(sources.liveProviderAttempt?.missing
-      ? []
-      : optionalValidationCommands.map(([id]) => id)),
+    ...expectedOptionalValidationCommands.map(([id]) => id),
   ]
   const expectedTimestampSourceIds = Object.keys(summarySourceReportPaths)
     .filter((id) => !sources[id]?.missing)
@@ -4111,6 +4176,7 @@ function validateReleaseBlockerSummary(
         (blocker) => blocker.id === 'windows-trusted-msix-release-pass',
       )
     const windowsCleanup = windowsBlocker?.evidence?.cleanupVerified
+    const windowsTrustedMsixReportMissing = sources.windowsTrustedMsixFailure?.missing === true
     expect(isObject(windowsCleanup), 'windows trusted MSIX blocker must summarize cleanup verification.')
     if (isObject(windowsCleanup)) {
       for (const key of [
@@ -4120,7 +4186,12 @@ function validateReleaseBlockerSummary(
         'packageDataAbsent',
         'temporaryDirectoryAbsent',
       ]) {
-        expect(windowsCleanup[key] === true, `windows cleanupVerified.${key} must be true.`)
+        expect(
+          windowsCleanup[key] === (windowsTrustedMsixReportMissing ? null : true),
+          windowsTrustedMsixReportMissing
+            ? `windows cleanupVerified.${key} must remain null when the trusted QA report is missing.`
+            : `windows cleanupVerified.${key} must be true.`,
+        )
       }
 
       for (const staleKey of [
@@ -4374,7 +4445,17 @@ function validateReleaseBlockerSummary(
         'windows trusted MSIX blocker must explicitly record missing current MSIX package-candidate evidence as null.',
       )
     }
-    if (expectedTrustedQaPackageMatchesCurrentDist) {
+    if (windowsTrustedMsixReportMissing) {
+      expect(
+        windowsBlocker?.evidence?.trustedQaEvidenceFreshness === 'missing',
+        'windows trusted MSIX blocker must mark missing trusted-QA evidence as missing.',
+      )
+      expect(
+        typeof windowsBlocker?.summary === 'string' &&
+          windowsBlocker.summary.includes('No trusted MSIX QA report is present'),
+        'windows trusted MSIX blocker summary must explain that the trusted-QA report is missing.',
+      )
+    } else if (expectedTrustedQaPackageMatchesCurrentDist) {
       expect(
         windowsBlocker?.evidence?.trustedQaEvidenceFreshness === 'current-dist',
         'windows trusted MSIX blocker must mark trusted-QA package evidence current only when it matches current dist.',
@@ -5299,7 +5380,7 @@ function validateReleaseBlockerSummary(
 
     const expectedValidationCommands = [
       ...validationCommands,
-      ...(sources.liveProviderAttempt?.missing ? [] : optionalValidationCommands),
+      ...expectedOptionalValidationCommands,
     ]
 
     for (const [id, args, options = {}] of expectedValidationCommands) {
@@ -5438,7 +5519,7 @@ async function main() {
   const sources = {}
 
   for (const [id, path] of Object.entries(sourceReportPaths)) {
-    sources[id] = await readSourceReport(path)
+    sources[id] = await readSourceReport(path, missingSourceReportOptions[id])
   }
   for (const [id, path] of Object.entries(optionalSourceReportPaths)) {
     sources[id] = await readOptionalSourceReport(path)

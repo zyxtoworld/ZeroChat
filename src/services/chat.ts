@@ -46,6 +46,10 @@ import {
   providerUsesProxy,
 } from './providerRequestMode'
 import { providerTimeoutSignal } from './providerTimeoutSignal'
+import {
+  isResponsesWebSocketFallbackError,
+  streamResponsesWebSocket,
+} from './responsesWebSocket'
 
 export { synthesizeSpeechAudio } from './audioSpeech'
 export { transcribeAudioFile } from './audioTranscription'
@@ -1164,24 +1168,42 @@ export async function streamChat(options: StreamOptions): Promise<void> {
   const contextMessages = selectContextMessages(messages, contextMessageLimit)
 
   if (provider.kind === 'openai-responses') {
-    const response = await fetchProviderStreamResponse(
-      provider,
-      chatConnectionTarget(),
-      endpoint,
-      {
-        method: 'POST',
-        signal,
-        headers: buildProviderChatHeaders({ provider, apiKey, proxyToken }),
-        body: JSON.stringify(
-          buildProviderResponsesChatBody({
-            model,
-            messages: contextMessages,
-          }),
-        ),
-      },
-    )
+    const responsesBody = buildProviderResponsesChatBody({
+      model,
+      messages: contextMessages,
+    })
+    let usedWebSocket = false
 
-    await readResponsesStream(response, signal, publishToken)
+    try {
+      usedWebSocket = await streamResponsesWebSocket({
+        provider,
+        apiKey,
+        proxyToken,
+        body: responsesBody,
+        signal,
+        onToken: publishToken,
+      })
+    } catch (error: unknown) {
+      if (!isResponsesWebSocketFallbackError(error)) {
+        throw error
+      }
+    }
+
+    if (!usedWebSocket) {
+      const response = await fetchProviderStreamResponse(
+        provider,
+        chatConnectionTarget(),
+        endpoint,
+        {
+          method: 'POST',
+          signal,
+          headers: buildProviderChatHeaders({ provider, apiKey, proxyToken }),
+          body: JSON.stringify(responsesBody),
+        },
+      )
+
+      await readResponsesStream(response, signal, publishToken)
+    }
   } else if (provider.kind === 'anthropic') {
     const response = await fetchProviderStreamResponse(
       provider,

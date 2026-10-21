@@ -21,6 +21,7 @@ const repoRoot = path.resolve(import.meta.dirname, '../..')
 const fixtureParent = path.join(repoRoot, projectLocalBoundaryRelativePath, 'tmp')
 
 async function makeFixture() {
+  await mkdir(fixtureParent, { recursive: true })
   const fixtureRoot = await mkdtemp(path.join(fixtureParent, 'project-local-boundary-fixture-'))
   await mkdir(path.join(fixtureRoot, 'src'), { recursive: true })
   await writeFile(path.join(fixtureRoot, 'src', 'entry.mjs'), 'export const entry = true\n', 'utf8')
@@ -44,15 +45,15 @@ async function measureFixture(fixtureRoot) {
 
 describe('project-local boundary', () => {
   it('has one canonical path predicate and ignores the boundary in ESLint', async () => {
-    expect(projectLocalBoundaryGlob).toBe('.local/codex/**')
-    expect(isProjectLocalBoundaryPath('.local/codex/canary.ts')).toBe(true)
-    expect(isProjectLocalBoundaryPath('src/.local/codex/canary.ts')).toBe(false)
+    expect(projectLocalBoundaryGlob).toBe('.local/zerochat/**')
+    expect(isProjectLocalBoundaryPath('.local/zerochat/canary.ts')).toBe(true)
+    expect(isProjectLocalBoundaryPath('src/.local/zerochat/canary.ts')).toBe(false)
     expect(await readFile(path.join(repoRoot, 'vite.config.ts'), 'utf8')).toContain(
       'isProjectLocalBoundaryPath',
     )
 
     const fixtureRoot = await makeFixture()
-    const canaryPath = path.join(fixtureRoot, '.local', 'codex', 'lint-canary.ts')
+    const canaryPath = path.join(fixtureRoot, '.local', 'zerochat', 'lint-canary.ts')
     try {
       await mkdir(path.dirname(canaryPath), { recursive: true })
       await writeFile(canaryPath, 'const broken: string = 1\n', 'utf8')
@@ -72,7 +73,7 @@ describe('project-local boundary', () => {
 
   it('keeps source, page-manifest, Android, and checkpoint inputs byte-equivalent with a canary', async () => {
     const fixtureRoot = await makeFixture()
-    const canaryRoot = path.join(fixtureRoot, '.local', 'codex')
+    const canaryRoot = path.join(fixtureRoot, '.local', 'zerochat')
     try {
       const before = await measureFixture(fixtureRoot)
       await mkdir(canaryRoot, { recursive: true })

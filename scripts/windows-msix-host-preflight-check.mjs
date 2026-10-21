@@ -1,6 +1,5 @@
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
-import { hasCodexWindowsLockHolder } from './windows-msix-remediation.mjs'
 
 const WINDOWS_APPS_DELETED_ROOT = 'C:\\Program Files\\WindowsApps\\Deleted'
 const cleanupFailurePattern =
@@ -632,15 +631,9 @@ if (report) {
       fail(`${reportPath} blocked nextSteps.hostActions must mention -SkipKnownHostBlockerPreflight after host repair.`)
     }
     if (report.blockerClassification?.activeLockProcessCount > 0) {
-      const activeLockApplications = report.blockerClassification.activeLockApplicationNames
-      const expectedLockHolderGuidance = hasCodexWindowsLockHolder(activeLockApplications)
-        ? /Codex is an active WindowsApps\\Deleted lock holder/u
-        : /Close or restart the reported lock-holder applications/u
-      if (!expectedLockHolderGuidance.test(hostActionText)) {
+      if (!/Close or restart the reported lock-holder applications/iu.test(hostActionText)) {
         fail(
-          hasCodexWindowsLockHolder(activeLockApplications)
-            ? `${reportPath} blocked Codex lock-holder diagnostics must preserve active-work-session remediation.`
-            : `${reportPath} blocked lock-holder diagnostics must name the restart-first remediation.`,
+          `${reportPath} blocked lock-holder diagnostics must name the restart-first remediation.`,
         )
       }
     }

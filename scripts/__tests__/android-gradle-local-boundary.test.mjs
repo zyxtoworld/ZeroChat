@@ -58,7 +58,7 @@ it('binds Android Gradle child environment to the ASCII project-local junction',
   })
 
   expect(localPaths.gradleUserHome).toBe(
-    path.win32.join(simulatedWindowsRepoRoot, '.local', 'codex', 'private', 'gradle-home'),
+    path.win32.join(simulatedWindowsRepoRoot, '.local', 'zerochat', 'private', 'gradle-home'),
   )
   expect(childEnvironment.GRADLE_USER_HOME).not.toContain('E:\\项目')
   expect(childEnvironment.TEMP).not.toContain('E:\\项目')

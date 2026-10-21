@@ -70,7 +70,7 @@ const ANDROID_EMULATOR_GPU = 'host'
 const androidQaLockPath = path.join(
   repoRoot,
   '.local',
-  'codex',
+  'zerochat',
   'tmp',
   'zerochat-android-qa-lock',
 )
@@ -149,7 +149,7 @@ function sdkCandidates() {
     process.env.ANDROID_HOME,
     process.env.ANDROID_SDK_ROOT,
     process.platform === 'win32' ? 'C:\\ZeroChatAndroidTools\\sdk' : undefined,
-    path.join(repoRoot, '.codex-android-tools', 'sdk'),
+    path.join(repoRoot, '.local', 'zerochat', 'toolchains', 'android-sdk'),
     process.env.LOCALAPPDATA
       ? path.join(process.env.LOCALAPPDATA, 'Android', 'Sdk')
       : undefined,

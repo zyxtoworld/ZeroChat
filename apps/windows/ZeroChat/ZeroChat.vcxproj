@@ -61,7 +61,7 @@
 
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup>
-    <ZeroChatBuildRoot Condition="'$(ZeroChatBuildRoot)'==''">$(MSBuildThisFileDirectory)..\..\..\.local\codex\artifacts\windows-build</ZeroChatBuildRoot>
+    <ZeroChatBuildRoot Condition="'$(ZeroChatBuildRoot)'==''">$(MSBuildThisFileDirectory)..\..\..\.local\zerochat\artifacts\windows-build</ZeroChatBuildRoot>
     <OutDir>$(ZeroChatBuildRoot)\output\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(ZeroChatBuildRoot)\intermediate\$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
     <TargetName>ZeroChat</TargetName>

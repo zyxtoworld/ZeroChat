@@ -953,6 +953,263 @@ namespace ZeroChat
             }
         }
 
+        struct ResponsesWebSocketState
+        {
+            winrt::handle signal{ winrt::check_pointer(CreateEventW(nullptr, FALSE, FALSE, nullptr)) };
+            std::mutex mutex;
+            std::deque<std::wstring> messages;
+            std::exception_ptr failure;
+            bool closed{ false };
+        };
+
+        winrt::Windows::Foundation::IAsyncAction SendWebSocketTextAsync(
+            winrt::Windows::Networking::Sockets::MessageWebSocket const& socket,
+            std::wstring const& value)
+        {
+            winrt::Windows::Storage::Streams::DataWriter writer(socket.OutputStream());
+            writer.UnicodeEncoding(winrt::Windows::Storage::Streams::UnicodeEncoding::Utf8);
+            writer.WriteString(value);
+            co_await writer.StoreAsync();
+            writer.DetachStream();
+        }
+
+        std::wstring ResponseWebSocketEndpoint(ProviderConfig const& provider)
+        {
+            auto endpoint = ProviderEndpoint(provider, L"/responses").AbsoluteUri().c_str();
+            std::wstring value(endpoint);
+            if (ProviderUsesProxy(provider))
+            {
+                if (value.ends_with(L"/proxy"))
+                {
+                    value.resize(value.size() - 6);
+                }
+                value += L"/proxy/ws";
+            }
+            else if (value.starts_with(L"https://"))
+            {
+                value.replace(0, 8, L"wss://");
+            }
+            return value;
+        }
+
+        winrt::hstring ResponsesWebSocketCreateMessage(
+            ProviderConfig const& provider,
+            std::wstring const& model,
+            std::vector<ChatMessage> const& messages,
+            int contextMessageLimit)
+        {
+            auto body = winrt::Windows::Data::Json::JsonObject::Parse(
+                BuildRequestBody(provider.kind, model, messages, contextMessageLimit, true));
+            body.Remove(L"stream");
+            body.Insert(L"type", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"response.create"));
+            return body.Stringify();
+        }
+
+        winrt::hstring ResponsesWebSocketAuthorizationMessage(
+            ProviderConfig const& provider,
+            std::wstring const& apiKey,
+            std::wstring const& proxyToken)
+        {
+            winrt::Windows::Data::Json::JsonObject body;
+            body.Insert(L"type", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"zerochat.proxy.authorize"));
+            body.Insert(L"accessKey", winrt::Windows::Data::Json::JsonValue::CreateStringValue(proxyToken));
+            body.Insert(L"providerKind", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"openai-responses"));
+            body.Insert(L"baseUrl", winrt::Windows::Data::Json::JsonValue::CreateStringValue(provider.baseUrl));
+            if (ProviderNeedsClientKey(provider))
+            {
+                body.Insert(L"apiKey", winrt::Windows::Data::Json::JsonValue::CreateStringValue(apiKey));
+            }
+            return body.Stringify();
+        }
+
+        winrt::Windows::Foundation::IAsyncOperation<bool> TryStreamResponsesWebSocketAsync(
+            ProviderConfig provider,
+            std::wstring apiKey,
+            std::wstring proxyToken,
+            std::wstring model,
+            std::vector<ChatMessage> messages,
+            int contextMessageLimit,
+            TokenHandler onToken)
+        {
+            if (provider.kind != ProviderKind::OpenAIResponses)
+            {
+                co_return false;
+            }
+
+            bool emittedToken = false;
+            auto state = std::make_shared<ResponsesWebSocketState>();
+            winrt::Windows::Networking::Sockets::MessageWebSocket socket;
+            socket.Control().MessageType(
+                winrt::Windows::Networking::Sockets::SocketMessageType::Utf8);
+            socket.SetRequestHeader(L"OpenAI-Beta", L"responses_websockets=2026-02-06");
+            const bool proxy = ProviderUsesProxy(provider);
+            if (!proxy && ProviderNeedsClientKey(provider))
+            {
+                socket.SetRequestHeader(L"Authorization", L"Bearer " + apiKey);
+            }
+
+            auto messageToken = socket.MessageReceived([state](auto const&, auto const& args)
+            {
+                try
+                {
+                    auto reader = args.GetDataReader();
+                    reader.UnicodeEncoding(
+                        winrt::Windows::Storage::Streams::UnicodeEncoding::Utf8);
+                    auto text = reader.ReadString(reader.UnconsumedBufferLength());
+                    {
+                        std::lock_guard lock(state->mutex);
+                        state->messages.push_back(text.c_str());
+                    }
+                    SetEvent(state->signal.get());
+                }
+                catch (...)
+                {
+                    std::lock_guard lock(state->mutex);
+                    state->failure = std::current_exception();
+                    SetEvent(state->signal.get());
+                }
+            });
+            auto closedToken = socket.Closed([state](auto const&, auto const&)
+            {
+                {
+                    std::lock_guard lock(state->mutex);
+                    state->closed = true;
+                }
+                SetEvent(state->signal.get());
+            });
+
+            try
+            {
+                co_await socket.ConnectAsync(
+                    winrt::Windows::Foundation::Uri{ ResponseWebSocketEndpoint(provider) });
+
+                if (proxy)
+                {
+                    co_await SendWebSocketTextAsync(
+                        socket,
+                        ResponsesWebSocketAuthorizationMessage(provider, apiKey, proxyToken).c_str());
+                }
+
+                bool requestSent = false;
+                bool ready = !proxy;
+                if (ready)
+                {
+                    co_await SendWebSocketTextAsync(
+                        socket,
+                        ResponsesWebSocketCreateMessage(
+                            provider,
+                            model,
+                            messages,
+                            contextMessageLimit).c_str());
+                    requestSent = true;
+                }
+                std::wstring received;
+                while (true)
+                {
+                    co_await winrt::resume_on_signal(state->signal.get());
+                    std::wstring message;
+                    std::exception_ptr failure;
+                    bool closed = false;
+                    {
+                        std::lock_guard lock(state->mutex);
+                        if (!state->messages.empty())
+                        {
+                            message = std::move(state->messages.front());
+                            state->messages.pop_front();
+                        }
+                        failure = state->failure;
+                        closed = state->closed;
+                    }
+
+                    if (failure)
+                    {
+                        std::rethrow_exception(failure);
+                    }
+                    if (message.empty())
+                    {
+                        if (!ready || closed)
+                        {
+                            co_return !emittedToken;
+                        }
+                        continue;
+                    }
+
+                    auto event = winrt::Windows::Data::Json::JsonObject::Parse(message);
+                    auto type = event.GetNamedString(L"type", L"");
+                    if (!ready)
+                    {
+                        if (type == L"zerochat.proxy.ready")
+                        {
+                            ready = true;
+                            co_await SendWebSocketTextAsync(
+                                socket,
+                                ResponsesWebSocketCreateMessage(
+                                    provider,
+                                    model,
+                                    messages,
+                                    contextMessageLimit).c_str());
+                            requestSent = true;
+                        }
+                        else
+                        {
+                            co_return !emittedToken;
+                        }
+                        continue;
+                    }
+
+                    if (!requestSent)
+                    {
+                        co_await SendWebSocketTextAsync(
+                            socket,
+                            ResponsesWebSocketCreateMessage(
+                                provider,
+                                model,
+                                messages,
+                                contextMessageLimit).c_str());
+                        requestSent = true;
+                        continue;
+                    }
+
+                    if (type == L"response.output_text.delta")
+                    {
+                        auto delta = event.GetNamedString(L"delta", L"");
+                        if (!delta.empty())
+                        {
+                            emittedToken = true;
+                            received += delta.c_str();
+                            onToken(delta.c_str());
+                        }
+                    }
+                    else if (type == L"response.completed")
+                    {
+                        if (!emittedToken)
+                        {
+                            co_return false;
+                        }
+                        co_return true;
+                    }
+                    else if (type == L"response.failed" || type == L"response.incomplete" || type == L"error")
+                    {
+                        if (!emittedToken)
+                        {
+                            co_return false;
+                        }
+                        throw hresult_error(E_FAIL, L"Responses WebSocket stream failed.");
+                    }
+                }
+            }
+            catch (...)
+            {
+                if (!emittedToken)
+                {
+                    co_return false;
+                }
+                throw;
+            }
+            socket.MessageReceived(messageToken);
+            socket.Closed(closedToken);
+        }
+
         IAsyncOperation<hstring> SendAndReadImageRequestAsync(
             HttpClient client,
             std::function<HttpRequestMessage()> makeRequest,

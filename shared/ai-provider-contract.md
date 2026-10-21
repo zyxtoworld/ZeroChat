@@ -251,6 +251,24 @@ Requests must set `store: false`:
 }
 ```
 
+### Browser Responses transport
+
+For `openai-responses` providers using a user-owned Worker proxy, the Web/PWA
+tries the Worker WebSocket endpoint `/proxy/ws` first. The browser sends only
+the derived ZeroChat access key and the provider request metadata; the Worker
+opens the upstream `/responses` WebSocket with an HTTPS `Upgrade: websocket`
+request and provider authorization, then forwards Responses events. The browser
+must never open a direct provider WebSocket because native browser WebSocket
+cannot set the required `Authorization` header.
+
+If the WebSocket cannot be established or the proxy rejects the handshake
+before a response stream starts, the same request falls back once to the
+existing HTTPS `/responses` SSE path and the failed Worker endpoint is disabled
+for the current browser session. After streaming has started, connection
+failure is surfaced instead of replaying the request, preventing duplicate
+provider turns. Non-Responses providers and direct requests keep their current
+HTTP paths. Realtime remains a separate `/realtime` WebSocket/WebRTC contract.
+
 ## Anthropic
 
 ```text

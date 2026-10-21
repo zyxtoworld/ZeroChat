@@ -73,6 +73,7 @@
     "check:repo": "node scripts/repository-health-check.mjs",
     "check:runtime-artifacts": "node scripts/runtime-smoke-artifact-check.mjs",
     "check:security": "node scripts/worker-security-check.mjs",
+    "check:worker-websocket": "node --test scripts/contract-tests/worker-responses-websocket-contract.test.mjs",
     "check:shared-schema": "node scripts/shared-schema-check.mjs",
     "check:service-worker": "node scripts/build-service-worker.mjs --check",
     "check:settings-preload": "node scripts/settings-overlay-preload-smoke.mjs",

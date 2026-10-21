@@ -132,7 +132,7 @@ function findAdb() {
     process.env.ANDROID_HOME,
     process.env.ANDROID_SDK_ROOT,
     process.platform === 'win32' ? 'C:\\ZeroChatAndroidTools\\sdk' : undefined,
-    path.join(repoRoot, '.codex-android-tools', 'sdk'),
+    path.join(repoRoot, '.local', 'zerochat', 'toolchains', 'android-sdk'),
     process.env.LOCALAPPDATA
       ? path.join(process.env.LOCALAPPDATA, 'Android', 'Sdk')
       : undefined,
@@ -178,7 +178,7 @@ function findEmulator() {
     process.env.ANDROID_HOME,
     process.env.ANDROID_SDK_ROOT,
     process.platform === 'win32' ? 'C:\\ZeroChatAndroidTools\\sdk' : undefined,
-    path.join(repoRoot, '.codex-android-tools', 'sdk'),
+    path.join(repoRoot, '.local', 'zerochat', 'toolchains', 'android-sdk'),
     process.env.LOCALAPPDATA
       ? path.join(process.env.LOCALAPPDATA, 'Android', 'Sdk')
       : undefined,

@@ -66,7 +66,7 @@ function extractSupportedLocales(source) {
 }
 
 function isIgnoredDirectory(name) {
-  return ignoredDirectories.has(name) || name.startsWith('.codex-')
+  return ignoredDirectories.has(name) || name.startsWith('.zerochat-')
 }
 
 function isRemoteLink(href) {

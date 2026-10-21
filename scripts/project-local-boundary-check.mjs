@@ -32,8 +32,8 @@ const packageSource = readRepositoryFile('package.json')
 if ((gitignore.match(/^!\/\.local\/$/gmu) ?? []).length !== 1) {
   failures.push('.gitignore must contain exactly one root-level !/.local/ rule.')
 }
-if ((gitignore.match(/^\/\.local\/codex\/$/gmu) ?? []).length !== 1) {
-  failures.push('.gitignore must contain exactly one root-level /.local/codex/ rule.')
+if ((gitignore.match(/^\/\.local\/zerochat\/$/gmu) ?? []).length !== 1) {
+  failures.push('.gitignore must contain exactly one root-level /.local/zerochat/ rule.')
 }
 const dockerBuildContextFiles = [
   'Dockerfile',
@@ -105,8 +105,8 @@ const windowsLocalOutputFiles = [
 ]
 for (const relativePath of windowsLocalOutputFiles) {
   const source = readRepositoryFile(relativePath)
-  if (!source.includes('.local\\codex\\artifacts\\windows-build')) {
-    failures.push(`${relativePath} must keep Windows build output under .local/codex/artifacts/windows-build.`)
+  if (!source.includes('.local\\zerochat\\artifacts\\windows-build')) {
+    failures.push(`${relativePath} must keep Windows build output under .local/zerochat/artifacts/windows-build.`)
   }
   if (source.includes('C:\\ZeroChatWindowsBuild')) {
     failures.push(`${relativePath} must not write Windows build output to the external C:\\ZeroChatWindowsBuild path.`)
@@ -131,8 +131,8 @@ requireText(
   'runtime smoke must validate explicit WebView artifact roots through the bounded project-local resolver.',
 )
 const signedWorkflow = readRepositoryFile('.github/workflows/windows-signed-msix.yml')
-if (signedWorkflow.includes('RUNNER_TEMP') || !signedWorkflow.includes('.local\\codex\\private')) {
-  failures.push('Windows signed MSIX workflow must keep the temporary signing certificate under .local/codex/private and clean it there.')
+if (signedWorkflow.includes('RUNNER_TEMP') || !signedWorkflow.includes('.local\\zerochat\\private')) {
+  failures.push('Windows signed MSIX workflow must keep the temporary signing certificate under .local/zerochat/private and clean it there.')
 }
 
 const androidGradleBoundary = readRepositoryFile('scripts/android-gradle-local-boundary.mjs')
@@ -141,7 +141,7 @@ requireText(
   'scripts/android-gradle-local-boundary.mjs',
   androidGradleBoundary,
   "gradleUserHome: pathApi.join(localRoot, 'private', 'gradle-home')",
-  'Android Gradle local boundary must derive GRADLE_USER_HOME under .local/codex/private/gradle-home.',
+  '.local/zerochat/private/gradle-home',
 )
 requireText(
   'scripts/android-gradle-local-boundary.mjs',

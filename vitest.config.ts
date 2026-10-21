@@ -75,6 +75,7 @@ export default mergeConfig(
         projectLocalBoundaryGlob,
         'apps/apple/ContractTests/**',
         'apps/linux/contract-tests/**',
+        'scripts/contract-tests/**',
         'apps/windows/tests/**',
         // These contract files are executed by Node's test runner in their dedicated gates.
         'scripts/__tests__/bundle-static-imports.test.mjs',

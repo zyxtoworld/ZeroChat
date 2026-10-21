@@ -301,9 +301,9 @@ expect(
   'Windows project must clean and copy the built Web/PWA dist directory into the app output web folder.',
 )
 expect(
-  has(project, '<ZeroChatBuildRoot Condition="\'$(ZeroChatBuildRoot)\'==\'\'">$(MSBuildThisFileDirectory)..\\..\\..\\.local\\codex\\artifacts\\windows-build</ZeroChatBuildRoot>') &&
+  has(project, '<ZeroChatBuildRoot Condition="\'$(ZeroChatBuildRoot)\'==\'\'">$(MSBuildThisFileDirectory)..\\..\\..\\.local\\zerochat\\artifacts\\windows-build</ZeroChatBuildRoot>') &&
     has(readme, 'build outputs to the ignored project-local') &&
-    has(readme, '.local/codex/artifacts/windows-build'),
+    has(readme, '.local/zerochat/artifacts/windows-build'),
   'Windows project and README must keep build outputs inside the ignored project-local artifact boundary.',
 )
 expect(
@@ -850,7 +850,7 @@ expect(
     has(buildHelper, 'vswhere.exe') &&
     has(buildHelper, 'node_modules\\typescript\\bin\\tsc') &&
     has(buildHelper, 'node_modules\\vite\\bin\\vite.js') &&
-    has(buildHelper, '[string] $BuildRoot = ".local\\codex\\artifacts\\windows-build"') &&
+    has(buildHelper, '[string] $BuildRoot = ".local\\zerochat\\artifacts\\windows-build"') &&
     has(buildHelper, 'function Get-AsciiBuildRoot') &&
     has(buildHelper, '& subst') &&
     has(buildHelper, '[switch] $MsixReady') &&

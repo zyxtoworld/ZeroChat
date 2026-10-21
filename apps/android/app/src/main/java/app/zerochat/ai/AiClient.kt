@@ -9,6 +9,7 @@ import app.zerochat.ui.MAX_IMAGE_FILE_BYTES
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.android.Android
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.request.header
 import io.ktor.client.request.prepareGet
 import io.ktor.client.request.preparePost
@@ -117,6 +118,24 @@ class AiClient(
         }
         require(model.isNotBlank()) { "Model is required" }
 
+        if (provider.kind == ProviderKind.OpenAIResponses) {
+            try {
+                return streamResponsesWebSocket(
+                    client = client,
+                    json = json,
+                    provider = provider,
+                    apiKey = apiKey,
+                    model = model,
+                    messages = messages,
+                    contextMessageLimit = contextMessageLimit,
+                    proxyToken = proxyToken,
+                    onDelta = onDelta,
+                )
+            } catch (error: ResponsesWebSocketException) {
+                if (!error.fallbackAllowed) throw error
+            }
+        }
+
         val received = StringBuilder()
         val statement = client.preparePost(endpointFor(provider)) {
             contentType(ContentType.Application.Json)
@@ -142,9 +161,7 @@ class AiClient(
                     if (trimmedLine.isBlank()) {
                         val shouldContinue = processSseEvent(json, eventData, received, onDelta)
                         eventData.clear()
-                        if (!shouldContinue) {
-                            break
-                        }
+                        if (!shouldContinue) break
                         continue
                     }
 
@@ -773,6 +790,7 @@ class AiClient(
 
 private fun defaultAiHttpClient(): HttpClient = HttpClient(Android) {
     followRedirects = false
+    install(WebSockets)
     install(HttpTimeout) {
         connectTimeoutMillis = AI_CONNECT_TIMEOUT_MS
         socketTimeoutMillis = AI_STREAM_IDLE_TIMEOUT_MS

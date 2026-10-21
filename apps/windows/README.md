@@ -63,7 +63,7 @@ App SDK and C++ workloads installed:
 The checked-in project file is intentional: users should not have to recreate a
 WinUI project manually in Visual Studio just to build the Windows app.
 The project writes build outputs to the ignored project-local
-`.local/codex/artifacts/windows-build` directory by default so
+`.local/zerochat/artifacts/windows-build` directory by default so
 C++/WinRT metadata tools keep working even when the repository path contains
 non-ASCII characters.
 
@@ -168,12 +168,12 @@ AppXDeploymentServer cleanup events, service state, and sanitized Windows
 Restart Manager lock-holder evidence as diagnostic-only host evidence. If a
 deleted target is still held by an application, close or restart the reported
 lock-holder first, rerun the preflight, and only then repair the wider AppX
-state or move to a disposable profile/VM if unlocked targets remain. When that
-holder is Codex itself, do not interrupt an active Codex work session; use a
-fresh disposable profile/VM or rerun the preflight after Codex exits. When a
-current failure report is present and the preflight still classifies the known
-host blocker, the trusted QA helper fails fast before starting another
-install/update run; after a verified host repair, run
+state or move to a disposable profile/VM if unlocked targets remain. When a
+holder process is active, do not interrupt it; use a fresh disposable profile/VM
+or rerun the preflight after the holder exits. When a current failure report is
+present and the preflight still classifies the known host blocker, the trusted
+QA helper fails fast before starting another install/update run; after a verified
+host repair, run
 `pnpm run qa:windows-msix-trusted:elevated -- -SkipKnownHostBlockerPreflight`
 only to bypass the historical-report preflight. `pnpm run
 check:windows-msix-trusted-report` validates only the current trusted-MSIX
@@ -207,8 +207,8 @@ while merging generated metadata, keep the repo path unchanged and make sure the
 ASCII build root is still being used:
 
 ```powershell
-msbuild apps\windows\ZeroChat.sln /restore /p:Configuration=Debug /p:Platform=x64 /p:ZeroChatBuildRoot=.local\codex\artifacts\windows-build
-msbuild apps\windows\ZeroChat.sln /restore /p:Configuration=Release /p:Platform=x64 /p:ZeroChatBuildRoot=.local\codex\artifacts\windows-build
+msbuild apps\windows\ZeroChat.sln /restore /p:Configuration=Debug /p:Platform=x64 /p:ZeroChatBuildRoot=.local\zerochat\artifacts\windows-build
+msbuild apps\windows\ZeroChat.sln /restore /p:Configuration=Release /p:Platform=x64 /p:ZeroChatBuildRoot=.local\zerochat\artifacts\windows-build
 ```
 
 MSIX signing and install/update/uninstall QA now has a repeatable helper path,
@@ -238,7 +238,7 @@ package with a trusted certificate before installing or distributing it.
 For local signing QA, pass a PFX certificate explicitly:
 
 ```powershell
-.\scripts\package-windows-msix.ps1 -BuildRoot .local\codex\artifacts\windows-build -Configuration Release -Platform x64 -CertificatePath .local\codex\private\ZeroChat.DevSign.pfx -CertificatePassword "<password>"
+.\scripts\package-windows-msix.ps1 -BuildRoot .local\zerochat\artifacts\windows-build -Configuration Release -Platform x64 -CertificatePath .local\zerochat\private\ZeroChat.DevSign.pfx -CertificatePassword "<password>"
 ```
 
 The repository never stores signing certificates or passwords. Production
