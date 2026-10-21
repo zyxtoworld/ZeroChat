@@ -85,6 +85,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: windows-release-shell
           path: |
             .local/zerochat/artifacts/windows-build/output/x64/Release
@@ -148,16 +149,19 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: android-native-prereq
           path: .manual-qa/native-prereq-android.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: android-debug-apk
           path: apps/android/app/build/outputs/apk/debug/*.apk
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: android-release-apk
           path: |
             apps/android/app/build/outputs/apk/release/*.apk
@@ -198,6 +202,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: linux-release-binary-and-runtime-smoke
           path: |
             apps/linux/target/release/zerochat-linux
@@ -235,6 +240,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: apple-runtime-smoke
           path: |
             .manual-qa/apple-runtime-smoke.png
@@ -243,6 +249,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: apple-ios-simulator-build
           path: .manual-qa/apple-ios-simulator-derived-data/Build/Products/Debug-iphonesimulator/ZeroChat.app
 
@@ -309,5 +316,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: hosted-native-ci-evidence
           path: .manual-qa/hosted-native-ci-evidence.json
