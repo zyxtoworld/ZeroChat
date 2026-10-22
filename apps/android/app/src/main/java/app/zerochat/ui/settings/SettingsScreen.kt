@@ -5,7 +5,9 @@
 
 package app.zerochat.ui.settings
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -36,7 +38,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
@@ -83,7 +88,18 @@ fun SettingsScreen(
             .fillMaxWidth()
             .navigationBarsPadding()
             .padding(horizontal = 16.dp)
-            .clickable(onClick = onDismissKeyboard)
+            .pointerInput(onDismissKeyboard) {
+                awaitEachGesture {
+                    awaitFirstDown(
+                        requireUnconsumed = false,
+                        pass = PointerEventPass.Initial,
+                    )
+                    val up = waitForUpOrCancellation(pass = PointerEventPass.Initial)
+                    if (up != null) {
+                        onDismissKeyboard()
+                    }
+                }
+            },
     ) {
         Text(
             i18n.t("title.settings"),
@@ -127,6 +143,7 @@ fun SettingsScreen(
                 .fillMaxWidth()
                 .imePadding()
                 .verticalScroll(settingsContentScrollState)
+                .clipToBounds()
                 .padding(top = 12.dp, bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {

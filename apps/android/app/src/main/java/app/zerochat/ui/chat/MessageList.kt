@@ -119,17 +119,23 @@ internal fun MessageList(
         Modifier
     }
 
-    LaunchedEffect(messages.size, latestMessage?.id, latestMessage?.status, latestMessage?.content) {
+    LaunchedEffect(messages.size, latestMessage?.id) {
         val lastMessageIndex = messages.lastIndex
         if (lastMessageIndex < 0) return@LaunchedEffect
 
-        val lastVisibleMessageIndex = messageListState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
-        val shouldFollowLatest = messages.size <= 2 ||
-            lastVisibleMessageIndex == null ||
-            lastVisibleMessageIndex >= lastMessageIndex - 1
+        messageListState.scrollToItem(lastMessageIndex, Int.MAX_VALUE)
+    }
 
-        if (shouldFollowLatest) {
-            messageListState.scrollToItem(lastMessageIndex)
+    LaunchedEffect(latestMessage?.status, latestMessage?.content) {
+        val lastMessageIndex = messages.lastIndex
+        if (lastMessageIndex < 0) return@LaunchedEffect
+
+        val lastVisibleItem = messageListState.layoutInfo.visibleItemsInfo.lastOrNull()
+        val isAtBottom = lastVisibleItem?.index == lastMessageIndex &&
+            lastVisibleItem.offset + lastVisibleItem.size <=
+            messageListState.layoutInfo.viewportEndOffset + 24
+        if (isAtBottom) {
+            messageListState.scrollToItem(lastMessageIndex, Int.MAX_VALUE)
         }
     }
 

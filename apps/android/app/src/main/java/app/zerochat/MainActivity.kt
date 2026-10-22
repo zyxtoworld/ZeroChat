@@ -4,10 +4,13 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.os.Process
 import android.util.Log
+import android.view.MotionEvent
+import android.view.inputmethod.InputMethodManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -29,6 +32,24 @@ class MainActivity : ComponentActivity() {
     private val quickAskOwner = QuickAskActivityOwner()
     private val backupTaskViewModel by lazy(LazyThreadSafetyMode.NONE) {
         ViewModelProvider(this)[BackupTaskViewModel::class.java]
+    }
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            val rootInsets = window.decorView.rootWindowInsets
+            val imeVisible = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                rootInsets?.isVisible(android.view.WindowInsets.Type.ime()) == true
+            val imeTop = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                rootInsets?.getInsets(android.view.WindowInsets.Type.ime())?.top ?: Int.MAX_VALUE
+            } else {
+                Int.MAX_VALUE
+            }
+            if (imeVisible && event.rawY < imeTop) {
+                currentFocus?.clearFocus()
+                getSystemService(InputMethodManager::class.java)
+                    ?.hideSoftInputFromWindow(window.decorView.windowToken, 0)
+            }
+        }
+        return super.dispatchTouchEvent(event)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
