@@ -82,7 +82,6 @@ fun SettingsScreen(
             .fillMaxHeight(0.92f)
             .fillMaxWidth()
             .navigationBarsPadding()
-            .imePadding()
             .padding(horizontal = 16.dp),
     ) {
         Text(i18n.t("title.settings"), style = MaterialTheme.typography.headlineSmall)
@@ -119,7 +118,10 @@ fun SettingsScreen(
         )
         noticeContent()
         LazyColumn(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .imePadding(),
             state = settingsContentListState,
             contentPadding = PaddingValues(top = 12.dp, bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
