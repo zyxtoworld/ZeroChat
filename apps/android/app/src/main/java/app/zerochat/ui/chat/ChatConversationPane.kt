@@ -5,14 +5,17 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import app.zerochat.ai.ImageUpload
 import app.zerochat.data.AppSnapshot
@@ -84,6 +87,7 @@ internal fun ChatConversationPane(
 ) {
     BoxWithConstraints(modifier = modifier) {
         val layoutMode = androidChatLayoutMode(maxWidth.value.toInt())
+        val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
         val compactHomeSyncStrip = maxHeight < ANDROID_CHAT_COMPACT_HEIGHT_DP.dp
         val compactImageMode = compactHomeSyncStrip && composerMode == ComposerMode.Image
         val showHomeSyncStrip = !compactImageMode
@@ -95,18 +99,20 @@ internal fun ChatConversationPane(
         when (layoutMode) {
             AndroidChatLayoutMode.Compact -> {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    CompactConversationBar(
-                        conversationSearch = conversationSearch,
-                        onConversationSearchChange = onConversationSearchChange,
-                        onClearConversationSearch = onClearConversationSearch,
-                        filteredConversations = filteredConversations,
-                        conversationSearchActive = conversationSearchActive,
-                        activeConversation = activeConversation,
-                        onSelectConversation = onSelectConversation,
-                        onDeleteConversation = onDeleteConversation,
-                        i18n = i18n,
-                        composerFocusMode = compactImageMode,
-                    )
+                    if (!keyboardVisible) {
+                        CompactConversationBar(
+                            conversationSearch = conversationSearch,
+                            onConversationSearchChange = onConversationSearchChange,
+                            onClearConversationSearch = onClearConversationSearch,
+                            filteredConversations = filteredConversations,
+                            conversationSearchActive = conversationSearchActive,
+                            activeConversation = activeConversation,
+                            onSelectConversation = onSelectConversation,
+                            onDeleteConversation = onDeleteConversation,
+                            i18n = i18n,
+                            composerFocusMode = compactImageMode,
+                        )
+                    }
                     ChatMainColumn(
                         snapshot = snapshot,
                         activeConversation = activeConversation,
@@ -124,6 +130,7 @@ internal fun ChatConversationPane(
                         showProviderHint = showProviderHint,
                         showHomeSyncStrip = showHomeSyncStrip,
                         compactHomeSyncStrip = compactHomeSyncStrip,
+                        keyboardVisible = keyboardVisible,
                         persistentNotice = persistentNotice,
                         mainNotice = mainNotice,
                         manualSyncRefreshing = manualSyncRefreshing,
@@ -167,24 +174,26 @@ internal fun ChatConversationPane(
 
             AndroidChatLayoutMode.AdaptiveTwoPane -> {
                 Row(modifier = Modifier.fillMaxSize()) {
-                    ConversationSidebar(
-                        conversationSearch = conversationSearch,
-                        onConversationSearchChange = onConversationSearchChange,
-                        onClearConversationSearch = onClearConversationSearch,
-                        filteredConversations = filteredConversations,
-                        conversationSearchActive = conversationSearchActive,
-                        activeConversation = activeConversation,
-                        onSelectConversation = onSelectConversation,
-                        onDeleteConversation = onDeleteConversation,
-                        i18n = i18n,
-                        modifier = Modifier.width(ANDROID_CHAT_SIDEBAR_WIDTH_DP.dp),
-                    )
-                    Box(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .width(1.dp)
-                            .background(MaterialTheme.colorScheme.outlineVariant),
-                    )
+                    if (!keyboardVisible) {
+                        ConversationSidebar(
+                            conversationSearch = conversationSearch,
+                            onConversationSearchChange = onConversationSearchChange,
+                            onClearConversationSearch = onClearConversationSearch,
+                            filteredConversations = filteredConversations,
+                            conversationSearchActive = conversationSearchActive,
+                            activeConversation = activeConversation,
+                            onSelectConversation = onSelectConversation,
+                            onDeleteConversation = onDeleteConversation,
+                            i18n = i18n,
+                            modifier = Modifier.width(ANDROID_CHAT_SIDEBAR_WIDTH_DP.dp),
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .width(1.dp)
+                                .background(MaterialTheme.colorScheme.outlineVariant),
+                        )
+                    }
                     ChatMainColumn(
                         snapshot = snapshot,
                         activeConversation = activeConversation,
@@ -202,6 +211,7 @@ internal fun ChatConversationPane(
                         showProviderHint = showProviderHint,
                         showHomeSyncStrip = showHomeSyncStrip,
                         compactHomeSyncStrip = compactHomeSyncStrip,
+                        keyboardVisible = keyboardVisible,
                         persistentNotice = persistentNotice,
                         mainNotice = mainNotice,
                         manualSyncRefreshing = manualSyncRefreshing,
@@ -264,6 +274,7 @@ private fun ChatMainColumn(
     showProviderHint: Boolean,
     showHomeSyncStrip: Boolean,
     compactHomeSyncStrip: Boolean,
+    keyboardVisible: Boolean,
     persistentNotice: InlineNotice?,
     mainNotice: InlineNotice?,
     manualSyncRefreshing: Boolean,
@@ -305,18 +316,20 @@ private fun ChatMainColumn(
     ) {
         val hasMessages = activeConversation?.messages?.isNotEmpty() == true
 
-        ProviderModelSelector(
-            providers = enabledProviders,
-            activeProvider = activeProvider,
-            mode = composerMode,
-            activeModel = if (composerMode == ComposerMode.Image) activeImageModel else activeModel,
-            providerDisplayName = providerDisplayName,
-            chatModelsForProvider = chatModelsForProvider,
-            imageModelsForProvider = imageModelsForProvider,
-            onSelected = onProviderModelSelected,
-            i18n = i18n,
-        )
-        if (showProviderHint) {
+        if (!keyboardVisible) {
+            ProviderModelSelector(
+                providers = enabledProviders,
+                activeProvider = activeProvider,
+                mode = composerMode,
+                activeModel = if (composerMode == ComposerMode.Image) activeImageModel else activeModel,
+                providerDisplayName = providerDisplayName,
+                chatModelsForProvider = chatModelsForProvider,
+                imageModelsForProvider = imageModelsForProvider,
+                onSelected = onProviderModelSelected,
+                i18n = i18n,
+            )
+        }
+        if (!keyboardVisible && showProviderHint) {
             FeatureHintCard(
                 id = ANDROID_PROVIDER_MODEL_FEATURE_HINT_ID,
                 message = i18n.t("featureHint.provider-model"),
@@ -325,7 +338,7 @@ private fun ChatMainColumn(
             )
         }
 
-        if (showHomeSyncStrip) {
+        if (!keyboardVisible && showHomeSyncStrip) {
             CloudSyncStatusStrip(
                 snapshot = snapshot,
                 compact = compactHomeSyncStrip || hasMessages,
@@ -337,8 +350,10 @@ private fun ChatMainColumn(
             )
         }
 
-        InlineNoticeView(persistentNotice)
-        InlineNoticeView(mainNotice)
+        if (!keyboardVisible) {
+            InlineNoticeView(persistentNotice)
+            InlineNoticeView(mainNotice)
+        }
 
         MessageList(
             messages = activeConversation?.messages.orEmpty(),
@@ -380,6 +395,7 @@ private fun ChatMainColumn(
             input = input,
             onInputChange = onInputChange,
             focusRequester = focusRequester,
+            keyboardVisible = keyboardVisible,
             mode = composerMode,
             onModeChange = onComposerModeChange,
             imageTask = imageTask,

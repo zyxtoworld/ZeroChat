@@ -49,6 +49,7 @@ fun Composer(
     input: String,
     onInputChange: (String) -> Unit,
     focusRequester: FocusRequester,
+    keyboardVisible: Boolean,
     mode: ComposerMode,
     onModeChange: (ComposerMode) -> Unit,
     imageTask: ImageTaskMode,
@@ -73,12 +74,16 @@ fun Composer(
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surface)
-            .navigationBarsPadding()
-            .imePadding(),
+            .then(if (keyboardVisible) Modifier.imePadding() else Modifier.navigationBarsPadding()),
     ) {
+        val compactKeyboardComposer = keyboardVisible && mode == ComposerMode.Chat
         val compactImageComposer = mode == ComposerMode.Image && maxWidth < 300.dp
-        val composerPadding = if (compactImageComposer) 6.dp else 12.dp
-        val composerGap = if (compactImageComposer) 4.dp else 8.dp
+        val composerPadding = when {
+            compactKeyboardComposer -> 4.dp
+            compactImageComposer -> 6.dp
+            else -> 12.dp
+        }
+        val composerGap = if (compactKeyboardComposer || compactImageComposer) 4.dp else 8.dp
         val stackImageAction = mode == ComposerMode.Image && maxWidth < 260.dp
         val compactImageTaskSelector = mode == ComposerMode.Image && maxWidth < 380.dp
 
@@ -94,14 +99,16 @@ fun Composer(
                 .padding(composerPadding),
             verticalArrangement = Arrangement.spacedBy(composerGap),
         ) {
-            SingleChoiceSegmentedButtonRow {
-                ComposerMode.entries.forEachIndexed { index, item ->
-                    SegmentedButton(
-                        selected = mode == item,
-                        onClick = { onModeChange(item) },
-                        shape = SegmentedButtonDefaults.itemShape(index, ComposerMode.entries.size),
-                    ) {
-                        Text(i18n.composerModeTitle(item))
+            if (!compactKeyboardComposer) {
+                SingleChoiceSegmentedButtonRow {
+                    ComposerMode.entries.forEachIndexed { index, item ->
+                        SegmentedButton(
+                            selected = mode == item,
+                            onClick = { onModeChange(item) },
+                            shape = SegmentedButtonDefaults.itemShape(index, ComposerMode.entries.size),
+                        ) {
+                            Text(i18n.composerModeTitle(item))
+                        }
                     }
                 }
             }
