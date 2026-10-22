@@ -912,7 +912,7 @@ internal fun ChatScreen(
     }
 
     fun dismissKeyboard() {
-        focusManager.clearFocus()
+        focusManager.clearFocus(force = true)
         keyboardController?.hide()
     }
     CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
