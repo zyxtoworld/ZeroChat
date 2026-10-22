@@ -82,8 +82,13 @@ fun SettingsScreen(
             .fillMaxHeight()
             .fillMaxWidth()
             .navigationBarsPadding()
+            .padding(horizontal = 16.dp)
             .clickable(onClick = onDismissKeyboard)
     ) {
+        Text(
+            i18n.t("title.settings"),
+            style = MaterialTheme.typography.headlineSmall,
+        )
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -121,6 +126,7 @@ fun SettingsScreen(
                 .weight(1f)
                 .fillMaxWidth()
                 .imePadding()
+                .verticalScroll(settingsContentScrollState)
                 .padding(top = 12.dp, bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
