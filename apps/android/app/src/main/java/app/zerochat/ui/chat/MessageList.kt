@@ -13,6 +13,7 @@ import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -101,9 +102,10 @@ internal fun MessageList(
     onEditMessage: (ChatMessage) -> Unit,
     onRegenerateMessage: (ChatMessage) -> Unit,
     onDeleteMessage: (ChatMessage) -> Unit,
-    speakingMessageId: String?,
     onSpeakMessage: (ChatMessage) -> Unit,
     onStopSpeaking: () -> Unit,
+    speakingMessageId: String?,
+    onDismissKeyboard: () -> Unit,
     i18n: NativeI18n,
     modifier: Modifier = Modifier,
     emptyContent: @Composable () -> Unit,
@@ -151,7 +153,9 @@ internal fun MessageList(
         },
     ) {
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(onClick = onDismissKeyboard),
             state = messageListState,
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),

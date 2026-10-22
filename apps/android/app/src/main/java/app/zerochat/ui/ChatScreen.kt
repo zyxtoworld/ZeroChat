@@ -29,7 +29,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.LayoutDirection
 import app.zerochat.ai.AiClient
 import app.zerochat.ai.ImageUpload
@@ -170,6 +172,8 @@ internal fun ChatScreen(
     secretStore: SecretStore,
 ) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val scope = rememberCoroutineScope()
     val aiClient = remember { AiClient() }
     val syncClient = remember(context) {
@@ -907,16 +911,24 @@ internal fun ChatScreen(
         preparedImageJob.start()
     }
 
+    fun dismissKeyboard() {
+        focusManager.clearFocus()
+        keyboardController?.hide()
+    }
     CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
         Scaffold(
             topBar = {
                 ChatTopBar(
                     title = activeConversation?.title ?: "ZeroChat",
                     onNewConversation = {
+                        dismissKeyboard()
                         conversationSearch = ""
                         createChat()
                     },
-                    onOpenConversations = { conversationPickerOpen = true },
+                    onOpenConversations = {
+                        dismissKeyboard()
+                        conversationPickerOpen = true
+                    },
                     onOpenSettings = { openSettings() },
                     i18n = i18n,
                 )
@@ -1088,6 +1100,7 @@ internal fun ChatScreen(
                         generateImageMessage(conversation, input)
                     }
                 },
+                onDismissKeyboard = ::dismissKeyboard,
                 i18n = i18n,
                 modifier = Modifier
                     .fillMaxSize()

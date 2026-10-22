@@ -56,20 +56,23 @@ internal fun CompactConversationBar(
     onSelectConversation: (String) -> Unit,
     onDeleteConversation: (Conversation) -> Unit,
     i18n: NativeI18n,
+    showTrigger: Boolean,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    OutlinedButton(
-        onClick = { onConversationPickerOpenChange(true) },
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp),
-    ) {
-        Text(
-            i18n.t("conversation.searchLabel"),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+    if (showTrigger) {
+        OutlinedButton(
+            onClick = { onConversationPickerOpenChange(true) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+        ) {
+            Text(
+                i18n.t("conversation.searchLabel"),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 
     if (conversationPickerOpen) {

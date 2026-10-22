@@ -86,6 +86,7 @@ internal fun ChatConversationPane(
     onCancelEdit: () -> Unit,
     onStopGenerating: () -> Unit,
     onSend: () -> Unit,
+    onDismissKeyboard: () -> Unit,
     i18n: NativeI18n,
     modifier: Modifier = Modifier,
 ) {
@@ -103,21 +104,20 @@ internal fun ChatConversationPane(
         when (layoutMode) {
             AndroidChatLayoutMode.Compact -> {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    if (!keyboardVisible) {
-                        CompactConversationBar(
-                            conversationSearch = conversationSearch,
-                            onConversationSearchChange = onConversationSearchChange,
-                            onClearConversationSearch = onClearConversationSearch,
-                            filteredConversations = filteredConversations,
-                            conversationSearchActive = conversationSearchActive,
-                            activeConversation = activeConversation,
-                            conversationPickerOpen = conversationPickerOpen,
-                            onConversationPickerOpenChange = onConversationPickerOpenChange,
-                            onSelectConversation = onSelectConversation,
-                            onDeleteConversation = onDeleteConversation,
-                            i18n = i18n,
-                        )
-                    }
+                    CompactConversationBar(
+                        conversationSearch = conversationSearch,
+                        onConversationSearchChange = onConversationSearchChange,
+                        onClearConversationSearch = onClearConversationSearch,
+                        filteredConversations = filteredConversations,
+                        conversationSearchActive = conversationSearchActive,
+                        activeConversation = activeConversation,
+                        conversationPickerOpen = conversationPickerOpen,
+                        onConversationPickerOpenChange = onConversationPickerOpenChange,
+                        onSelectConversation = onSelectConversation,
+                        onDeleteConversation = onDeleteConversation,
+                        i18n = i18n,
+                        showTrigger = !keyboardVisible,
+                    )
                     ChatMainColumn(
                         snapshot = snapshot,
                         activeConversation = activeConversation,
@@ -171,6 +171,7 @@ internal fun ChatConversationPane(
                         onCancelEdit = onCancelEdit,
                         onStopGenerating = onStopGenerating,
                         onSend = onSend,
+                        onDismissKeyboard = onDismissKeyboard,
                         i18n = i18n,
                         modifier = Modifier
                             .weight(1f)
@@ -254,6 +255,7 @@ internal fun ChatConversationPane(
                         onCancelEdit = onCancelEdit,
                         onStopGenerating = onStopGenerating,
                         onSend = onSend,
+                        onDismissKeyboard = onDismissKeyboard,
                         i18n = i18n,
                         modifier = Modifier
                             .weight(1f)
@@ -319,6 +321,7 @@ private fun ChatMainColumn(
     onCancelEdit: () -> Unit,
     onStopGenerating: () -> Unit,
     onSend: () -> Unit,
+    onDismissKeyboard: () -> Unit,
     i18n: NativeI18n,
     modifier: Modifier = Modifier,
 ) {
@@ -378,6 +381,7 @@ private fun ChatMainColumn(
             speakingMessageId = speakingMessageId,
             onSpeakMessage = onSpeakMessage,
             onStopSpeaking = onStopSpeaking,
+            onDismissKeyboard = onDismissKeyboard,
             i18n = i18n,
             modifier = Modifier
                 .weight(1f)
