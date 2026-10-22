@@ -180,11 +180,16 @@ from datetime import datetime, timezone
     distinct_colors,
 ) = sys.argv[1:13]
 
+def evidence_path(path):
+    if os.environ.get("ZEROCHAT_RELATIVE_EVIDENCE_PATHS") == "1":
+        return os.path.relpath(path)
+    return os.path.abspath(path)
+
 def file_evidence(path):
     with open(path, "rb") as handle:
         digest = hashlib.sha256(handle.read()).hexdigest().upper()
     return {
-        "path": os.path.abspath(path),
+        "path": evidence_path(path),
         "bytes": os.path.getsize(path),
         "sha256": digest,
     }
@@ -195,9 +200,9 @@ with open(metadata, "w", encoding="utf-8") as handle:
         {
             "platform": "linux",
             "generatedAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-            "binary": os.path.abspath(binary),
+            "binary": evidence_path(binary),
             "binaryEvidence": file_evidence(binary),
-            "screenshot": os.path.abspath(screenshot),
+            "screenshot": evidence_path(screenshot),
             "display": display,
             "windowId": int(window_id) if window_id else None,
             "windowTitle": window_name,
