@@ -48,6 +48,7 @@ import app.zerochat.ui.chat.ChatMessageRequestPlan
 import app.zerochat.ui.chat.ChatRequestBlockerFeedback
 import app.zerochat.ui.chat.ChatSetupSettingsTarget
 import app.zerochat.ui.chat.ConversationDeleteDialog
+import app.zerochat.ui.chat.ANDROID_CLOUD_SYNC_FEATURE_HINT_ID
 import app.zerochat.ui.chat.ANDROID_PROVIDER_MODEL_FEATURE_HINT_ID
 import app.zerochat.ui.chat.InlineNotice
 import app.zerochat.ui.chat.InlineNoticeView
@@ -180,6 +181,7 @@ internal fun ChatScreen(
     val composerMode = ComposerMode.entries.firstOrNull { it.name == composerModeName } ?: ComposerMode.Chat
     val imageTask = ImageTaskMode.entries.firstOrNull { it.name == imageTaskName } ?: ImageTaskMode.Generate
     var conversationSearch by rememberSaveable { mutableStateOf("") }
+    var conversationPickerOpen by rememberSaveable { mutableStateOf(false) }
     var conversationPendingDeleteId by rememberSaveable { mutableStateOf<String?>(null) }
     var sourceImageUriString by rememberSaveable { mutableStateOf<String?>(null) }
     var maskImageUriString by rememberSaveable { mutableStateOf<String?>(null) }
@@ -914,6 +916,7 @@ internal fun ChatScreen(
                         conversationSearch = ""
                         createChat()
                     },
+                    onOpenConversations = { conversationPickerOpen = true },
                     onOpenSettings = { openSettings() },
                     i18n = i18n,
                 )
@@ -924,6 +927,8 @@ internal fun ChatScreen(
                 conversationSearch = conversationSearch,
                 onConversationSearchChange = { conversationSearch = it },
                 onClearConversationSearch = { conversationSearch = "" },
+                conversationPickerOpen = conversationPickerOpen,
+                onConversationPickerOpenChange = { conversationPickerOpen = it },
                 filteredConversations = filteredConversations,
                 conversationSearchActive = conversationSearchActive,
                 activeConversation = activeConversation,
@@ -941,6 +946,10 @@ internal fun ChatScreen(
                 showProviderModelFeatureHint = shouldShowFeatureHint(
                     data.preferences.dismissedFeatureHints,
                     ANDROID_PROVIDER_MODEL_FEATURE_HINT_ID,
+                ),
+                showCloudSyncFeatureHint = shouldShowFeatureHint(
+                    data.preferences.dismissedFeatureHints,
+                    ANDROID_CLOUD_SYNC_FEATURE_HINT_ID,
                 ),
                 persistentNotice = localSnapshotRecoveryNotice,
                 mainNotice = mainNotice,
@@ -973,6 +982,21 @@ internal fun ChatScreen(
                     val dismissed = dismissFeatureHintId(
                         data.preferences.dismissedFeatureHints,
                         ANDROID_PROVIDER_MODEL_FEATURE_HINT_ID,
+                    )
+                    if (dismissed != data.preferences.dismissedFeatureHints) {
+                        commit(
+                            data.copy(
+                                preferences = data.preferences.copy(
+                                    dismissedFeatureHints = dismissed,
+                                ),
+                            ),
+                        )
+                    }
+                },
+                onDismissCloudSyncFeatureHint = {
+                    val dismissed = dismissFeatureHintId(
+                        data.preferences.dismissedFeatureHints,
+                        ANDROID_CLOUD_SYNC_FEATURE_HINT_ID,
                     )
                     if (dismissed != data.preferences.dismissedFeatureHints) {
                         commit(

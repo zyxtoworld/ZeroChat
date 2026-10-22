@@ -29,6 +29,7 @@ import kotlin.math.roundToInt
 fun ChatTopBar(
     title: String,
     onNewConversation: () -> Unit,
+    onOpenConversations: () -> Unit,
     onOpenSettings: () -> Unit,
     i18n: NativeI18n,
 ) {
@@ -63,6 +64,15 @@ fun ChatTopBar(
         actions = {
             if (useIconActions) {
                 IconButton(
+                    onClick = onOpenConversations,
+                    modifier = Modifier.testTag("zerochat-topbar-conversations"),
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_list_24),
+                        contentDescription = i18n.t("conversation.searchLabel"),
+                    )
+                }
+                IconButton(
                     onClick = onNewConversation,
                     modifier = Modifier.testTag("zerochat-topbar-new"),
                 ) {
@@ -81,6 +91,9 @@ fun ChatTopBar(
                     )
                 }
             } else {
+                TextButton(onClick = onOpenConversations) {
+                    Text(i18n.t("conversation.searchLabel"))
+                }
                 TextButton(onClick = onNewConversation) {
                     Text(i18n.t("action.new"))
                 }

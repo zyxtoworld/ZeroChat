@@ -4383,6 +4383,7 @@ try {
   assertNotVisible(['Edit and resend'], 'message actions before long-press menu')
   assertNotVisible(['Regenerate'], 'assistant actions before long-press menu')
 
+  tapExactText(['Search chats'], 'open conversation picker')
   tapExactText(['Search chats'], 'conversation search field')
   inputText('assistant')
   assertVisible(['Android message menu smoke'], 'message-content conversation search result')

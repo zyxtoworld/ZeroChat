@@ -11,6 +11,7 @@ enum class ChatSetupSettingsTarget {
 }
 
 const val ANDROID_PROVIDER_MODEL_FEATURE_HINT_ID = "provider-model"
+const val ANDROID_CLOUD_SYNC_FEATURE_HINT_ID = "cloud-sync"
 
 fun shouldShowFeatureHint(
     dismissedFeatureHints: List<String>,

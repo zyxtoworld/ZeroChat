@@ -7,14 +7,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -22,11 +22,14 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -48,54 +51,69 @@ internal fun CompactConversationBar(
     filteredConversations: List<Conversation>,
     conversationSearchActive: Boolean,
     activeConversation: Conversation?,
+    conversationPickerOpen: Boolean,
+    onConversationPickerOpenChange: (Boolean) -> Unit,
     onSelectConversation: (String) -> Unit,
     onDeleteConversation: (Conversation) -> Unit,
     i18n: NativeI18n,
-    composerFocusMode: Boolean = false,
 ) {
-    if (composerFocusMode) {
-        activeConversation?.let { conversation ->
-            LazyRow(
-                modifier = Modifier.fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    OutlinedButton(
+        onClick = { onConversationPickerOpenChange(true) },
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+    ) {
+        Text(
+            i18n.t("conversation.searchLabel"),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+
+    if (conversationPickerOpen) {
+        ModalBottomSheet(
+            onDismissRequest = { onConversationPickerOpenChange(false) },
+            sheetState = sheetState,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxHeight(0.82f)
+                    .fillMaxWidth()
+                    .navigationBarsPadding(),
             ) {
-                item(key = conversation.id) {
-                    ConversationChip(
-                        conversation = conversation,
-                        selected = true,
-                        onSelect = { onSelectConversation(conversation.id) },
-                        onDelete = { onDeleteConversation(conversation) },
-                        i18n = i18n,
-                    )
+                ConversationSearchField(
+                    value = conversationSearch,
+                    onValueChange = onConversationSearchChange,
+                    onClear = onClearConversationSearch,
+                    i18n = i18n,
+                )
+                if (conversationSearchActive && filteredConversations.isEmpty()) {
+                    ConversationSearchEmptyState(i18n)
+                }
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(filteredConversations, key = { it.id }) { conversation ->
+                        ConversationListItem(
+                            conversation = conversation,
+                            selected = conversation.id == activeConversation?.id,
+                            onSelect = {
+                                onConversationPickerOpenChange(false)
+                                onSelectConversation(conversation.id)
+                            },
+                            onDelete = { onDeleteConversation(conversation) },
+                            i18n = i18n,
+                        )
+                    }
                 }
             }
         }
-        return
-    }
-
-    ConversationSearchField(
-        value = conversationSearch,
-        onValueChange = onConversationSearchChange,
-        onClear = onClearConversationSearch,
-        i18n = i18n,
-    )
-    LazyRow(
-        modifier = Modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        items(filteredConversations, key = { it.id }) { conversation ->
-            ConversationChip(
-                conversation = conversation,
-                selected = conversation.id == activeConversation?.id,
-                onSelect = { onSelectConversation(conversation.id) },
-                onDelete = { onDeleteConversation(conversation) },
-                i18n = i18n,
-            )
-        }
-    }
-    if (conversationSearchActive && filteredConversations.isEmpty()) {
-        ConversationSearchEmptyState(i18n)
     }
 }
 

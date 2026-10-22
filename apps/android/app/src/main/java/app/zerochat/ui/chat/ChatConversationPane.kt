@@ -32,6 +32,8 @@ internal fun ChatConversationPane(
     conversationSearch: String,
     onConversationSearchChange: (String) -> Unit,
     onClearConversationSearch: () -> Unit,
+    conversationPickerOpen: Boolean,
+    onConversationPickerOpenChange: (Boolean) -> Unit,
     filteredConversations: List<Conversation>,
     conversationSearchActive: Boolean,
     activeConversation: Conversation?,
@@ -47,6 +49,7 @@ internal fun ChatConversationPane(
     chatSetupHint: String?,
     emptyStateSettingsActionLabel: String?,
     showProviderModelFeatureHint: Boolean,
+    showCloudSyncFeatureHint: Boolean,
     persistentNotice: InlineNotice?,
     mainNotice: InlineNotice?,
     manualSyncRefreshing: Boolean,
@@ -61,6 +64,7 @@ internal fun ChatConversationPane(
     canSend: Boolean,
     onProviderModelSelected: (ProviderConfig, String) -> Unit,
     onDismissProviderModelFeatureHint: () -> Unit,
+    onDismissCloudSyncFeatureHint: () -> Unit,
     providerDisplayName: (ProviderConfig) -> String,
     chatModelsForProvider: (ProviderConfig) -> List<String>,
     imageModelsForProvider: (ProviderConfig) -> List<String>,
@@ -107,10 +111,11 @@ internal fun ChatConversationPane(
                             filteredConversations = filteredConversations,
                             conversationSearchActive = conversationSearchActive,
                             activeConversation = activeConversation,
+                            conversationPickerOpen = conversationPickerOpen,
+                            onConversationPickerOpenChange = onConversationPickerOpenChange,
                             onSelectConversation = onSelectConversation,
                             onDeleteConversation = onDeleteConversation,
                             i18n = i18n,
-                            composerFocusMode = compactImageMode,
                         )
                     }
                     ChatMainColumn(
@@ -129,6 +134,7 @@ internal fun ChatConversationPane(
                         emptyStateSettingsActionLabel = emptyStateSettingsActionLabel,
                         showProviderHint = showProviderHint,
                         showHomeSyncStrip = showHomeSyncStrip,
+                        showCloudSyncHint = showCloudSyncFeatureHint,
                         compactHomeSyncStrip = compactHomeSyncStrip,
                         keyboardVisible = keyboardVisible,
                         persistentNotice = persistentNotice,
@@ -145,6 +151,7 @@ internal fun ChatConversationPane(
                         canSend = canSend,
                         onProviderModelSelected = onProviderModelSelected,
                         onDismissProviderModelFeatureHint = onDismissProviderModelFeatureHint,
+                        onDismissCloudSyncFeatureHint = onDismissCloudSyncFeatureHint,
                         providerDisplayName = providerDisplayName,
                         chatModelsForProvider = chatModelsForProvider,
                         imageModelsForProvider = imageModelsForProvider,
@@ -210,6 +217,7 @@ internal fun ChatConversationPane(
                         emptyStateSettingsActionLabel = emptyStateSettingsActionLabel,
                         showProviderHint = showProviderHint,
                         showHomeSyncStrip = showHomeSyncStrip,
+                        showCloudSyncHint = showCloudSyncFeatureHint,
                         compactHomeSyncStrip = compactHomeSyncStrip,
                         keyboardVisible = keyboardVisible,
                         persistentNotice = persistentNotice,
@@ -226,6 +234,7 @@ internal fun ChatConversationPane(
                         canSend = canSend,
                         onProviderModelSelected = onProviderModelSelected,
                         onDismissProviderModelFeatureHint = onDismissProviderModelFeatureHint,
+                        onDismissCloudSyncFeatureHint = onDismissCloudSyncFeatureHint,
                         providerDisplayName = providerDisplayName,
                         chatModelsForProvider = chatModelsForProvider,
                         imageModelsForProvider = imageModelsForProvider,
@@ -273,6 +282,7 @@ private fun ChatMainColumn(
     emptyStateSettingsActionLabel: String?,
     showProviderHint: Boolean,
     showHomeSyncStrip: Boolean,
+    showCloudSyncHint: Boolean,
     compactHomeSyncStrip: Boolean,
     keyboardVisible: Boolean,
     persistentNotice: InlineNotice?,
@@ -289,6 +299,7 @@ private fun ChatMainColumn(
     canSend: Boolean,
     onProviderModelSelected: (ProviderConfig, String) -> Unit,
     onDismissProviderModelFeatureHint: () -> Unit,
+    onDismissCloudSyncFeatureHint: () -> Unit,
     providerDisplayName: (ProviderConfig) -> String,
     chatModelsForProvider: (ProviderConfig) -> List<String>,
     imageModelsForProvider: (ProviderConfig) -> List<String>,
@@ -338,7 +349,7 @@ private fun ChatMainColumn(
             )
         }
 
-        if (!keyboardVisible && showHomeSyncStrip) {
+        if (!keyboardVisible && showHomeSyncStrip && showCloudSyncHint) {
             CloudSyncStatusStrip(
                 snapshot = snapshot,
                 compact = compactHomeSyncStrip || hasMessages,
@@ -346,6 +357,7 @@ private fun ChatMainColumn(
                 manualSyncBlockedReason = manualSyncBlockedReason,
                 onSyncClick = onManualSync,
                 onOpenSettings = onOpenSyncSettings,
+                onDismiss = onDismissCloudSyncFeatureHint,
                 i18n = i18n,
             )
         }

@@ -342,6 +342,7 @@ internal fun CloudSyncStatusStrip(
     manualSyncBlockedReason: String?,
     onSyncClick: () -> Unit,
     onOpenSettings: () -> Unit,
+    onDismiss: () -> Unit,
     i18n: NativeI18n,
 ) {
     val userTriggeredSyncAction = LocalUserTriggeredSyncAction.current
@@ -423,6 +424,17 @@ internal fun CloudSyncStatusStrip(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.heightIn(min = 40.dp),
+                    contentPadding = PaddingValues(horizontal = 4.dp),
+                ) {
+                    Text(
+                        i18n.t("featureHint.dismiss"),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         } else {
             Column(
@@ -430,6 +442,7 @@ internal fun CloudSyncStatusStrip(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Row(
+                    modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -441,10 +454,22 @@ internal fun CloudSyncStatusStrip(
                     )
                     Text(
                         i18n.t("setting.sync"),
+                        modifier = Modifier.weight(1f),
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    TextButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.heightIn(min = 40.dp),
+                        contentPadding = PaddingValues(horizontal = 4.dp),
+                    ) {
+                        Text(
+                            i18n.t("featureHint.dismiss"),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
                 Text(
                     syncSummary,
