@@ -116,7 +116,7 @@ internal fun ChatConversationPane(
                         onSelectConversation = onSelectConversation,
                         onDeleteConversation = onDeleteConversation,
                         i18n = i18n,
-                        showTrigger = !keyboardVisible,
+                        showTrigger = false,
                     )
                     ChatMainColumn(
                         snapshot = snapshot,

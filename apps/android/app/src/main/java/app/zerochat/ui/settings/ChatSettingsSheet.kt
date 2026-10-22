@@ -21,6 +21,7 @@ internal fun ChatSettingsSheet(
     noticeContent: @Composable () -> Unit,
     onTabChanged: () -> Unit,
     onDismiss: () -> Unit,
+    onDismissKeyboard: () -> Unit,
     onSnapshotChange: (AppSnapshot) -> Unit,
     onSnapshotReduce: ((AppSnapshot) -> AppSnapshot) -> Unit,
     onSaveProviderKey: suspend (String, String) -> Result<Unit>,
@@ -54,6 +55,7 @@ internal fun ChatSettingsSheet(
                 ?: SettingsTab.Appearance,
             noticeContent = noticeContent,
             onTabChanged = onTabChanged,
+            onDismissKeyboard = onDismissKeyboard,
             i18n = i18n,
         ) { tab, requestContentScrollTop ->
             when (tab) {

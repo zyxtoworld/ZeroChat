@@ -5,11 +5,11 @@
 
 package app.zerochat.ui.settings
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -21,8 +21,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -30,7 +30,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -61,30 +60,30 @@ fun SettingsScreen(
     initialTab: SettingsTab,
     noticeContent: @Composable () -> Unit,
     onTabChanged: () -> Unit,
+    onDismissKeyboard: () -> Unit,
     i18n: NativeI18n,
     content: @Composable (SettingsTab, () -> Unit) -> Unit,
 ) {
     var tab by remember(initialTab) { mutableStateOf(initialTab) }
-    val settingsContentListState = rememberLazyListState()
+    val settingsContentScrollState = rememberScrollState()
     val settingsContentScrollScope = rememberCoroutineScope()
     val requestContentScrollTop: () -> Unit = {
         settingsContentScrollScope.launch {
-            settingsContentListState.scrollToItem(0)
+            settingsContentScrollState.scrollTo(0)
         }
     }
 
     LaunchedEffect(tab) {
-        settingsContentListState.scrollToItem(0)
+        settingsContentScrollState.scrollTo(0)
     }
 
     Column(
         modifier = Modifier
-            .fillMaxHeight(0.92f)
+            .fillMaxHeight()
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(horizontal = 16.dp),
+            .clickable(onClick = onDismissKeyboard)
     ) {
-        Text(i18n.t("title.settings"), style = MaterialTheme.typography.headlineSmall)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -117,20 +116,15 @@ fun SettingsScreen(
             i18n = i18n,
         )
         noticeContent()
-        LazyColumn(
+        Column(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .imePadding(),
-            state = settingsContentListState,
-            contentPadding = PaddingValues(top = 12.dp, bottom = 96.dp),
+                .imePadding()
+                .padding(top = 12.dp, bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item(key = tab.name) {
-                key(tab) {
-                    content(tab, requestContentScrollTop)
-                }
-            }
+            content(tab, requestContentScrollTop)
         }
     }
 }

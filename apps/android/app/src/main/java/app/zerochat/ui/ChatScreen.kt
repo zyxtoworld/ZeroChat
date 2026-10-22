@@ -1118,6 +1118,7 @@ internal fun ChatScreen(
                 },
                 onTabChanged = { settingsNotice = null },
                 onDismiss = { closeSettings() },
+                onDismissKeyboard = ::dismissKeyboard,
                 onSnapshotChange = ::commit,
                 onSnapshotReduce = { reducer -> onSnapshotReduce(reducer, true) },
                 onSaveProviderKey = onSaveProviderKey,
