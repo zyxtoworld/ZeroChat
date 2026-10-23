@@ -225,12 +225,7 @@ internal fun MessageList(
     }
 
     LaunchedEffect(conversationId, messages.size, latestMessage?.id) {
-        val switchedConversation = renderedConversationId != conversationId
         renderedConversationId = conversationId
-        if (switchedConversation) {
-            messageListState.scrollToItem(0)
-            return@LaunchedEffect
-        }
 
         val targetMessages = messages
         snapshotFlow {
