@@ -95,6 +95,7 @@ private const val ManualSyncRefreshingTestTag = "zerochat-manual-sync-refreshing
 
 @Composable
 internal fun MessageList(
+    conversationId: String?,
     messages: List<ChatMessage>,
     hasActiveChat: Boolean,
     manualSyncRefreshing: Boolean,
@@ -113,30 +114,23 @@ internal fun MessageList(
     val pullToRefreshState = rememberPullToRefreshState()
     val messageListState = rememberLazyListState()
     val latestMessage = messages.lastOrNull()
+    var renderedConversationId by remember { mutableStateOf<String?>(null) }
     val manualSyncRefreshMarker = if (manualSyncRefreshing) {
         Modifier.testTag(ManualSyncRefreshingTestTag)
     } else {
         Modifier
     }
 
-    LaunchedEffect(messages.size, latestMessage?.id) {
+    LaunchedEffect(conversationId, messages.size, latestMessage?.id) {
+        val switchedConversation = renderedConversationId != conversationId
+        renderedConversationId = conversationId
         val lastMessageIndex = messages.lastIndex
-        if (lastMessageIndex < 0) return@LaunchedEffect
-
-        messageListState.scrollToItem(lastMessageIndex, Int.MAX_VALUE)
-    }
-
-    LaunchedEffect(latestMessage?.status, latestMessage?.content) {
-        val lastMessageIndex = messages.lastIndex
-        if (lastMessageIndex < 0) return@LaunchedEffect
-
-        val lastVisibleItem = messageListState.layoutInfo.visibleItemsInfo.lastOrNull()
-        val isAtBottom = lastVisibleItem?.index == lastMessageIndex &&
-            lastVisibleItem.offset + lastVisibleItem.size <=
-            messageListState.layoutInfo.viewportEndOffset + 24
-        if (isAtBottom) {
-            messageListState.scrollToItem(lastMessageIndex, Int.MAX_VALUE)
+        if (switchedConversation || lastMessageIndex < 0) {
+            messageListState.scrollToItem(0)
+            return@LaunchedEffect
         }
+
+        messageListState.scrollToItem(lastMessageIndex)
     }
 
     PullToRefreshBox(

@@ -371,6 +371,7 @@ private fun ChatMainColumn(
         }
 
         MessageList(
+            conversationId = activeConversation?.id,
             messages = activeConversation?.messages.orEmpty(),
             hasActiveChat = activeConversation != null,
             manualSyncRefreshing = manualSyncRefreshing,
