@@ -37,6 +37,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -46,6 +47,7 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.snapshotFlow
@@ -217,7 +219,10 @@ internal fun MessageList(
         value = RenderedMessageItems(source = messages, items = items)
     }
     val renderedMessageItems = renderedMessageItemsState.value?.items.orEmpty()
-    var renderedConversationId by remember { mutableStateOf<String?>(null) }
+    val canScrollToLatest by remember {
+        derivedStateOf { messageListState.canScrollForward }
+    }
+    val messageListScope = rememberCoroutineScope()
     val manualSyncRefreshMarker = if (manualSyncRefreshing) {
         Modifier.testTag(ManualSyncRefreshingTestTag)
     } else {
@@ -225,7 +230,6 @@ internal fun MessageList(
     }
 
     LaunchedEffect(conversationId, messages.size, latestMessage?.id) {
-        renderedConversationId = conversationId
 
         val targetMessages = messages
         snapshotFlow {
@@ -238,6 +242,23 @@ internal fun MessageList(
         }
 
         messageListState.scrollToItem(lastRenderedItemIndex)
+    }
+
+    LaunchedEffect(
+        latestMessage?.id,
+        latestMessage?.status,
+        latestMessage?.content,
+        renderedMessageItems.size,
+    ) {
+        val lastRenderedItemIndex = renderedMessageItems.lastIndex
+        if (lastRenderedItemIndex < 0) return@LaunchedEffect
+
+        val lastVisibleItem = messageListState.layoutInfo.visibleItemsInfo.lastOrNull()
+        val isNearBottom = !messageListState.canScrollForward ||
+            lastVisibleItem?.index == lastRenderedItemIndex
+        if (isNearBottom) {
+            messageListState.scrollToItem(lastRenderedItemIndex)
+        }
     }
 
     PullToRefreshBox(
@@ -259,38 +280,55 @@ internal fun MessageList(
             }
         },
     ) {
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .clickable(onClick = onDismissKeyboard),
-            state = messageListState,
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(0.dp),
-        ) {
-            if (!hasActiveChat) {
-                item(key = "empty-state") {
-                    emptyContent()
+        Box(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(onClick = onDismissKeyboard),
+                state = messageListState,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(0.dp),
+            ) {
+                if (!hasActiveChat) {
+                    item(key = "empty-state") {
+                        emptyContent()
+                    }
+                }
+
+                items(
+                    items = renderedMessageItems,
+                    key = { it.key },
+                ) { item ->
+                    MessageBubble(
+                        item = item,
+                        onEdit = { onEditMessage(item.message) },
+                        onRegenerate = { onRegenerateMessage(item.message) },
+                        onDelete = { onDeleteMessage(item.message) },
+                        isSpeaking = speakingMessageId == item.message.id,
+                        onSpeak = { onSpeakMessage(item.message) },
+                        onStopSpeaking = onStopSpeaking,
+                        i18n = i18n,
+                    )
                 }
             }
-
-            items(
-                items = renderedMessageItems,
-                key = { it.key },
-            ) { item ->
-                MessageBubble(
-                    item = item,
-                    onEdit = { onEditMessage(item.message) },
-                    onRegenerate = { onRegenerateMessage(item.message) },
-                    onDelete = { onDeleteMessage(item.message) },
-                    isSpeaking = speakingMessageId == item.message.id,
-                    onSpeak = { onSpeakMessage(item.message) },
-                    onStopSpeaking = onStopSpeaking,
-                    i18n = i18n,
-                )
+            if (canScrollToLatest) {
+                SmallFloatingActionButton(
+                    onClick = {
+                        messageListScope.launch {
+                            messageListState.animateScrollToItem(renderedMessageItems.lastIndex)
+                        }
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 16.dp, bottom = 16.dp)
+                        .testTag("zerochat-scroll-to-latest"),
+                ) {
+                    Text("↓")
+                }
             }
         }
-    }
 }
+    }
 
 @Composable
 private fun MessageBubble(

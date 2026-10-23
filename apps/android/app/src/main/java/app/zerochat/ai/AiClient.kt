@@ -136,13 +136,27 @@ class AiClient(
             }
         }
 
+        val httpProvider = if (provider.kind == ProviderKind.OpenAIResponses) {
+            provider.copy(kind = ProviderKind.OpenAICompatible)
+        } else {
+            provider
+        }
         val received = StringBuilder()
-        val statement = client.preparePost(endpointFor(provider)) {
+        val statement = client.preparePost(endpointFor(httpProvider)) {
             contentType(ContentType.Application.Json)
             header(HttpHeaders.Accept, "text/event-stream")
-            applyAuthHeaders(provider, apiKey)
-            applyProxyHeaders(provider, proxyToken, "chat")
-            setBody(chatRequestBody(json, provider, model, messages, contextMessageLimit, stream = true))
+            applyAuthHeaders(httpProvider, apiKey)
+            applyProxyHeaders(httpProvider, proxyToken, "chat")
+            setBody(
+                chatRequestBody(
+                    json,
+                    httpProvider,
+                    model,
+                    messages,
+                    contextMessageLimit,
+                    stream = true,
+                ),
+            )
         }
 
         statement.execute { response ->
