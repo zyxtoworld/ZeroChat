@@ -67,6 +67,7 @@ import app.zerochat.ui.chat.chatMessageBlockerFeedback
 import app.zerochat.ui.chat.chatSetupHintKey
 import app.zerochat.ui.chat.conversationMatchesSearch
 import app.zerochat.ui.chat.createPendingChatTurn
+import app.zerochat.ui.chat.canReuseUninteractedNewConversation
 import app.zerochat.ui.chat.createPendingImageMessage
 import app.zerochat.ui.chat.defaultChatModelForProvider
 import app.zerochat.ui.chat.deleteConversation
@@ -596,6 +597,21 @@ internal fun ChatScreen(
     }
 
     fun createChat(): Conversation? {
+        val fallbackTitle = i18n.t("title.newChat")
+        if (
+            canReuseUninteractedNewConversation(
+                conversation = activeConversation,
+                fallbackTitle = fallbackTitle,
+                input = input,
+                editing = editingMessageId != null,
+                composerMode = composerMode,
+                imageTask = imageTask,
+                hasSourceImage = sourceImage != null,
+                hasMaskImage = maskImage != null,
+            )
+        ) {
+            return activeConversation
+        }
         val provider = enabledProviders.firstOrNull()
         if (provider == null) {
             openSettings(

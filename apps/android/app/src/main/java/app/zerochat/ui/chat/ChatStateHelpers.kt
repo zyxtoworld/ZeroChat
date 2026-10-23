@@ -30,6 +30,25 @@ fun newConversation(provider: ProviderConfig, model: String, fallbackTitle: Stri
         updatedAt = now,
     )
 }
+internal fun canReuseUninteractedNewConversation(
+    conversation: Conversation?,
+    fallbackTitle: String,
+    input: String,
+    editing: Boolean,
+    composerMode: ComposerMode,
+    imageTask: ImageTaskMode,
+    hasSourceImage: Boolean,
+    hasMaskImage: Boolean,
+): Boolean =
+    conversation != null &&
+        conversation.title == fallbackTitle &&
+        conversation.messages.isEmpty() &&
+        input.isBlank() &&
+        !editing &&
+        composerMode == ComposerMode.Chat &&
+        imageTask == ImageTaskMode.Generate &&
+        !hasSourceImage &&
+        !hasMaskImage
 
 fun activeConversation(snapshot: AppSnapshot): Conversation? {
     val activeId = snapshot.preferences.activeConversationId

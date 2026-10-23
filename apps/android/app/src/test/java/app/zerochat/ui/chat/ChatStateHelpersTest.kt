@@ -14,8 +14,10 @@ import app.zerochat.ai.ImageUpload
 import app.zerochat.ui.ComposerMode
 import app.zerochat.ui.ImageTaskMode
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ChatStateHelpersTest {
@@ -90,7 +92,47 @@ class ChatStateHelpersTest {
         assertEquals(listOf("three", "one", "two"), added.conversations.map { it.id })
         assertEquals("three", added.preferences.activeConversationId)
     }
+    @Test
+    fun freshUninteractedNewConversationCanBeReusedWithoutDuplicatingIt() {
+        val fresh = conversation("fresh").copy(title = "New chat")
 
+        assertTrue(
+            canReuseUninteractedNewConversation(
+                conversation = fresh,
+                fallbackTitle = "New chat",
+                input = "",
+                editing = false,
+                composerMode = ComposerMode.Chat,
+                imageTask = ImageTaskMode.Generate,
+                hasSourceImage = false,
+                hasMaskImage = false,
+            ),
+        )
+        assertFalse(
+            canReuseUninteractedNewConversation(
+                conversation = fresh.copy(messages = listOf(message("user"))),
+                fallbackTitle = "New chat",
+                input = "",
+                editing = false,
+                composerMode = ComposerMode.Chat,
+                imageTask = ImageTaskMode.Generate,
+                hasSourceImage = false,
+                hasMaskImage = false,
+            ),
+        )
+        assertFalse(
+            canReuseUninteractedNewConversation(
+                conversation = fresh,
+                fallbackTitle = "New chat",
+                input = "draft",
+                editing = false,
+                composerMode = ComposerMode.Chat,
+                imageTask = ImageTaskMode.Generate,
+                hasSourceImage = false,
+                hasMaskImage = false,
+            ),
+        )
+    }
     @Test
     fun applyProviderModelSelectionUpdatesChatConversationWithoutChangingProviderImageModel() {
         val oldProvider = provider("old", model = "old-chat")
