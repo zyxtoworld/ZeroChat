@@ -137,9 +137,27 @@ fun ZeroChatApp(
     backupTaskViewModel: BackupTaskViewModel,
 ) {
     val context = LocalContext.current
-    val runtime = remember(context.applicationContext) {
-        (context.applicationContext as ZeroChatApplication).runtime
+    val application = context.applicationContext as ZeroChatApplication
+    var runtimeReady by remember(application) { mutableStateOf(false) }
+    LaunchedEffect(application) {
+        withContext(Dispatchers.Default) {
+            application.runtime
+        }
+        runtimeReady = true
     }
+    if (!runtimeReady) {
+        ZeroChatTheme("system") {
+            Surface(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .semantics { testTagsAsResourceId = true },
+            ) {
+                AppLoadingState()
+            }
+        }
+        return
+    }
+    val runtime = application.runtime
     val repository = runtime.repository
     val localSnapshotRecoveryGate = runtime.localSnapshotRecoveryGate
     val secretStore = runtime.secretStore
