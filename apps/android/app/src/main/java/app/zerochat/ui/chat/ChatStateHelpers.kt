@@ -41,7 +41,6 @@ internal fun canReuseUninteractedNewConversation(
     hasMaskImage: Boolean,
 ): Boolean =
     conversation != null &&
-        conversation.title == fallbackTitle &&
         conversation.messages.isEmpty() &&
         input.isBlank() &&
         !editing &&

@@ -127,6 +127,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
+import java.util.concurrent.atomic.AtomicReference
+
 enum class ComposerMode(val title: String) {
     Chat("Chat"),
     Image("Image"),
@@ -188,6 +190,7 @@ internal fun ChatScreen(
     var conversationSearch by rememberSaveable { mutableStateOf("") }
     var conversationPickerOpen by rememberSaveable { mutableStateOf(false) }
     var conversationPendingDeleteId by rememberSaveable { mutableStateOf<String?>(null) }
+    val pendingNewConversation = remember { AtomicReference<Conversation?>(null) }
     var sourceImageUriString by rememberSaveable { mutableStateOf<String?>(null) }
     var maskImageUriString by rememberSaveable { mutableStateOf<String?>(null) }
     var sourceImage by remember { mutableStateOf<ImageUpload?>(null) }
@@ -417,6 +420,7 @@ internal fun ChatScreen(
     }
 
     fun selectConversation(id: String) {
+        pendingNewConversation.set(null)
         commit(selectConversationSnapshot(data, id))
     }
 
@@ -598,6 +602,21 @@ internal fun ChatScreen(
 
     fun createChat(): Conversation? {
         val fallbackTitle = i18n.t("title.newChat")
+        val pending = pendingNewConversation.get()
+        if (
+            canReuseUninteractedNewConversation(
+                conversation = pending,
+                fallbackTitle = fallbackTitle,
+                input = input,
+                editing = editingMessageId != null,
+                composerMode = composerMode,
+                imageTask = imageTask,
+                hasSourceImage = sourceImage != null,
+                hasMaskImage = maskImage != null,
+            )
+        ) {
+            return pending
+        }
         if (
             canReuseUninteractedNewConversation(
                 conversation = activeConversation,
@@ -637,6 +656,7 @@ internal fun ChatScreen(
         }
 
         val conversation = newConversation(provider, model, i18n.t("title.newChat"))
+        pendingNewConversation.set(conversation)
         commit(addConversation(data, conversation))
         return conversation
     }

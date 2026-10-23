@@ -33,24 +33,19 @@ class MainActivity : ComponentActivity() {
     private val backupTaskViewModel by lazy(LazyThreadSafetyMode.NONE) {
         ViewModelProvider(this)[BackupTaskViewModel::class.java]
     }
+
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-            val rootInsets = window.decorView.rootWindowInsets
-            val imeVisible = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-                rootInsets?.isVisible(android.view.WindowInsets.Type.ime()) == true
-            val imeTop = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                rootInsets?.getInsets(android.view.WindowInsets.Type.ime())?.top ?: Int.MAX_VALUE
-            } else {
-                Int.MAX_VALUE
-            }
-            if (imeVisible && event.rawY < imeTop) {
-                currentFocus?.clearFocus()
-                getSystemService(InputMethodManager::class.java)
-                    ?.hideSoftInputFromWindow(window.decorView.windowToken, 0)
-            }
+        if (event.actionMasked == MotionEvent.ACTION_DOWN && isImeVisible()) {
+            currentFocus?.clearFocus()
+            getSystemService(InputMethodManager::class.java)
+                ?.hideSoftInputFromWindow(window.decorView.windowToken, 0)
         }
         return super.dispatchTouchEvent(event)
     }
+
+    private fun isImeVisible(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            window.decorView.rootWindowInsets?.isVisible(android.view.WindowInsets.Type.ime()) == true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
