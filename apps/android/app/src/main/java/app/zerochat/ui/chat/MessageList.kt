@@ -47,6 +47,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -83,7 +85,10 @@ import app.zerochat.data.MessageAttachment
 import app.zerochat.data.MessageRole
 import app.zerochat.client.R
 import app.zerochat.ui.NativeI18n
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
@@ -92,6 +97,93 @@ private val JetBrainsMonoCodeFont = FontFamily(
     Font(R.font.jetbrains_mono_regular, FontWeight.Normal),
 )
 private const val ManualSyncRefreshingTestTag = "zerochat-manual-sync-refreshing"
+private sealed interface MessageRenderBlock {
+    data class Code(val value: MessageCodeBlock) : MessageRenderBlock
+    data class Markdown(val value: MessageMarkdownBlock) : MessageRenderBlock
+}
+
+private data class MessageListItem(
+    val message: ChatMessage,
+    val renderBlocks: List<MessageRenderBlock>,
+    val index: Int,
+    val total: Int,
+) {
+    val key: String get() = "${message.id}:$index"
+    val isFirst: Boolean get() = index == 0
+    val isLast: Boolean get() = index == total - 1
+}
+
+private data class RenderedMessageItems(
+    val source: List<ChatMessage>,
+    val items: List<MessageListItem>,
+)
+
+private const val MaxMessageChunkCharacters = 900
+
+private fun messageListItems(messages: List<ChatMessage>): List<MessageListItem> =
+    messages.flatMap { message ->
+        val chunks = messageContentChunks(message.content)
+        chunks.mapIndexed { index, content ->
+            MessageListItem(
+                message = message,
+                renderBlocks = messageRenderBlocks(content),
+                index = index,
+                total = chunks.size,
+            )
+        }
+    }
+
+private fun messageRenderBlocks(content: String): List<MessageRenderBlock> =
+    messageContentBlocks(content).flatMap { contentBlock ->
+        when (contentBlock) {
+            is MessageCodeBlock -> listOf(MessageRenderBlock.Code(contentBlock))
+            is MessageTextBlock -> messageMarkdownBlocks(contentBlock.text).map(
+                MessageRenderBlock::Markdown,
+            )
+        }
+    }
+
+private fun messageContentChunks(content: String): List<String> {
+    if (content.length <= MaxMessageChunkCharacters) {
+        return listOf(content)
+    }
+
+    val chunks = mutableListOf<String>()
+    var chunkStart = 0
+    var lineStart = 0
+    var codeFenceOpen = false
+
+    fun addChunk(end: Int) {
+        val chunk = content.substring(chunkStart, end).trim()
+        if (chunk.isNotEmpty()) {
+            chunks += chunk
+        }
+        chunkStart = end
+    }
+
+    while (lineStart < content.length) {
+        val lineEnd = content.indexOf('\n', lineStart).takeIf { it >= 0 } ?: content.length
+        val nextLineStart = if (lineEnd < content.length) lineEnd + 1 else content.length
+        val line = content.substring(lineStart, lineEnd)
+        val exceedsChunkLimit = nextLineStart - chunkStart > MaxMessageChunkCharacters
+
+        if (exceedsChunkLimit && !codeFenceOpen && lineStart > chunkStart) {
+            addChunk(lineStart)
+        }
+
+        if (line.trimStart().startsWith("```")) {
+            codeFenceOpen = !codeFenceOpen
+        }
+        lineStart = nextLineStart
+    }
+
+    if (chunkStart < content.length) {
+        addChunk(content.length)
+    }
+
+    return chunks.ifEmpty { listOf(content) }
+}
+
 
 @Composable
 internal fun MessageList(
@@ -114,6 +206,17 @@ internal fun MessageList(
     val pullToRefreshState = rememberPullToRefreshState()
     val messageListState = rememberLazyListState()
     val latestMessage = messages.lastOrNull()
+    val renderedMessageItemsState = produceState<RenderedMessageItems?>(
+        initialValue = null,
+        key1 = messages,
+    ) {
+        value = null
+        val items = withContext(Dispatchers.Default) {
+            messageListItems(messages)
+        }
+        value = RenderedMessageItems(source = messages, items = items)
+    }
+    val renderedMessageItems = renderedMessageItemsState.value?.items.orEmpty()
     var renderedConversationId by remember { mutableStateOf<String?>(null) }
     val manualSyncRefreshMarker = if (manualSyncRefreshing) {
         Modifier.testTag(ManualSyncRefreshingTestTag)
@@ -124,13 +227,22 @@ internal fun MessageList(
     LaunchedEffect(conversationId, messages.size, latestMessage?.id) {
         val switchedConversation = renderedConversationId != conversationId
         renderedConversationId = conversationId
-        val lastMessageIndex = messages.lastIndex
-        if (switchedConversation || lastMessageIndex < 0) {
+        if (switchedConversation) {
             messageListState.scrollToItem(0)
             return@LaunchedEffect
         }
 
-        messageListState.scrollToItem(lastMessageIndex)
+        val targetMessages = messages
+        snapshotFlow {
+            renderedMessageItemsState.value?.source === targetMessages
+        }.first { it }
+        val lastRenderedItemIndex = renderedMessageItemsState.value?.items?.lastIndex ?: -1
+        if (lastRenderedItemIndex < 0) {
+            messageListState.scrollToItem(0)
+            return@LaunchedEffect
+        }
+
+        messageListState.scrollToItem(lastRenderedItemIndex)
     }
 
     PullToRefreshBox(
@@ -158,25 +270,25 @@ internal fun MessageList(
                 .clickable(onClick = onDismissKeyboard),
             state = messageListState,
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(0.dp),
         ) {
             if (!hasActiveChat) {
-                item {
+                item(key = "empty-state") {
                     emptyContent()
                 }
             }
 
             items(
-                items = messages,
-                key = { it.id },
-            ) { message ->
+                items = renderedMessageItems,
+                key = { it.key },
+            ) { item ->
                 MessageBubble(
-                    message = message,
-                    onEdit = { onEditMessage(message) },
-                    onRegenerate = { onRegenerateMessage(message) },
-                    onDelete = { onDeleteMessage(message) },
-                    isSpeaking = speakingMessageId == message.id,
-                    onSpeak = { onSpeakMessage(message) },
+                    item = item,
+                    onEdit = { onEditMessage(item.message) },
+                    onRegenerate = { onRegenerateMessage(item.message) },
+                    onDelete = { onDeleteMessage(item.message) },
+                    isSpeaking = speakingMessageId == item.message.id,
+                    onSpeak = { onSpeakMessage(item.message) },
                     onStopSpeaking = onStopSpeaking,
                     i18n = i18n,
                 )
@@ -187,7 +299,7 @@ internal fun MessageList(
 
 @Composable
 private fun MessageBubble(
-    message: ChatMessage,
+    item: MessageListItem,
     onEdit: () -> Unit,
     onRegenerate: () -> Unit,
     onDelete: () -> Unit,
@@ -196,21 +308,27 @@ private fun MessageBubble(
     onStopSpeaking: () -> Unit,
     i18n: NativeI18n,
 ) {
-    var menuExpanded by rememberSaveable(message.id) { mutableStateOf(false) }
+    val message = item.message
+    var menuExpanded by rememberSaveable(item.key) { mutableStateOf(false) }
     val context = LocalContext.current
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     val isUser = message.role == MessageRole.User
     val isStreamingAssistant = message.role == MessageRole.Assistant && message.status == "streaming"
     val assistantRerunActionKey = if (message.status == "error") "button.retry" else "action.regenerate"
-    val content = message.content.ifBlank {
-        if (isStreamingAssistant) i18n.t("message.generating") else message.content
-    }
-    val displayContent = if (isStreamingAssistant) "$content|" else content
     val canSpeak = message.content.isNotBlank() && message.status != "streaming"
+    val shape = when {
+        item.isFirst && item.isLast -> RoundedCornerShape(12.dp)
+        item.isFirst -> RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)
+        item.isLast -> RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp)
+        else -> RoundedCornerShape(0.dp)
+    }
+    val renderBlocks = item.renderBlocks
 
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = if (item.isLast) 10.dp else 0.dp),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
     ) {
         Box(
@@ -219,7 +337,6 @@ private fun MessageBubble(
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = if (isUser) {
-                        // Current design: user bubble is solid accent with contrast text.
                         MaterialTheme.colorScheme.primary
                     } else if (message.status == "error") {
                         MaterialTheme.colorScheme.errorContainer
@@ -234,6 +351,7 @@ private fun MessageBubble(
                         MaterialTheme.colorScheme.onSurface
                     },
                 ),
+                shape = shape,
                 modifier = Modifier
                     .fillMaxWidth()
                     .combinedClickable(
@@ -242,39 +360,52 @@ private fun MessageBubble(
                     ),
             ) {
                 Column(
-                    modifier = Modifier.padding(12.dp),
+                    modifier = Modifier.padding(
+                        start = 12.dp,
+                        end = 12.dp,
+                        top = if (item.isFirst) 12.dp else 6.dp,
+                        bottom = if (item.isLast) 12.dp else 6.dp,
+                    ),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    MessageContent(
-                        content = displayContent,
-                        i18n = i18n,
-                        onCopyCode = { code ->
-                            scope.launch {
-                                clipboard.setClipEntry(
-                                    ClipEntry(
-                                        ClipData.newPlainText("ZeroChat code", code),
-                                    ),
-                                )
-                            }
-                        },
-                        onOpenLink = { url -> openMessageLink(context, url, i18n) },
-                    )
-                    message.error?.takeIf { it.isNotBlank() }?.let {
-                        Text(it, color = MaterialTheme.colorScheme.error)
+                    if (isStreamingAssistant && message.content.isBlank() && item.isFirst) {
+                        Text(i18n.t("message.generating"))
+                    } else {
+                        renderBlocks.forEach { block ->
+                            MessageRenderBlockView(
+                                block = block,
+                                i18n = i18n,
+                                onCopyCode = { code ->
+                                    scope.launch {
+                                        clipboard.setClipEntry(
+                                            ClipEntry(
+                                                ClipData.newPlainText("ZeroChat code", code),
+                                            ),
+                                        )
+                                    }
+                                },
+                                onOpenLink = { url -> openMessageLink(context, url, i18n) },
+                            )
+                        }
                     }
-                    message.attachments.forEach { attachment ->
-                        AttachmentPreview(attachment)
+                    if (item.isLast) {
+                        message.error?.takeIf { it.isNotBlank() }?.let {
+                            Text(it, color = MaterialTheme.colorScheme.error)
+                        }
+                        message.attachments.forEach { attachment ->
+                            AttachmentPreview(attachment)
+                        }
+                        Text(
+                            systemTime(message.createdAt),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (isUser) {
+                                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.75f)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.align(if (isUser) Alignment.End else Alignment.Start),
+                        )
                     }
-                    Text(
-                        systemTime(message.createdAt),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (isUser) {
-                            MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.75f)
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                        modifier = Modifier.align(if (isUser) Alignment.End else Alignment.Start),
-                    )
                 }
             }
             DropdownMenu(
@@ -339,7 +470,7 @@ private fun MessageBubble(
                     onClick = {
                         menuExpanded = false
                         onDelete()
-                    }
+                    },
                 )
             }
         }
@@ -347,109 +478,97 @@ private fun MessageBubble(
 }
 
 @Composable
-private fun MessageContent(
-    content: String,
+private fun MessageRenderBlockView(
+    block: MessageRenderBlock,
     i18n: NativeI18n,
     onCopyCode: (String) -> Unit,
     onOpenLink: (String) -> Unit,
 ) {
-    val blocks = remember(content) { messageContentBlocks(content) }
+    when (block) {
+        is MessageRenderBlock.Code -> MessageCodeBlockView(
+            block = block.value,
+            i18n = i18n,
+            onCopy = { onCopyCode(block.value.code) },
+        )
 
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        blocks.forEach { block ->
-            when (block) {
-                is MessageCodeBlock -> MessageCodeBlockView(
-                    block = block,
-                    i18n = i18n,
-                    onCopy = { onCopyCode(block.code) },
-                )
-
-                is MessageTextBlock -> MessageMarkdownText(
-                    text = block.text,
-                    onOpenLink = onOpenLink,
-                )
-            }
-        }
+        is MessageRenderBlock.Markdown -> MessageMarkdownBlockView(
+            block = block.value,
+            onOpenLink = onOpenLink,
+        )
     }
 }
 
 @Composable
-private fun MessageMarkdownText(
-    text: String,
+private fun MessageMarkdownBlockView(
+    block: MessageMarkdownBlock,
     onOpenLink: (String) -> Unit,
 ) {
-    val blocks = remember(text) { messageMarkdownBlocks(text) }
+    when (block) {
+        is MessageMarkdownHeading -> Text(
+            block.text,
+            style = when (block.level) {
+                1 -> MaterialTheme.typography.titleLarge
+                2 -> MaterialTheme.typography.titleMedium
+                else -> MaterialTheme.typography.titleSmall
+            },
+            fontWeight = FontWeight.SemiBold,
+        )
 
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        blocks.forEach { block ->
-            when (block) {
-                is MessageMarkdownHeading -> Text(
-                    block.text,
-                    style = when (block.level) {
-                        1 -> MaterialTheme.typography.titleLarge
-                        2 -> MaterialTheme.typography.titleMedium
-                        else -> MaterialTheme.typography.titleSmall
-                    },
-                    fontWeight = FontWeight.SemiBold,
-                )
-
-                is MessageMarkdownBulletList -> Column(
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
+        is MessageMarkdownBulletList -> Column(
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            block.items.forEach { item ->
+                Row(
+                    modifier = Modifier.padding(start = (item.depth * 18).dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    block.items.forEach { item ->
-                        Row(
-                            modifier = Modifier.padding(start = (item.depth * 18).dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Text("•", color = MaterialTheme.colorScheme.primary)
-                            MessageInlineMarkdownText(
-                                text = item.text,
-                                onOpenLink = onOpenLink,
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                    }
+                    Text("•", color = MaterialTheme.colorScheme.primary)
+                    MessageInlineMarkdownText(
+                        text = item.text,
+                        onOpenLink = onOpenLink,
+                        modifier = Modifier.weight(1f),
+                    )
                 }
-
-                is MessageMarkdownOrderedList -> Column(
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    block.items.forEach { item ->
-                        Row(
-                            modifier = Modifier.padding(start = (item.depth * 18).dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Text(
-                                "${item.number ?: block.start}.",
-                                modifier = Modifier.widthIn(min = 22.dp),
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            MessageInlineMarkdownText(
-                                text = item.text,
-                                onOpenLink = onOpenLink,
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                    }
-                }
-
-                is MessageMarkdownTable -> MessageMarkdownTableView(
-                    table = block,
-                    onOpenLink = onOpenLink,
-                )
-
-                is MessageMarkdownBlockQuote -> MessageMarkdownBlockQuoteView(
-                    quote = block,
-                    onOpenLink = onOpenLink,
-                )
-
-                is MessageMarkdownParagraph -> MessageInlineMarkdownText(
-                    text = block.text,
-                    onOpenLink = onOpenLink,
-                )
             }
         }
+
+        is MessageMarkdownOrderedList -> Column(
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            block.items.forEach { item ->
+                Row(
+                    modifier = Modifier.padding(start = (item.depth * 18).dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        "${item.number ?: block.start}.",
+                        modifier = Modifier.widthIn(min = 22.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    MessageInlineMarkdownText(
+                        text = item.text,
+                        onOpenLink = onOpenLink,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+
+        is MessageMarkdownTable -> MessageMarkdownTableView(
+            table = block,
+            onOpenLink = onOpenLink,
+        )
+
+        is MessageMarkdownBlockQuote -> MessageMarkdownBlockQuoteView(
+            quote = block,
+            onOpenLink = onOpenLink,
+        )
+
+        is MessageMarkdownParagraph -> MessageInlineMarkdownText(
+            text = block.text,
+            onOpenLink = onOpenLink,
+        )
     }
 }
 
