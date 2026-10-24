@@ -17,6 +17,13 @@ struct AppleChatConversationPane: View {
     let openSettings: (SettingsTab) -> Void
 
     var body: some View {
+        let messageScrollKey = [
+            activeConversationId ?? "",
+            activeConversation?.messages.last?.id ?? "",
+            String(activeConversation?.messages.last?.content.count ?? 0),
+            activeConversation?.messages.last?.status ?? "",
+        ].joined(separator: ":")
+
         VStack(spacing: 0) {
             ChatHeader(
                 model: model,
@@ -102,7 +109,7 @@ struct AppleChatConversationPane: View {
                 .refreshable {
                     await model.pullToRefreshSync()
                 }
-                .task(id: activeConversation?.messages.map(\.id)) {
+                .task(id: messageScrollKey) {
                     if let id = activeConversation?.messages.last?.id {
                         proxy.scrollTo(id, anchor: .bottom)
                     }

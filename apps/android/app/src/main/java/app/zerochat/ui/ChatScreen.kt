@@ -11,7 +11,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.media.MediaPlayer
 import android.net.Uri
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Scaffold
@@ -32,6 +35,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.LayoutDirection
 import app.zerochat.ai.AiClient
 import app.zerochat.ai.ImageUpload
@@ -177,6 +181,7 @@ internal fun ChatScreen(
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val scope = rememberCoroutineScope()
     val aiClient = remember { AiClient() }
     val syncClient = remember(context) {
@@ -954,20 +959,22 @@ internal fun ChatScreen(
     CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
         Scaffold(
             topBar = {
-                ChatTopBar(
-                    title = activeConversation?.title ?: "ZeroChat",
-                    onNewConversation = {
-                        dismissKeyboard()
-                        conversationSearch = ""
-                        createChat()
-                    },
-                    onOpenConversations = {
-                        dismissKeyboard()
-                        conversationPickerOpen = true
-                    },
-                    onOpenSettings = { openSettings() },
-                    i18n = i18n,
-                )
+                if (!keyboardVisible) {
+                    ChatTopBar(
+                        title = activeConversation?.title ?: "ZeroChat",
+                        onNewConversation = {
+                            dismissKeyboard()
+                            conversationSearch = ""
+                            createChat()
+                        },
+                        onOpenConversations = {
+                            dismissKeyboard()
+                            conversationPickerOpen = true
+                        },
+                        onOpenSettings = { openSettings() },
+                        i18n = i18n,
+                    )
+                }
             },
         ) { padding ->
             ChatConversationPane(
@@ -1140,7 +1147,8 @@ internal fun ChatScreen(
                 i18n = i18n,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding),
+                    .padding(padding)
+                    .imePadding(),
             )
         }
 

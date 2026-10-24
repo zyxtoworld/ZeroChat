@@ -121,6 +121,7 @@ private data class RenderedMessageItems(
 )
 
 private const val MaxMessageChunkCharacters = 900
+private const val MaxOpenCodeChunkCharacters = MaxMessageChunkCharacters * 8
 
 private fun messageListItems(messages: List<ChatMessage>): List<MessageListItem> =
     messages.flatMap { message ->
@@ -168,8 +169,12 @@ private fun messageContentChunks(content: String): List<String> {
         val nextLineStart = if (lineEnd < content.length) lineEnd + 1 else content.length
         val line = content.substring(lineStart, lineEnd)
         val exceedsChunkLimit = nextLineStart - chunkStart > MaxMessageChunkCharacters
+        val exceedsOpenCodeLimit =
+            codeFenceOpen && nextLineStart - chunkStart > MaxOpenCodeChunkCharacters
 
-        if (exceedsChunkLimit && !codeFenceOpen && lineStart > chunkStart) {
+        if ((exceedsChunkLimit && !codeFenceOpen || exceedsOpenCodeLimit) &&
+            lineStart > chunkStart
+        ) {
             addChunk(lineStart)
         }
 
@@ -192,6 +197,7 @@ internal fun MessageList(
     conversationId: String?,
     messages: List<ChatMessage>,
     hasActiveChat: Boolean,
+    keyboardVisible: Boolean,
     manualSyncRefreshing: Boolean,
     onRefresh: () -> Unit,
     onEditMessage: (ChatMessage) -> Unit,
@@ -208,9 +214,22 @@ internal fun MessageList(
     val pullToRefreshState = rememberPullToRefreshState()
     val messageListState = rememberLazyListState()
     val latestMessage = messages.lastOrNull()
+    val renderedMessageKey = buildString {
+        append(conversationId.orEmpty())
+        messages.forEach { message ->
+            append('|')
+                .append(message.id)
+                .append(':')
+                .append(message.status.orEmpty())
+                .append(':')
+                .append(message.content.length)
+                .append(':')
+                .append(message.content.takeLast(64).hashCode())
+        }
+    }
     val renderedMessageItemsState = produceState<RenderedMessageItems?>(
         initialValue = null,
-        key1 = messages,
+        key1 = renderedMessageKey,
     ) {
         value = null
         val items = withContext(Dispatchers.Default) {
@@ -229,18 +248,18 @@ internal fun MessageList(
         Modifier
     }
 
-    LaunchedEffect(conversationId, messages.size, latestMessage?.id) {
-
+    LaunchedEffect(conversationId, messages.size, latestMessage?.id, keyboardVisible, renderedMessageItems.size) {
         val targetMessages = messages
-        snapshotFlow {
-            renderedMessageItemsState.value?.source === targetMessages
-        }.first { it }
-        val lastRenderedItemIndex = renderedMessageItemsState.value?.items?.lastIndex ?: -1
+        val lastRenderedItemIndex = renderedMessageItems.lastIndex
         if (lastRenderedItemIndex < 0) {
             messageListState.scrollToItem(0)
             return@LaunchedEffect
         }
 
+        snapshotFlow {
+            renderedMessageItemsState.value?.source === targetMessages &&
+                messageListState.layoutInfo.totalItemsCount > lastRenderedItemIndex
+        }.first { it }
         messageListState.scrollToItem(lastRenderedItemIndex)
     }
 
@@ -252,6 +271,7 @@ internal fun MessageList(
     ) {
         val lastRenderedItemIndex = renderedMessageItems.lastIndex
         if (lastRenderedItemIndex < 0) return@LaunchedEffect
+        if (messageListState.layoutInfo.totalItemsCount <= lastRenderedItemIndex) return@LaunchedEffect
 
         val lastVisibleItem = messageListState.layoutInfo.visibleItemsInfo.lastOrNull()
         val isNearBottom = !messageListState.canScrollForward ||

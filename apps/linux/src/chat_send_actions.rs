@@ -12,7 +12,7 @@ use crate::{
     messages::{message_display_text, message_row, message_row_with_body},
     set_window_content,
 };
-use gtk::prelude::*;
+use gtk::{glib, prelude::*};
 use std::{
     cell::RefCell,
     rc::Rc,
@@ -72,6 +72,19 @@ fn take_active_stream_if_matches(
     }
 }
 
+fn scroller_is_near_bottom(scroller: &gtk::ScrolledWindow) -> bool {
+    let adjustment = scroller.vadjustment();
+    adjustment.upper() - adjustment.page_size() - adjustment.value() <= 48.0
+}
+
+pub(crate) fn schedule_scroll_messages_to_bottom(scroller: &gtk::ScrolledWindow) {
+    let adjustment = scroller.vadjustment();
+    glib::idle_add_local_once(move || {
+        let bottom = (adjustment.upper() - adjustment.page_size()).max(adjustment.lower());
+        adjustment.set_value(bottom);
+    });
+}
+
 fn set_notice_info(notice: &gtk::Label, message: &str) {
     notice.remove_css_class("warning");
     notice.set_text(message);
@@ -86,7 +99,7 @@ fn set_notice_warning(notice: &gtk::Label, message: &str) {
 pub(crate) fn connect_send_action(
     send: &gtk::Button,
     messages: &gtk::ListBox,
-    input: &gtk::TextView,
+    scroller: &gtk::ScrolledWindow,
     notice: &gtk::Label,
     locale: &str,
     compact: bool,
@@ -99,6 +112,7 @@ pub(crate) fn connect_send_action(
     refresh_controls: Rc<dyn Fn()>,
 ) {
     let messages_for_send = messages.clone();
+    let scroller_for_send = scroller.clone();
     let input_for_send = input.clone();
     let notice_for_send = notice.clone();
     let locale_for_send = locale.to_owned();
@@ -190,6 +204,7 @@ pub(crate) fn connect_send_action(
                 &locale_for_send,
                 compact_for_send,
             ));
+            schedule_scroll_messages_to_bottom(&scroller_for_send);
             buffer.set_text("");
             image_controls_for_send.clear_uploads(&locale_for_send);
             refresh_controls_for_send();
@@ -316,6 +331,7 @@ pub(crate) fn connect_send_action(
             compact_for_send,
         );
         messages_for_send.append(&assistant_row);
+        schedule_scroll_messages_to_bottom(&scroller_for_send);
         buffer.set_text("");
         set_notice_info(&notice_for_send, tr(&locale_for_send, "message.generating"));
         let (sender, receiver) = mpsc::channel();
@@ -336,6 +352,7 @@ pub(crate) fn connect_send_action(
         let notice_for_result = notice_for_send.clone();
         let chat_streaming_for_result = chat_streaming_for_send.clone();
         let refresh_controls_for_result = refresh_controls_for_send.clone();
+        let scroller_for_result = scroller_for_send.clone();
         poll_chat_stream(
             receiver,
             move |event| match event {
@@ -355,7 +372,11 @@ pub(crate) fn connect_send_action(
                     } else {
                         format!("{content}|")
                     };
+                    let follow_latest = scroller_is_near_bottom(&scroller_for_result);
                     assistant_body.set_text(&visible);
+                    if follow_latest {
+                        schedule_scroll_messages_to_bottom(&scroller_for_result);
+                    }
                 }
                 AiChatStreamEvent::Retry { attempt, total } => {
                     let is_active = chat_streaming_for_result

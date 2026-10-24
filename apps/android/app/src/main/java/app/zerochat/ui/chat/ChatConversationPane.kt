@@ -374,6 +374,7 @@ private fun ChatMainColumn(
             conversationId = activeConversation?.id,
             messages = activeConversation?.messages.orEmpty(),
             hasActiveChat = activeConversation != null,
+            keyboardVisible = keyboardVisible,
             manualSyncRefreshing = manualSyncRefreshing,
             onRefresh = onManualSync,
             onEditMessage = onEditMessage,

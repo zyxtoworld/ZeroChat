@@ -12,6 +12,7 @@ use std::{cell::RefCell, rc::Rc};
 
 pub(crate) fn composer(
     messages: &gtk::ListBox,
+    scroller: &gtk::ScrolledWindow,
     notice: &gtk::Label,
     locale: &str,
     compact: bool,
@@ -169,7 +170,7 @@ pub(crate) fn composer(
     connect_send_action(
         &send,
         messages,
-        &input,
+        scroller,
         notice,
         locale,
         compact,

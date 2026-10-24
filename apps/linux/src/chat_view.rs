@@ -1,6 +1,7 @@
 use crate::{
     LINUX_PROVIDER_MODEL_FEATURE_HINT_ID, LinuxAppState,
     chat_composer::composer,
+    chat_send_actions::schedule_scroll_messages_to_bottom,
     i18n::tr,
     messages::{message_display_text, message_row},
     models::MessageRole,
@@ -243,6 +244,7 @@ fn chat_page(
 
     page.append(&composer(
         &messages,
+        &scroller,
         &notice,
         locale,
         compact,
@@ -250,6 +252,7 @@ fn chat_page(
         state,
         focus_composer,
     ));
+    schedule_scroll_messages_to_bottom(&scroller);
     page
 }
 

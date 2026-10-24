@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
@@ -74,7 +73,7 @@ fun Composer(
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surface)
-            .then(if (keyboardVisible) Modifier.imePadding() else Modifier.navigationBarsPadding()),
+            .then(if (keyboardVisible) Modifier else Modifier.navigationBarsPadding()),
     ) {
         val compactKeyboardComposer = keyboardVisible && mode == ComposerMode.Chat
         val compactImageComposer = mode == ComposerMode.Image && maxWidth < 300.dp
