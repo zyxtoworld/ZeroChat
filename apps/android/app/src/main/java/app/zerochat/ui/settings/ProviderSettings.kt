@@ -189,14 +189,15 @@ fun ProviderSettings(
                                     apiKey = providerKey,
                                     proxyToken = proxyToken,
                                 )
-                                aiClient.listModels(
+                                val catalog = aiClient.listModelCatalog(
                                     provider = requestProvider,
                                     apiKey = providerKey,
                                     proxyToken = proxyToken,
                                 )
+                                catalog
                             }
-
-                            result.onSuccess { models ->
+                            result.onSuccess { catalog ->
+                                val models = catalog.models
                                 val expectedOwner = requestOwner ?: return@onSuccess
                                 var applied = false
                                 onSnapshotReduce { current ->
@@ -204,6 +205,7 @@ fun ProviderSettings(
                                         snapshot = current,
                                         providerId = provider.id,
                                         models = models,
+                                        modelMetadata = catalog.modelMetadata,
                                         now = nowMillis(),
                                         expectedOwner = expectedOwner,
                                         currentOwner = currentFetchOwner(current, provider.id),

@@ -270,7 +270,8 @@ fn run_model_fetch(
             button.set_sensitive(true);
             button.set_label(tr(&locale, "button.fetchModels"));
             match result {
-                Ok(models) => {
+                Ok(catalog) => {
+                    let models = catalog.models;
                     let Some(current_provider) = state.provider(&provider_id) else {
                         status.set_text("");
                         return;
@@ -295,10 +296,18 @@ fn run_model_fetch(
                     }
 
                     let mut preview_provider = provider.clone();
-                    apply_fetched_provider_models(&mut preview_provider, models.clone());
+                    apply_fetched_provider_models(
+                        &mut preview_provider,
+                        models.clone(),
+                        catalog.model_metadata.clone(),
+                    );
                     let mut applied_provider = None;
                     state.update_provider_config(&provider_id, |provider| {
-                        apply_fetched_provider_models(provider, models.clone());
+                        apply_fetched_provider_models(
+                            provider,
+                            models.clone(),
+                            catalog.model_metadata.clone(),
+                        );
                         applied_provider = Some(provider.clone());
                     });
                     let Some(applied_provider) = applied_provider else {

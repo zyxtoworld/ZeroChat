@@ -1,6 +1,7 @@
 package app.zerochat.sync
 
 import app.zerochat.data.AppSnapshot
+import app.zerochat.data.ModelMetadata
 import app.zerochat.data.ChatMessage
 import app.zerochat.data.Conversation
 import app.zerochat.data.MessageAttachment
@@ -18,7 +19,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.longOrNull
 
 internal class InvalidSyncVaultFormatException(cause: Throwable? = null) :
     IllegalArgumentException("Remote snapshot payload has invalid format.", cause)
@@ -58,8 +59,13 @@ private fun isCanonicalSyncVaultJson(element: JsonElement): Boolean {
     val providerKeys = secrets["providerKeys"] as? JsonObject ?: return false
 
     return providerKeys.values.all { it.isStringPrimitive() } &&
-        data["providers"].arrayMatches(PROVIDER_KEYS, PROVIDER_REQUIRED_KEYS) &&
-        data["conversations"].arrayMatches(CONVERSATION_KEYS, CONVERSATION_KEYS) { conversation ->
+        data["providers"].arrayMatches(PROVIDER_KEYS, PROVIDER_REQUIRED_KEYS) { provider ->
+            provider["modelMetadata"].modelMetadataMapMatches()
+        } &&
+        data["conversations"].arrayMatches(CONVERSATION_KEYS, CONVERSATION_REQUIRED_KEYS) { conversation ->
+            conversation["contextCompaction"].let { value ->
+                value == null || isCanonicalCompactionJson(value)
+            } &&
             conversation["messages"].arrayMatches(MESSAGE_KEYS, MESSAGE_REQUIRED_KEYS) { message ->
                 message["attachments"].optionalArrayMatches(ATTACHMENT_KEYS, ATTACHMENT_REQUIRED_KEYS) &&
                     message["queuedTextRequest"].optionalObjectMatches(
@@ -92,24 +98,108 @@ private fun isCanonicalAppSnapshot(data: AppSnapshot): Boolean =
         isCanonicalSkillSettings(data.skillSettings) &&
         isCanonicalSyncConfig(data.sync) &&
         isCanonicalPreferences(data.preferences)
+private fun JsonElement.isNonEmptyStringPrimitive(): Boolean =
+    this is JsonPrimitive && isString && content.isNotEmpty()
 
+private fun JsonElement.isNonNegativeInteger(): Boolean {
+    val value = this as? JsonPrimitive ?: return false
+    val number = value.longOrNull ?: return false
+    return number >= 0
+}
+
+private fun JsonElement.isPositiveInteger(): Boolean {
+    val value = this as? JsonPrimitive ?: return false
+    val number = value.longOrNull ?: return false
+    return number > 0
+}
+
+private fun isCanonicalModelMetadata(metadata: ModelMetadata): Boolean =
+    metadata.id.isNotEmpty() &&
+        metadata.source in MODEL_METADATA_SOURCES &&
+        (metadata.contextWindowTokens == null || metadata.contextWindowTokens > 0) &&
+        (metadata.maxInputTokens == null || metadata.maxInputTokens > 0) &&
+        (metadata.maxOutputTokens == null || metadata.maxOutputTokens > 0) &&
+        metadata.capabilities.all(PROVIDER_CAPABILITIES::contains) &&
+        metadata.capabilities.distinct().size == metadata.capabilities.size &&
+        (metadata.verifiedAt == null || metadata.verifiedAt >= 0)
+
+private fun JsonElement?.isNonEmptyStringArray(allowed: Set<String>? = null): Boolean {
+    val values = this as? JsonArray ?: return false
+    return values.all {
+        it.isNonEmptyStringPrimitive() &&
+            (allowed == null || (it as JsonPrimitive).content in allowed)
+    }
+}
+
+private fun isCanonicalModelMetadataJson(value: JsonElement): Boolean {
+    val metadata = value as? JsonObject ?: return false
+    if (!metadata.keys.all(MODEL_METADATA_KEYS::contains) ||
+        !metadata.keys.containsAll(MODEL_METADATA_REQUIRED_KEYS)) {
+        return false
+    }
+    return metadata["id"]?.isNonEmptyStringPrimitive() == true &&
+        (metadata["displayName"] == null || metadata["displayName"]?.isStringPrimitive() == true) &&
+        (metadata["contextWindowTokens"] == null || metadata["contextWindowTokens"]?.isPositiveInteger() == true) &&
+        (metadata["maxInputTokens"] == null || metadata["maxInputTokens"]?.isPositiveInteger() == true) &&
+        (metadata["maxOutputTokens"] == null || metadata["maxOutputTokens"]?.isPositiveInteger() == true) &&
+        (metadata["capabilities"] == null ||
+            metadata["capabilities"].isNonEmptyStringArray(PROVIDER_CAPABILITIES)) &&
+        metadata["source"]?.isNonEmptyStringPrimitive() == true &&
+        (metadata["source"]?.let { (it as JsonPrimitive).content } in MODEL_METADATA_SOURCES) &&
+        (metadata["verifiedAt"] == null || metadata["verifiedAt"]?.isNonNegativeInteger() == true)
+}
+
+private fun JsonElement?.modelMetadataMapMatches(): Boolean {
+    if (this == null) return true
+    val values = this as? JsonObject ?: return false
+    return values.values.all(::isCanonicalModelMetadataJson)
+}
+
+private fun isCanonicalCompactionJson(value: JsonElement): Boolean {
+    val compaction = value as? JsonObject ?: return false
+    if (!compaction.keys.all(COMPACTION_KEYS::contains) ||
+        !compaction.keys.containsAll(COMPACTION_REQUIRED_KEYS)) {
+        return false
+    }
+    return compaction["source"]?.isNonEmptyStringPrimitive() == true &&
+        (compaction["source"]?.let { (it as JsonPrimitive).content } in COMPACTION_SOURCES) &&
+        (compaction["summary"] == null || compaction["summary"]?.isStringPrimitive() == true) &&
+        (compaction["items"] == null || compaction["items"] is JsonArray) &&
+        compaction["compactedThroughMessageId"]?.isNonEmptyStringPrimitive() == true &&
+        compaction["model"]?.isNonEmptyStringPrimitive() == true &&
+        (compaction["inputTokens"] == null || compaction["inputTokens"]?.isPositiveInteger() == true) &&
+        compaction["createdAt"]?.isNonNegativeInteger() == true
+}
+
+private fun isCanonicalCompaction(compaction: app.zerochat.data.ConversationContextCompaction): Boolean =
+    compaction.source in COMPACTION_SOURCES &&
+        (compaction.source != "local-summary" || !compaction.summary.isNullOrEmpty()) &&
+        compaction.compactedThroughMessageId.isNotEmpty() &&
+        compaction.model.isNotEmpty() &&
+        (compaction.inputTokens == null || compaction.inputTokens > 0) &&
+        compaction.createdAt >= 0
+private fun isCanonicalConversation(conversation: Conversation): Boolean =
+    conversation.id.isNotEmpty() &&
+        conversation.providerId.isNotEmpty() &&
+        conversation.createdAt >= 0 &&
+        conversation.updatedAt >= 0 &&
+        (conversation.contextCompaction == null ||
+            isCanonicalCompaction(conversation.contextCompaction)) &&
+        conversation.messages.all(::isCanonicalMessage)
 private fun isCanonicalProvider(provider: ProviderConfig): Boolean =
     provider.id.isNotEmpty() &&
         provider.name.isNotEmpty() &&
         provider.baseUrl.isNotEmpty() &&
         provider.models.all { it.isNotEmpty() } &&
         provider.models.distinct().size == provider.models.size &&
+        provider.modelMetadata.all { (modelId, metadata) ->
+            modelId.isNotEmpty() && isCanonicalModelMetadata(metadata)
+        } &&
         provider.capabilities.all(PROVIDER_CAPABILITIES::contains) &&
         provider.capabilities.distinct().size == provider.capabilities.size &&
         provider.createdAt >= 0 &&
         provider.updatedAt >= 0
 
-private fun isCanonicalConversation(conversation: Conversation): Boolean =
-    conversation.id.isNotEmpty() &&
-        conversation.providerId.isNotEmpty() &&
-        conversation.createdAt >= 0 &&
-        conversation.updatedAt >= 0 &&
-        conversation.messages.all(::isCanonicalMessage)
 
 private fun isCanonicalMessage(message: ChatMessage): Boolean =
     message.id.isNotEmpty() &&
@@ -217,6 +307,37 @@ private val PROVIDER_CAPABILITIES = setOf(
     "video",
     "model-list",
 )
+private val MODEL_METADATA_SOURCES = setOf(
+    "models-dev",
+    "provider-api",
+    "provider-docs",
+    "manual",
+    "heuristic",
+)
+private val MODEL_METADATA_KEYS = setOf(
+    "id",
+    "displayName",
+    "contextWindowTokens",
+    "maxInputTokens",
+    "maxOutputTokens",
+    "capabilities",
+    "source",
+    "verifiedAt",
+)
+private val MODEL_METADATA_REQUIRED_KEYS = setOf("id", "source")
+private val COMPACTION_SOURCES = setOf("remote-compaction", "local-summary")
+private val COMPACTION_KEYS = setOf(
+    "source",
+    "summary",
+    "items",
+    "compactedThroughMessageId",
+    "model",
+    "inputTokens",
+    "createdAt",
+)
+private val COMPACTION_REQUIRED_KEYS = setOf("source", "compactedThroughMessageId", "model", "createdAt")
+
+
 private val SECRETS_KEYS = setOf("providerKeys")
 private val APP_DATA_KEYS = setOf(
     "version",
@@ -243,6 +364,7 @@ private val PROVIDER_KEYS = setOf(
     "moderationModel",
     "realtimeModel",
     "models",
+    "modelMetadata",
     "capabilities",
     "enabled",
     "needsApiKey",
@@ -261,7 +383,17 @@ private val PROVIDER_REQUIRED_KEYS = setOf(
     "createdAt",
     "updatedAt",
 )
-private val CONVERSATION_KEYS = setOf("id", "title", "providerId", "model", "messages", "createdAt", "updatedAt")
+private val CONVERSATION_KEYS = setOf(
+    "id",
+    "title",
+    "providerId",
+    "model",
+    "messages",
+    "contextCompaction",
+    "createdAt",
+    "updatedAt",
+)
+private val CONVERSATION_REQUIRED_KEYS = setOf("id", "title", "providerId", "model", "messages", "createdAt", "updatedAt")
 private val MESSAGE_KEYS = setOf(
     "id",
     "role",

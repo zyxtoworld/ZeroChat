@@ -132,6 +132,7 @@ internal fun modelSettingsApplyFetchedModels(
     provider: ProviderConfig,
     models: List<String>,
     now: Long,
+    modelMetadata: Map<String, app.zerochat.data.ModelMetadata> = emptyMap(),
 ): ProviderConfig {
     val fetchedModels = modelSettingsUniqueModels(models)
     val previousModels = modelSettingsUniqueModels(provider.models)
@@ -193,6 +194,7 @@ internal fun modelSettingsApplyFetchedModels(
             preferredModel = ::preferredRealtimeModel,
         ).takeIf { it.isNotBlank() },
         capabilities = capabilitiesForModelList(provider, nextModels),
+        modelMetadata = provider.modelMetadata + modelMetadata,
         updatedAt = now,
     )
 }
@@ -201,6 +203,7 @@ internal fun modelSettingsApplyFetchedModelsToSnapshot(
     snapshot: AppSnapshot,
     providerId: String,
     models: List<String>,
+    modelMetadata: Map<String, app.zerochat.data.ModelMetadata> = emptyMap(),
     now: Long,
     expectedOwner: ModelSettingsFetchOwner,
     currentOwner: ModelSettingsFetchOwner?,
@@ -212,7 +215,12 @@ internal fun modelSettingsApplyFetchedModelsToSnapshot(
     return snapshot.copy(
         providers = modelSettingsReplaceProvider(
             snapshot.providers,
-            modelSettingsApplyFetchedModels(provider, models, now),
+            modelSettingsApplyFetchedModels(
+                provider = provider,
+                models = models,
+                modelMetadata = modelMetadata,
+                now = now,
+            ),
         ),
     )
 }

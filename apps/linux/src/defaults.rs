@@ -593,6 +593,7 @@ fn provider(
         moderation_model: (id == "openai").then(|| OFFICIAL_OPENAI_MODERATION_MODEL.to_owned()),
         realtime_model: (id == "openai").then(|| OFFICIAL_OPENAI_REALTIME_MODEL.to_owned()),
         models,
+        model_metadata: std::collections::BTreeMap::new(),
         capabilities: capabilities
             .iter()
             .map(|capability| capability.to_string())

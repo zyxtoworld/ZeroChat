@@ -561,8 +561,8 @@ fn run_provider_connectivity_check(
                 return;
             }
             match result {
-                Ok(models) => {
-                    let count = models.len().to_string();
+                Ok(catalog) => {
+                    let count = catalog.models.len().to_string();
                     status.set_text(&replace_placeholders(
                         tr(&locale, "notice.providerConnectivityPassed"),
                         &[("{count}", &count)],
@@ -601,6 +601,7 @@ mod tests {
             moderation_model: None,
             realtime_model: None,
             models: models.into_iter().map(str::to_owned).collect(),
+            model_metadata: std::collections::BTreeMap::new(),
             capabilities: capabilities.into_iter().map(str::to_owned).collect(),
             enabled: true,
             needs_api_key: true,

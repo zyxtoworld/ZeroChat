@@ -1,4 +1,94 @@
 import Foundation
+public indirect enum JSONValue: Codable, Sendable, Equatable {
+    case array([JSONValue])
+    case boolean(Bool)
+    case number(Double)
+    case object([String: JSONValue])
+    case string(String)
+    case null
+
+    private struct CodingKey: Swift.CodingKey {
+        var stringValue: String
+        var intValue: Int?
+
+        init?(stringValue: String) {
+            self.stringValue = stringValue
+            intValue = nil
+        }
+
+        init?(intValue: Int) {
+            stringValue = String(intValue)
+            self.intValue = intValue
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        if let container = try? decoder.container(keyedBy: CodingKey.self) {
+            var values: [String: JSONValue] = [:]
+            for key in container.allKeys {
+                values[key.stringValue] = try container.decode(JSONValue.self, forKey: key)
+            }
+            self = .object(values)
+            return
+        }
+        if var container = try? decoder.unkeyedContainer() {
+            var values: [JSONValue] = []
+            while !container.isAtEnd {
+                values.append(try container.decode(JSONValue.self))
+            }
+            self = .array(values)
+            return
+        }
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .boolean(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else {
+            self = .string(try container.decode(String.self))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+        case let .array(values):
+            var container = encoder.unkeyedContainer()
+            for value in values {
+                try container.encode(value)
+            }
+        case let .boolean(value):
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        case let .number(value):
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        case let .object(values):
+            var container = encoder.container(keyedBy: CodingKey.self)
+            for (key, value) in values {
+                try container.encode(value, forKey: CodingKey(stringValue: key)!)
+            }
+        case let .string(value):
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        case .null:
+            var container = encoder.singleValueContainer()
+            try container.encodeNil()
+        }
+    }
+}
+
+public struct ConversationContextCompaction: Codable, Sendable, Equatable {
+    public var source: String
+    public var summary: String?
+    public var items: [JSONValue]?
+    public var compactedThroughMessageId: String
+    public var model: String
+    public var inputTokens: Int64?
+    public var createdAt: Int64
+}
+
 
 public enum ProviderKind: String, Codable, Sendable {
     case openAICompatible = "openai-compatible"
@@ -27,6 +117,7 @@ public struct ProviderConfig: Codable, Identifiable, Sendable {
     public var moderationModel: String?
     public var realtimeModel: String?
     public var models: [String]?
+    public var modelMetadata: [String: ModelMetadata]?
     public var capabilities: [String]?
     public var enabled: Bool
     public var needsApiKey: Bool
@@ -49,6 +140,7 @@ public struct ProviderConfig: Codable, Identifiable, Sendable {
         moderationModel: String? = nil,
         realtimeModel: String? = nil,
         models: [String]? = nil,
+        modelMetadata: [String: ModelMetadata]? = nil,
         capabilities: [String]? = nil,
         enabled: Bool,
         needsApiKey: Bool,
@@ -70,6 +162,7 @@ public struct ProviderConfig: Codable, Identifiable, Sendable {
         self.moderationModel = moderationModel
         self.realtimeModel = realtimeModel
         self.models = models
+        self.modelMetadata = modelMetadata
         self.capabilities = capabilities
         self.enabled = enabled
         self.needsApiKey = needsApiKey
@@ -175,6 +268,7 @@ public struct Conversation: Codable, Identifiable, Sendable {
     public var providerId: String
     public var model: String
     public var messages: [ChatMessage]
+    public var contextCompaction: ConversationContextCompaction?
     public var createdAt: Int64
     public var updatedAt: Int64
 
@@ -184,6 +278,7 @@ public struct Conversation: Codable, Identifiable, Sendable {
         providerId: String,
         model: String,
         messages: [ChatMessage],
+        contextCompaction: ConversationContextCompaction? = nil,
         createdAt: Int64,
         updatedAt: Int64
     ) {
@@ -192,6 +287,7 @@ public struct Conversation: Codable, Identifiable, Sendable {
         self.providerId = providerId
         self.model = model
         self.messages = messages
+        self.contextCompaction = contextCompaction
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }

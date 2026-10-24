@@ -11,6 +11,8 @@ import type {
 export interface ChatStreamOptions {
   apiKey: string
   contextMessageLimit: number
+  compactionItems?: unknown[]
+  maxInputTokens?: number
   messages: ChatMessage[]
   model: string
   onToken: (token: string) => void

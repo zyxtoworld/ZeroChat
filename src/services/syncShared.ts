@@ -140,6 +140,66 @@ function isUniqueNonEmptyStringArray(
   )
 }
 
+function isModelMetadataRecord(value: unknown): boolean {
+  if (!isPlainRecord(value)) return false
+
+  return (
+    hasOnlyKeys(value, [
+      'id',
+      'displayName',
+      'contextWindowTokens',
+      'maxInputTokens',
+      'maxOutputTokens',
+      'capabilities',
+      'source',
+      'verifiedAt',
+    ]) &&
+    isNonEmptyString(value.id) &&
+    isOptionalString(value.displayName) &&
+    isOptionalNumber(value.contextWindowTokens) &&
+    isOptionalNumber(value.maxInputTokens) &&
+    isOptionalNumber(value.maxOutputTokens) &&
+    (value.capabilities === undefined ||
+      isUniqueNonEmptyStringArray(value.capabilities, providerCapabilities)) &&
+    (value.source === 'models-dev' ||
+      value.source === 'provider-api' ||
+      value.source === 'provider-docs' ||
+      value.source === 'manual' ||
+      value.source === 'heuristic') &&
+    isOptionalNumber(value.verifiedAt)
+  )
+}
+
+function isModelMetadataMap(value: unknown): boolean {
+  return (
+    isPlainRecord(value) &&
+    Object.values(value).every(isModelMetadataRecord)
+  )
+}
+
+function isConversationContextCompaction(value: unknown): boolean {
+  if (!isPlainRecord(value)) return false
+
+  return (
+    hasOnlyKeys(value, [
+      'source',
+      'summary',
+      'items',
+      'compactedThroughMessageId',
+      'model',
+      'inputTokens',
+      'createdAt',
+    ]) &&
+    (value.source === 'remote-compaction' || value.source === 'local-summary') &&
+    isOptionalString(value.summary) &&
+    (value.items === undefined || Array.isArray(value.items)) &&
+    isNonEmptyString(value.compactedThroughMessageId) &&
+    isNonEmptyString(value.model) &&
+    isOptionalNumber(value.inputTokens) &&
+    isSafeNonNegativeInteger(value.createdAt)
+  )
+}
+
 function isProviderShape(value: unknown): boolean {
   if (!isPlainRecord(value)) {
     return false
@@ -161,6 +221,7 @@ function isProviderShape(value: unknown): boolean {
       'moderationModel',
       'realtimeModel',
       'models',
+      'modelMetadata',
       'capabilities',
       'enabled',
       'needsApiKey',
@@ -183,9 +244,9 @@ function isProviderShape(value: unknown): boolean {
     isOptionalString(value.audioTranscriptionModel) &&
     isOptionalString(value.embeddingModel) &&
     isOptionalString(value.moderationModel) &&
-    isOptionalString(value.realtimeModel) &&
     (value.models === undefined || isUniqueNonEmptyStringArray(value.models)) &&
-    (value.capabilities === undefined ||
+    (value.modelMetadata === undefined || isModelMetadataMap(value.modelMetadata)) &&
+(value.capabilities === undefined ||
       isUniqueNonEmptyStringArray(value.capabilities, providerCapabilities)) &&
     typeof value.enabled === 'boolean' &&
     typeof value.needsApiKey === 'boolean' &&
@@ -304,6 +365,7 @@ function isConversationShape(value: unknown): boolean {
       'providerId',
       'model',
       'messages',
+      'contextCompaction',
       'createdAt',
       'updatedAt',
     ]) &&
@@ -314,6 +376,8 @@ function isConversationShape(value: unknown): boolean {
     Array.isArray(value.messages) &&
     value.messages.every((message) => isChatMessageShape(message, true)) &&
     hasUniqueIds(value.messages as Array<{ id: string }>) &&
+    (value.contextCompaction === undefined ||
+      isConversationContextCompaction(value.contextCompaction)) &&
     isSafeNonNegativeInteger(value.createdAt) &&
     isSafeNonNegativeInteger(value.updatedAt)
   )

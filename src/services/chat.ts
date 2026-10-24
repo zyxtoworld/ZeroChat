@@ -61,6 +61,8 @@ interface StreamOptions {
   model: string
   messages: ChatMessage[]
   contextMessageLimit: number
+  compactionItems?: unknown[]
+  maxInputTokens?: number
   signal: AbortSignal
   onToken: (token: string) => void
 }
@@ -370,9 +372,81 @@ function consumeProviderSseEvents(
   return { remainder, stopped: false }
 }
 
+const CONTEXT_TRUNCATION_MARKER = '\n\n[Earlier content omitted for context size.]\n\n'
+
+function approximateTokens(content: string): number {
+  return Math.ceil(content.length / 4)
+}
+
+function trimContextContent(content: string, maxTokens: number): string {
+  const maxChars = Math.max(256, maxTokens * 4)
+  if (content.length <= maxChars) return content
+
+  const available = Math.max(0, maxChars - CONTEXT_TRUNCATION_MARKER.length)
+  const head = Math.floor(available * 0.66)
+  return (
+    content.slice(0, head) +
+    CONTEXT_TRUNCATION_MARKER +
+    content.slice(-(available - head))
+  )
+}
+
+function trimContextMessage(message: ChatMessage, maxTokens: number): ChatMessage {
+  const content = trimContextContent(message.content, maxTokens)
+  return content === message.content ? message : { ...message, content }
+}
+
+function applyInputTokenBudget(
+  messages: ChatMessage[],
+  maxInputTokens: number | undefined,
+): ChatMessage[] {
+  if (!maxInputTokens || !Number.isFinite(maxInputTokens) || maxInputTokens <= 0) {
+    return messages
+  }
+
+  const systemMessages = messages.filter(
+    (message) => message.role === 'system' && message.content.trim(),
+  )
+  const chatMessages = messages.filter((message) => message.role !== 'system')
+  const systemBudget = Math.floor(maxInputTokens / 3)
+  const boundedSystem: ChatMessage[] = []
+  let remainingSystem = systemBudget
+
+  for (const message of systemMessages) {
+    const tokens = approximateTokens(message.content)
+    if (tokens <= remainingSystem) {
+      boundedSystem.push(message)
+      remainingSystem -= tokens
+    } else if (remainingSystem > 0) {
+      boundedSystem.push(trimContextMessage(message, remainingSystem))
+      break
+    }
+  }
+
+  let remaining = Math.max(0, maxInputTokens - boundedSystem.reduce(
+    (total, message) => total + approximateTokens(message.content),
+    0,
+  ))
+  const boundedChat: ChatMessage[] = []
+
+  for (const message of [...chatMessages].reverse()) {
+    const tokens = approximateTokens(message.content)
+    if (tokens <= remaining) {
+      boundedChat.unshift(message)
+      remaining -= tokens
+      continue
+    }
+    if (remaining > 0) boundedChat.unshift(trimContextMessage(message, remaining))
+    break
+  }
+
+  return [...boundedSystem, ...boundedChat]
+}
+
 export function selectContextMessages(
   messages: ChatMessage[],
   contextMessageLimit: number,
+  maxInputTokens?: number,
 ): ChatMessage[] {
   const normalizedLimit = normalizeChatContextMessageLimit(contextMessageLimit)
   const systemMessages = messages.filter(
@@ -386,7 +460,10 @@ export function selectContextMessages(
     chatMessages.shift()
   }
 
-  return [...systemMessages, ...chatMessages]
+  return applyInputTokenBudget(
+    [...systemMessages, ...chatMessages],
+    maxInputTokens,
+  )
 }
 
 function shouldTryResponsesImageFallback(error: unknown): boolean {
@@ -1143,6 +1220,8 @@ export async function streamChat(options: StreamOptions): Promise<void> {
     model,
     messages,
     contextMessageLimit,
+    compactionItems,
+    maxInputTokens,
     signal,
     onToken,
   } = options
@@ -1165,12 +1244,13 @@ export async function streamChat(options: StreamOptions): Promise<void> {
     throw new Error(rt('error.modelRequired'))
   }
 
-  const contextMessages = selectContextMessages(messages, contextMessageLimit)
+  const contextMessages = selectContextMessages(messages, contextMessageLimit, maxInputTokens)
 
   if (provider.kind === 'openai-responses') {
     const responsesBody = buildProviderResponsesChatBody({
       model,
       messages: contextMessages,
+      inputItems: compactionItems,
     })
     let usedWebSocket = false
 

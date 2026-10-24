@@ -685,6 +685,7 @@ mod tests {
             moderation_model: None,
             realtime_model: None,
             models: vec!["model".to_owned()],
+            model_metadata: std::collections::BTreeMap::new(),
             capabilities: vec!["chat".to_owned()],
             enabled: true,
             needs_api_key: true,

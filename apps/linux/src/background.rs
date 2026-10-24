@@ -2,7 +2,7 @@ use crate::{
     STREAMING_UI_FRAME_MS,
     ai::{
         AiClient, AiEmptyResponseFailure, AiHttpFailure, AiTimeoutFailure, GeneratedImage,
-        ImageUpload,
+        ImageUpload, ModelCatalogResult,
     },
     chat_retry_policy::{ChatRequestFailureKind, should_retry_chat_request},
     models::{ChatMessage, ProviderConfig},
@@ -415,7 +415,7 @@ pub(crate) fn spawn_model_list_request(
     provider: ProviderConfig,
     api_key: String,
     access_key: String,
-    sender: mpsc::Sender<Result<Vec<String>, String>>,
+    sender: mpsc::Sender<Result<ModelCatalogResult, String>>,
 ) {
     spawn_background_task(
         "zerochat-ai-models",
@@ -429,7 +429,7 @@ pub(crate) fn spawn_model_list_request(
                     runtime
                         .block_on(async {
                             AiClient::new()?
-                                .list_models(&provider, &api_key, &access_key)
+                                .list_model_catalog(&provider, &api_key, &access_key)
                                 .await
                         })
                         .map_err(|error| error.to_string())

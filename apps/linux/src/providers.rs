@@ -1144,7 +1144,11 @@ pub(crate) fn apply_configured_provider_models(provider: &mut ProviderConfig, mo
     provider.capabilities = capabilities_for_model_list(provider, &provider.models);
 }
 
-pub(crate) fn apply_fetched_provider_models(provider: &mut ProviderConfig, models: Vec<String>) {
+pub(crate) fn apply_fetched_provider_models(
+    provider: &mut ProviderConfig,
+    models: Vec<String>,
+    model_metadata: std::collections::BTreeMap<String, crate::models::ModelMetadata>,
+) {
     let next_models = unique_models(models);
 
     if next_models.is_empty() {
@@ -1305,6 +1309,7 @@ pub(crate) fn apply_fetched_provider_models(provider: &mut ProviderConfig, model
     provider.realtime_model = (!realtime_model.is_empty()).then_some(realtime_model);
     let capabilities = capabilities_for_model_list(provider, &provider.models);
     provider.capabilities = capabilities;
+    provider.model_metadata.extend(model_metadata);
 }
 
 fn preferred_fetched_model(
@@ -1564,6 +1569,7 @@ mod tests {
             moderation_model: None,
             realtime_model: None,
             models: models.iter().map(|model| (*model).to_owned()).collect(),
+            model_metadata: std::collections::BTreeMap::new(),
             capabilities: vec!["chat".to_owned(), "model-list".to_owned()],
             enabled: true,
             needs_api_key: true,
@@ -1701,6 +1707,7 @@ mod tests {
                 "gpt-realtime".to_owned(),
                 "omni-moderation-latest".to_owned(),
             ],
+            std::collections::BTreeMap::new(),
         );
 
         assert_eq!(
@@ -1766,6 +1773,7 @@ mod tests {
                 "omni-moderation-latest".to_owned(),
                 "gpt-realtime-2".to_owned(),
             ],
+            std::collections::BTreeMap::new(),
         );
 
         assert_eq!(provider.model, "gpt-5.5");
@@ -2184,6 +2192,7 @@ mod tests {
                 "gpt-image-1".to_owned(),
                 "gpt-image-2".to_owned(),
             ],
+            std::collections::BTreeMap::new(),
         );
 
         assert_eq!(provider.model, "gpt-5.5");
@@ -2206,6 +2215,7 @@ mod tests {
                 "gpt-image-2".to_owned(),
                 "gpt-image-1".to_owned(),
             ],
+            std::collections::BTreeMap::new(),
         );
 
         assert_eq!(provider.model, "gpt-5.4-mini");

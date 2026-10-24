@@ -202,25 +202,76 @@ fn capability_endpoint(provider: &ProviderConfig, path: &str) -> Result<String> 
     Ok(format!("{}{}", provider_api_root(provider)?, path))
 }
 
+pub(crate) fn model_context_char_budget(provider: &ProviderConfig, model: &str) -> usize {
+    let metadata = provider.model_metadata.get(model.trim()).or_else(|| {
+        provider
+            .model_metadata
+            .values()
+            .find(|metadata| metadata.id == model.trim())
+    });
+    let Some(metadata) = metadata else {
+        return 48_000;
+    };
+    let context_tokens = metadata
+        .max_input_tokens
+        .or(metadata.context_window_tokens)
+        .unwrap_or(12_000)
+        .max(1_024);
+    let reserved_output = metadata
+        .max_output_tokens
+        .unwrap_or_else(|| (context_tokens / 5).min(8_192));
+    (context_tokens.saturating_sub(reserved_output).max(1_024) as usize)
+        .saturating_mul(4)
+        .clamp(48_000, 256_000)
+}
+
 pub(crate) fn select_context_messages(
     messages: &[ChatMessage],
     context_message_limit: i32,
 ) -> Vec<&ChatMessage> {
+    select_context_messages_with_char_budget(messages, context_message_limit, 48_000)
+}
+
+pub(crate) fn select_context_messages_with_char_budget(
+    messages: &[ChatMessage],
+    context_message_limit: i32,
+    max_context_chars: usize,
+) -> Vec<&ChatMessage> {
     let normalized_limit = normalize_chat_context_message_limit(context_message_limit);
-    let mut selected = messages
+    let system_messages = messages
         .iter()
         .filter(|message| {
             matches!(&message.role, crate::models::MessageRole::System)
                 && !message.content.trim().is_empty()
         })
         .collect::<Vec<_>>();
-    let chat_messages = messages
+    let system_chars = system_messages
+        .iter()
+        .map(|message| message.content.len())
+        .sum::<usize>();
+    let remaining_chars = max_context_chars.saturating_sub(system_chars);
+    let mut chat_messages = messages
         .iter()
         .filter(|message| !matches!(&message.role, crate::models::MessageRole::System))
         .collect::<Vec<_>>();
     let start = chat_messages.len().saturating_sub(normalized_limit);
-
-    selected.extend(chat_messages.into_iter().skip(start));
+    chat_messages.drain(..start);
+    let mut used_chars = 0usize;
+    let mut selected_chat = Vec::with_capacity(chat_messages.len());
+    for message in chat_messages.into_iter().rev() {
+        let message_chars = message
+            .content
+            .len()
+            .saturating_add(message.attachments.len() * 2_048);
+        if !selected_chat.is_empty() && used_chars.saturating_add(message_chars) > remaining_chars {
+            break;
+        }
+        used_chars = used_chars.saturating_add(message_chars);
+        selected_chat.push(message);
+    }
+    selected_chat.reverse();
+    let mut selected = system_messages;
+    selected.extend(selected_chat);
     selected
 }
 
@@ -2492,6 +2543,7 @@ mod tests {
             moderation_model: None,
             realtime_model: None,
             models: vec!["gpt-5.5".to_owned(), "gpt-image-2".to_owned()],
+            model_metadata: std::collections::BTreeMap::new(),
             capabilities: vec!["chat".to_owned(), "image-generation".to_owned()],
             enabled: true,
             needs_api_key: true,

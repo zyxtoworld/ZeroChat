@@ -325,6 +325,7 @@ mod tests {
             provider_id: "openai".to_owned(),
             model: "gpt-5.5".to_owned(),
             messages: Vec::new(),
+            context_compaction: None,
             created_at: 10,
             updated_at: 10,
         });

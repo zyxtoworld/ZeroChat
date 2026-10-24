@@ -86,6 +86,10 @@ function mergeProvider(remote: ProviderConfig, local: ProviderConfig): ProviderC
     base.imageModel,
     other.imageModel,
   ])
+  const modelMetadata = {
+    ...(other.modelMetadata ?? {}),
+    ...(base.modelMetadata ?? {}),
+  }
   const capabilities = uniqueStrings([
     ...(base.capabilities ?? []),
     ...(other.capabilities ?? []),
@@ -96,6 +100,7 @@ function mergeProvider(remote: ProviderConfig, local: ProviderConfig): ProviderC
     model: base.model || other.model,
     imageModel: base.imageModel || other.imageModel,
     models,
+    modelMetadata,
     capabilities,
     custom: Boolean(base.custom || other.custom) || undefined,
     createdAt: Math.min(base.createdAt, other.createdAt),

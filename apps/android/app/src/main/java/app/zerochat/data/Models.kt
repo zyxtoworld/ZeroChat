@@ -2,6 +2,7 @@ package app.zerochat.data
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
+import kotlinx.serialization.json.JsonElement
 
 @Serializable
 enum class ProviderKind {
@@ -24,6 +25,18 @@ enum class ProviderModelCapability {
 }
 
 @Serializable
+data class ModelMetadata(
+    val id: String,
+    val displayName: String? = null,
+    val contextWindowTokens: Long? = null,
+    val maxInputTokens: Long? = null,
+    val maxOutputTokens: Long? = null,
+    val capabilities: List<String> = emptyList(),
+    val source: String = "provider-api",
+    val verifiedAt: Long? = null,
+)
+
+@Serializable
 enum class MessageRole {
     @SerialName("system")
     System,
@@ -32,7 +45,6 @@ enum class MessageRole {
     @SerialName("assistant")
     Assistant,
 }
-
 @Serializable
 data class ProviderConfig(
     val id: String,
@@ -49,6 +61,7 @@ data class ProviderConfig(
     val moderationModel: String? = null,
     val realtimeModel: String? = null,
     val models: List<String> = emptyList(),
+    val modelMetadata: Map<String, ModelMetadata> = emptyMap(),
     val capabilities: List<String> = emptyList(),
     val enabled: Boolean,
     val needsApiKey: Boolean,
@@ -97,6 +110,17 @@ data class ChatMessage(
 )
 
 @Serializable
+data class ConversationContextCompaction(
+    val source: String,
+    val summary: String? = null,
+    val items: List<JsonElement>? = null,
+    val compactedThroughMessageId: String,
+    val model: String,
+    val inputTokens: Long? = null,
+    val createdAt: Long,
+)
+
+@Serializable
 data class Conversation(
     val id: String,
     val title: String,
@@ -105,6 +129,7 @@ data class Conversation(
     val messages: List<ChatMessage>,
     val createdAt: Long,
     val updatedAt: Long,
+    val contextCompaction: ConversationContextCompaction? = null,
 )
 
 @Serializable

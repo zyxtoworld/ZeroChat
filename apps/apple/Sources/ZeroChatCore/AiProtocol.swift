@@ -3,6 +3,9 @@ import Foundation
 private let defaultChatContextMessageLimit = 24
 private let minChatContextMessageLimit = 4
 private let maxChatContextMessageLimit = 200
+private let defaultChatContextChars = 48_000
+private let maxChatContextChars = 256_000
+private let maxChatContextMessageChars = 8_000
 
 private let audioMimeByExtension: [String: String] = [
     "aac": "audio/aac",
@@ -242,7 +245,11 @@ func chatRequestBody(
     contextMessageLimit: Int,
     stream: Bool
 ) throws -> Data {
-    let contextMessages = selectContextMessages(messages, contextMessageLimit: contextMessageLimit)
+    let contextMessages = selectContextMessages(
+        messages,
+        contextMessageLimit: contextMessageLimit,
+        maxContextChars: modelContextCharBudget(provider: provider, model: model),
+    )
     let systemContent = contextMessages
         .filter { $0.role == .system }
         .map { $0.content.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -1255,21 +1262,84 @@ private func normalizeChatContextMessageLimit(_ value: Int) -> Int {
     let candidate = value <= 0 ? defaultChatContextMessageLimit : value
     return min(max(candidate, minChatContextMessageLimit), maxChatContextMessageLimit)
 }
+private func modelContextCharBudget(provider: ProviderConfig, model: String) -> Int {
+    let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+    let metadata = provider.modelMetadata?[trimmedModel] ??
+        provider.modelMetadata?.values.first { $0.id == trimmedModel }
+    guard let metadata else { return defaultChatContextChars }
+    let contextTokens = max(metadata.maxInputTokens ?? metadata.contextWindowTokens ?? 12_000, 1_024)
+    let reservedOutput = metadata.maxOutputTokens ?? min(contextTokens / 5, 8_192)
+    let usableTokens = max(contextTokens - reservedOutput, 1_024)
+    return min(
+        max(Int(usableTokens.saturatingMultiplying(by: 4)), defaultChatContextChars),
+        maxChatContextChars,
+    )
+}
+
+private extension Int64 {
+    func saturatingMultiplying(by multiplier: Int64) -> Int64 {
+        multipliedReportingOverflow(by: multiplier).overflow ? Int64.max : self * multiplier
+    }
+}
+
 
 private func selectContextMessages(
     _ messages: [ChatMessage],
-    contextMessageLimit: Int
+    contextMessageLimit: Int,
+    maxContextChars: Int = defaultChatContextChars
 ) -> [ChatMessage] {
     let normalizedLimit = normalizeChatContextMessageLimit(contextMessageLimit)
-    let systemMessages = messages.filter {
-        $0.role == .system &&
-            !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
+    let systemMessages = messages
+        .filter {
+            $0.role == .system &&
+                !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        .map { trimContextMessage($0, maxChars: maxChatContextMessageChars) }
+    let systemBudget = maxContextChars / 3
+    let boundedSystemMessages = takeContextBudget(systemMessages, budget: systemBudget)
     let chatMessages = messages
         .filter { $0.role != .system }
         .suffix(normalizedLimit)
+        .map { trimContextMessage($0, maxChars: maxChatContextMessageChars) }
+    let chatBudget = max(
+        maxContextChars - boundedSystemMessages.reduce(0) { $0 + $1.content.count },
+        0,
+    )
+    return boundedSystemMessages + takeContextBudget(Array(chatMessages), budget: chatBudget)
+}
 
-    return systemMessages + Array(chatMessages)
+private func trimContextMessage(_ message: ChatMessage, maxChars: Int) -> ChatMessage {
+    guard message.content.count > maxChars else { return message }
+    let marker = "\n\n[Earlier content omitted for context size.]\n\n"
+    let available = max(maxChars - marker.count, 0)
+    let head = available * 2 / 3
+    let tail = available - head
+    return ChatMessage(
+        id: message.id,
+        role: message.role,
+        content: String(message.content.prefix(head)) + marker + String(message.content.suffix(tail)),
+        createdAt: message.createdAt,
+        status: message.status,
+        error: message.error,
+        attachments: message.attachments,
+        queuedTextRequest: message.queuedTextRequest,
+        offlineReplayClaim: message.offlineReplayClaim,
+    )
+}
+
+private func takeContextBudget(_ messages: [ChatMessage], budget: Int) -> [ChatMessage] {
+    guard budget > 0 else { return [] }
+    var selected: [ChatMessage] = []
+    var remaining = budget
+    for message in messages.reversed() {
+        if selected.isEmpty || message.content.count <= remaining {
+            selected.insert(message, at: 0)
+            remaining = max(remaining - message.content.count, 0)
+        } else {
+            break
+        }
+    }
+    return selected
 }
 
 private func readModelId(_ value: Any) -> String? {

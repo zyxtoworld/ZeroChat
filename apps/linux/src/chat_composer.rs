@@ -171,6 +171,7 @@ pub(crate) fn composer(
         &send,
         messages,
         scroller,
+        &input,
         notice,
         locale,
         compact,

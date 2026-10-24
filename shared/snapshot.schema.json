@@ -116,6 +116,12 @@
           },
           "uniqueItems": true
         },
+        "modelMetadata": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/modelMetadata"
+          }
+        },
         "capabilities": {
           "type": "array",
           "items": {
@@ -187,11 +193,98 @@
             "$ref": "#/$defs/message"
           }
         },
+        "contextCompaction": {
+          "$ref": "#/$defs/contextCompaction"
+        },
         "createdAt": {
           "type": "integer",
           "minimum": 0
         },
         "updatedAt": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "modelMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "source"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "contextWindowTokens": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "maxInputTokens": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "chat",
+              "vision",
+              "tools",
+              "image-generation",
+              "image-editing",
+              "audio",
+              "realtime",
+              "embeddings",
+              "moderation",
+              "video",
+              "model-list"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "source": {
+          "enum": ["models-dev", "provider-api", "provider-docs", "manual", "heuristic"]
+        },
+        "verifiedAt": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "contextCompaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "compactedThroughMessageId", "model", "createdAt"],
+      "properties": {
+        "source": {
+          "enum": ["remote-compaction", "local-summary"]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "items": {
+          "type": "array"
+        },
+        "compactedThroughMessageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputTokens": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "createdAt": {
           "type": "integer",
           "minimum": 0
         }

@@ -999,7 +999,7 @@ namespace ZeroChat
             int contextMessageLimit)
         {
             auto body = winrt::Windows::Data::Json::JsonObject::Parse(
-                BuildRequestBody(provider.kind, model, messages, contextMessageLimit, true));
+                BuildRequestBody(provider, model, messages, contextMessageLimit, true));
             body.Remove(L"stream");
             body.Insert(L"type", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"response.create"));
             return body.Stringify();
@@ -1316,7 +1316,7 @@ namespace ZeroChat
             ApplyProxyHeaders(request, provider, proxyToken, L"chat");
             request.Headers().Accept().Append(HttpMediaTypeWithQualityHeaderValue(L"text/event-stream"));
             request.Content(HttpStringContent(
-                BuildRequestBody(provider.kind, model, messages, contextMessageLimit, true),
+                BuildRequestBody(provider, model, messages, contextMessageLimit, true),
                 winrt::Windows::Storage::Streams::UnicodeEncoding::Utf8,
                 L"application/json"));
             return request;

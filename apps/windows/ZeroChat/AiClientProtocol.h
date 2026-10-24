@@ -28,6 +28,12 @@ namespace ZeroChat
         std::wstring const& model);
 
     winrt::hstring BuildRequestBody(
+        ProviderConfig const& provider,
+        std::wstring const& model,
+        std::vector<ChatMessage> const& messages,
+        int contextMessageLimit,
+        bool stream = false);
+    winrt::hstring BuildRequestBody(
         ProviderKind kind,
         std::wstring const& model,
         std::vector<ChatMessage> const& messages,

@@ -1,10 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
-
 namespace ZeroChat
 {
     enum class ProviderKind
@@ -19,6 +19,29 @@ namespace ZeroChat
         System,
         User,
         Assistant
+    };
+
+    struct ModelMetadata
+    {
+        std::wstring id;
+        std::wstring displayName;
+        std::optional<int64_t> contextWindowTokens;
+        std::optional<int64_t> maxInputTokens;
+        std::optional<int64_t> maxOutputTokens;
+        std::vector<std::wstring> capabilities;
+        std::wstring source;
+        std::optional<int64_t> verifiedAt;
+    };
+
+    struct ConversationContextCompaction
+    {
+        std::wstring source;
+        std::wstring summary;
+        std::wstring itemsJson;
+        std::wstring compactedThroughMessageId;
+        std::wstring model;
+        std::optional<int64_t> inputTokens;
+        int64_t createdAt{ 0 };
     };
 
     struct ProviderConfig
@@ -37,6 +60,7 @@ namespace ZeroChat
         std::wstring moderationModel;
         std::wstring realtimeModel;
         std::vector<std::wstring> models;
+        std::map<std::wstring, ModelMetadata> modelMetadata;
         std::vector<std::wstring> capabilities;
         bool enabled{ true };
         bool needsApiKey{ true };
@@ -113,6 +137,7 @@ namespace ZeroChat
         std::wstring providerId;
         std::wstring model;
         std::vector<ChatMessage> messages;
+        std::optional<ConversationContextCompaction> contextCompaction;
         int64_t createdAt{ 0 };
         int64_t updatedAt{ 0 };
     };

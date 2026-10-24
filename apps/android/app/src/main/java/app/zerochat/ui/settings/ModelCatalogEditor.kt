@@ -101,13 +101,15 @@ internal fun ModelCatalogEditor(
                                 apiKey = providerKey,
                                 proxyToken = proxyToken,
                             )
-                            aiClient.listModels(
+                            val catalog = aiClient.listModelCatalog(
                                 provider = requestProvider,
                                 apiKey = providerKey,
                                 proxyToken = proxyToken,
                             )
+                            catalog
                         }
-                        result.onSuccess { models ->
+                        result.onSuccess { catalog ->
+                            val models = catalog.models
                             var applied = false
                             onSnapshotReduce { current ->
                                 val currentProvider = current.providers.firstOrNull { it.id == provider.id }
@@ -129,15 +131,19 @@ internal fun ModelCatalogEditor(
                                 ) {
                                     return@onSnapshotReduce current
                                 }
+                                val fetchedProvider = modelSettingsApplyFetchedModels(
+                                    currentProvider,
+                                    models,
+                                    nowMillis(),
+                                )
+                                val updatedProvider = fetchedProvider.copy(
+                                    modelMetadata = fetchedProvider.modelMetadata + catalog.modelMetadata,
+                                )
                                 applied = true
                                 current.copy(
                                     providers = modelSettingsReplaceProvider(
                                         current.providers,
-                                        modelSettingsApplyFetchedModels(
-                                            currentProvider,
-                                            models,
-                                            nowMillis(),
-                                        ),
+                                        updatedProvider,
                                     ),
                                 )
                             }

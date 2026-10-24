@@ -247,6 +247,7 @@ mod tests {
                 provider_id: "openai".to_owned(),
                 model: "gpt-4o".to_owned(),
                 messages,
+                context_compaction: None,
                 created_at: 1,
                 updated_at: 1,
             }],

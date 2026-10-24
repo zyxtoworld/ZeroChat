@@ -20,6 +20,7 @@ interface ProviderRequestAuth {
 interface ProviderChatBodyOptions {
   model: string
   messages: ChatMessage[]
+  inputItems?: unknown[]
 }
 
 type OpenAIChatContent =
@@ -759,13 +760,17 @@ export function buildProviderChatHeaders({
 export function buildProviderResponsesChatBody({
   model,
   messages,
+  inputItems,
 }: ProviderChatBodyOptions) {
   return {
     model: model.trim(),
-    input: messages.map((message) => ({
-      role: message.role,
-      content: buildResponsesChatContent(message),
-    })),
+    input: [
+      ...(inputItems ?? []),
+      ...messages.map((message) => ({
+        role: message.role,
+        content: buildResponsesChatContent(message),
+      })),
+    ],
     stream: true,
     store: false,
     temperature: 0.7,

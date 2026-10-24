@@ -566,13 +566,31 @@ namespace ZeroChat
         return std::clamp(limit, MinChatContextMessageLimit, MaxChatContextMessageLimit);
     }
 
+    size_t ModelContextCharBudget(ProviderConfig const& provider, std::wstring const& model)
+    {
+        auto metadata = provider.modelMetadata.find(model);
+        if (metadata == provider.modelMetadata.end())
+        {
+            return 48000;
+        }
+        auto const& value = metadata->second;
+        auto contextTokens = value.maxInputTokens.value_or(value.contextWindowTokens.value_or(12000));
+        contextTokens = (std::max)(contextTokens, int64_t{ 1024 });
+        auto reservedOutput = value.maxOutputTokens.value_or((std::min)(contextTokens / 5, int64_t{ 8192 }));
+        auto usableTokens = (std::max)(contextTokens - reservedOutput, int64_t{ 1024 });
+        auto chars = usableTokens > 64000 ? int64_t{ 256000 } : usableTokens * 4;
+        return static_cast<size_t>((std::clamp)(chars, int64_t{ 48000 }, int64_t{ 256000 }));
+    }
+
     std::vector<ChatMessage> SelectContextMessages(
         std::vector<ChatMessage> const& messages,
-        int contextMessageLimit)
+        int contextMessageLimit,
+        size_t maxContextChars)
     {
         std::vector<ChatMessage> selected;
         std::vector<ChatMessage> chatMessages;
         auto normalizedLimit = NormalizeChatContextMessageLimit(contextMessageLimit);
+        size_t systemChars = 0;
 
         for (auto const& message : messages)
         {
@@ -581,6 +599,7 @@ namespace ZeroChat
                 if (HasText(message.content))
                 {
                     selected.push_back(message);
+                    systemChars += message.content.size();
                 }
             }
             else
@@ -592,8 +611,32 @@ namespace ZeroChat
         auto start = chatMessages.size() > static_cast<size_t>(normalizedLimit)
             ? chatMessages.size() - static_cast<size_t>(normalizedLimit)
             : 0;
-        selected.insert(selected.end(), chatMessages.begin() + start, chatMessages.end());
+        chatMessages.erase(chatMessages.begin(), chatMessages.begin() + start);
+        auto remainingChars = maxContextChars > systemChars
+            ? maxContextChars - systemChars
+            : 0;
+        std::vector<ChatMessage> bounded;
+        size_t usedChars = 0;
+        for (auto iterator = chatMessages.rbegin(); iterator != chatMessages.rend(); ++iterator)
+        {
+            auto messageChars = iterator->content.size() + iterator->attachments.size() * 2048;
+            if (!bounded.empty() && usedChars + messageChars > remainingChars)
+            {
+                break;
+            }
+            bounded.push_back(*iterator);
+            usedChars += messageChars;
+        }
+        std::reverse(bounded.begin(), bounded.end());
+        selected.insert(selected.end(), bounded.begin(), bounded.end());
         return selected;
+    }
+
+    std::vector<ChatMessage> SelectContextMessages(
+        std::vector<ChatMessage> const& messages,
+        int contextMessageLimit)
+    {
+        return SelectContextMessages(messages, contextMessageLimit, 48000);
     }
 
     std::wstring Trim(std::wstring value)
@@ -1009,21 +1052,24 @@ namespace ZeroChat
     }
 
     hstring BuildRequestBody(
-        ProviderKind kind,
+        ProviderConfig const& provider,
         std::wstring const& model,
         std::vector<ChatMessage> const& messages,
         int contextMessageLimit,
         bool stream)
     {
-        auto contextMessages = SelectContextMessages(messages, contextMessageLimit);
+        auto contextMessages = SelectContextMessages(
+            messages,
+            contextMessageLimit,
+            ModelContextCharBudget(provider, model));
         JsonObject body;
         body.Insert(L"model", JsonValue::CreateStringValue(model));
         body.Insert(L"stream", JsonValue::CreateBooleanValue(stream));
 
-        switch (kind)
+        switch (provider.kind)
         {
         case ProviderKind::OpenAIResponses:
-            body.Insert(L"input", MessageArray(contextMessages, true, kind));
+            body.Insert(L"input", MessageArray(contextMessages, true, provider.kind));
             body.Insert(L"store", JsonValue::CreateBooleanValue(false));
             body.Insert(L"temperature", JsonValue::CreateNumberValue(0.7));
             break;
@@ -1032,17 +1078,29 @@ namespace ZeroChat
             {
                 body.Insert(L"system", JsonValue::CreateStringValue(system));
             }
-            body.Insert(L"messages", MessageArray(contextMessages, false, kind));
+            body.Insert(L"messages", MessageArray(contextMessages, false, provider.kind));
             body.Insert(L"max_tokens", JsonValue::CreateNumberValue(4096));
             break;
         case ProviderKind::OpenAICompatible:
         default:
-            body.Insert(L"messages", MessageArray(contextMessages, true, kind));
+            body.Insert(L"messages", MessageArray(contextMessages, true, provider.kind));
             body.Insert(L"temperature", JsonValue::CreateNumberValue(0.7));
             break;
         }
 
         return body.Stringify();
+    }
+
+    hstring BuildRequestBody(
+        ProviderKind kind,
+        std::wstring const& model,
+        std::vector<ChatMessage> const& messages,
+        int contextMessageLimit,
+        bool stream)
+    {
+        ProviderConfig provider;
+        provider.kind = kind;
+        return BuildRequestBody(provider, model, messages, contextMessageLimit, stream);
     }
 
     bool ProviderUsesProxy(ProviderConfig const& provider)

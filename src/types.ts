@@ -15,6 +15,26 @@ export type ProviderCapability =
   | 'moderation'
   | 'video'
   | 'model-list'
+export interface ModelMetadata {
+  id: string
+  displayName?: string
+  contextWindowTokens?: number
+  maxInputTokens?: number
+  maxOutputTokens?: number
+  capabilities?: ProviderCapability[]
+  source: 'models-dev' | 'provider-api' | 'provider-docs' | 'manual' | 'heuristic'
+  verifiedAt?: number
+}
+
+export interface ConversationContextCompaction {
+  source: 'remote-compaction' | 'local-summary'
+  summary?: string
+  items?: unknown[]
+  compactedThroughMessageId: string
+  model: string
+  inputTokens?: number
+  createdAt: number
+}
 
 export type MessageRole = 'system' | 'user' | 'assistant'
 
@@ -95,6 +115,7 @@ export interface ProviderConfig {
   moderationModel?: string
   realtimeModel?: string
   models?: string[]
+  modelMetadata?: Record<string, ModelMetadata>
   capabilities?: ProviderCapability[]
   enabled: boolean
   needsApiKey: boolean
@@ -152,6 +173,7 @@ export interface Conversation {
   providerId: string
   model: string
   messages: ChatMessage[]
+  contextCompaction?: ConversationContextCompaction
   createdAt: number
   updatedAt: number
 }

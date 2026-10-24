@@ -9,11 +9,12 @@ use crate::{
         audio_transcription_request, chat_text_from_response, embeddings_endpoint,
         embeddings_request, endpoint_for, generated_image_from_json, image_edit_endpoint,
         image_edit_upload_part, image_generation_endpoint, image_responses_endpoint,
-        model_list_endpoint, moderations_endpoint, moderations_request, openai_chat_messages,
-        parse_model_ids, process_sse_event, process_sse_line, provider_needs_client_key,
-        realtime_client_secrets_endpoint, realtime_client_secrets_request, realtime_endpoint,
-        realtime_request, responses_chat_messages, responses_image_edit_request,
-        responses_image_generation_request, safe_generated_image_url, select_context_messages,
+        model_context_char_budget, model_list_endpoint, moderations_endpoint, moderations_request,
+        openai_chat_messages, parse_model_ids, process_sse_event, process_sse_line,
+        provider_needs_client_key, realtime_client_secrets_endpoint,
+        realtime_client_secrets_request, realtime_endpoint, realtime_request,
+        responses_chat_messages, responses_image_edit_request, responses_image_generation_request,
+        safe_generated_image_url, select_context_messages_with_char_budget,
         split_anthropic_messages,
     },
     image_request_policy::{
@@ -21,7 +22,7 @@ use crate::{
         direct_image_failure_action, responses_image_failure_action,
     },
     local_file::MAX_IMAGE_FILE_BYTES,
-    models::{ChatMessage, ProviderConfig, ProviderKind},
+    models::{ChatMessage, ModelMetadata, ProviderConfig, ProviderKind},
     sync_http_body::{read_bounded_bytes, read_bounded_text},
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -29,7 +30,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use futures_util::StreamExt;
 use reqwest::{StatusCode, header::CONTENT_TYPE, multipart, redirect::Policy};
 use serde_json::{Value, json};
-use std::{error::Error, fmt, future::Future, time::Duration};
+use std::{collections::BTreeMap, error::Error, fmt, future::Future, time::Duration};
 use tokio::sync::watch;
 use tokio::time::timeout;
 
@@ -44,6 +45,123 @@ pub(crate) const MAX_AI_PROVIDER_TEXT_RESPONSE_BYTES: usize = 8_000_000;
 pub(crate) const MAX_AI_PROVIDER_IMAGE_RESPONSE_BYTES: usize = 32_000_000;
 pub(crate) const MAX_AI_PROVIDER_AUDIO_RESPONSE_BYTES: usize = 32_000_000;
 pub(crate) const MAX_AI_PROVIDER_STREAM_RESPONSE_BYTES: usize = 8_000_000;
+const MODELS_DEV_API_URL: &str = "https://models.dev/api.json";
+
+#[derive(Debug, Clone)]
+pub(crate) struct ModelCatalogResult {
+    pub(crate) models: Vec<String>,
+    pub(crate) model_metadata: BTreeMap<String, ModelMetadata>,
+}
+
+
+fn normalized_url(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+fn model_entry_matches(model_id: &str, key: &str, model: &Value) -> bool {
+    let target = model_id.trim();
+    [Some(key), model.get("id").and_then(Value::as_str), model.get("canonical_model_id").and_then(Value::as_str)]
+        .into_iter()
+        .flatten()
+        .any(|candidate| candidate.eq_ignore_ascii_case(target))
+}
+
+fn find_models_dev_model<'a>(
+    catalog: &'a Value,
+    provider: &ProviderConfig,
+    model_id: &str,
+    exact_provider: bool,
+) -> Option<&'a Value> {
+    let providers = catalog.as_object()?;
+    for catalog_provider in providers.values() {
+        let api_matches = catalog_provider
+            .get("api")
+            .and_then(Value::as_str)
+            .is_some_and(|api| normalized_url(api) == normalized_url(&provider.base_url));
+        if exact_provider != api_matches {
+            continue;
+        }
+        let Some(models) = catalog_provider.get("models").and_then(Value::as_object) else {
+            continue;
+        };
+        for (key, model) in models {
+            if model_entry_matches(model_id, key, model) {
+                return Some(model);
+            }
+        }
+    }
+    None
+}
+
+fn positive_i64(value: Option<&Value>) -> Option<i64> {
+    value
+        .and_then(Value::as_i64)
+        .filter(|value| *value > 0)
+}
+
+fn models_dev_metadata(
+    catalog: &Value,
+    provider: &ProviderConfig,
+    models: &[String],
+) -> BTreeMap<String, ModelMetadata> {
+    let verified_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .ok();
+    models
+        .iter()
+        .filter_map(|model_id| {
+            let model = find_models_dev_model(catalog, provider, model_id, true)
+                .or_else(|| find_models_dev_model(catalog, provider, model_id, false))?;
+            let limit = model.get("limit");
+            let input = model
+                .get("modalities")
+                .and_then(|value| value.get("input"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_ascii_lowercase)
+                .collect::<Vec<_>>();
+            let output = model
+                .get("modalities")
+                .and_then(|value| value.get("output"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_ascii_lowercase)
+                .collect::<Vec<_>>();
+            let mut capabilities = vec!["chat".to_owned()];
+            if model.get("tool_call").and_then(Value::as_bool).unwrap_or(false) {
+                capabilities.push("tools".to_owned());
+            }
+            if input.iter().any(|value| value.contains("image")) {
+                capabilities.push("vision".to_owned());
+            }
+            if output.iter().any(|value| value.contains("image")) {
+                capabilities.push("image-generation".to_owned());
+            }
+            if input.iter().chain(output.iter()).any(|value| value.contains("audio")) {
+                capabilities.push("audio".to_owned());
+            }
+            if input.iter().chain(output.iter()).any(|value| value.contains("video")) {
+                capabilities.push("video".to_owned());
+            }
+            let metadata = ModelMetadata {
+                id: model_id.clone(),
+                display_name: model.get("name").and_then(Value::as_str).map(str::to_owned),
+                context_window_tokens: positive_i64(limit.and_then(|value| value.get("context"))),
+                max_input_tokens: positive_i64(limit.and_then(|value| value.get("input"))),
+                max_output_tokens: positive_i64(limit.and_then(|value| value.get("output"))),
+                capabilities,
+                source: "models-dev".to_owned(),
+                verified_at,
+            };
+            Some((model_id.clone(), metadata))
+        })
+        .collect()
+}
 
 #[derive(Debug)]
 pub(crate) struct AiHttpFailure {
@@ -158,7 +276,11 @@ impl AiClient {
             bail!("Model name is required.");
         }
 
-        let transport_messages = select_context_messages(messages, context_message_limit);
+        let transport_messages = select_context_messages_with_char_budget(
+            messages,
+            context_message_limit,
+            model_context_char_budget(provider, model),
+        );
         let mut request = self.http.post(endpoint_for(provider)?);
         request = apply_auth_headers(request, provider, api_key);
         request = apply_proxy_headers(request, provider, access_key, "chat")?;
@@ -261,7 +383,11 @@ impl AiClient {
             bail!("Model name is required.");
         }
 
-        let transport_messages = select_context_messages(messages, context_message_limit);
+        let transport_messages = select_context_messages_with_char_budget(
+            messages,
+            context_message_limit,
+            model_context_char_budget(provider, model),
+        );
         if matches!(provider.kind, ProviderKind::OpenaiResponses) {
             match stream_responses_websocket(
                 provider,
@@ -465,6 +591,18 @@ impl AiClient {
         api_key: &str,
         access_key: &str,
     ) -> Result<Vec<String>> {
+        Ok(self
+            .list_model_catalog(provider, api_key, access_key)
+            .await?
+            .models)
+    }
+
+    pub async fn list_model_catalog(
+        &self,
+        provider: &ProviderConfig,
+        api_key: &str,
+        access_key: &str,
+    ) -> Result<ModelCatalogResult> {
         if provider_needs_client_key(provider) && api_key.trim().is_empty() {
             bail!("Provider key is required.");
         }
@@ -514,7 +652,53 @@ impl AiClient {
             bail!("No models were returned by the provider.");
         }
 
-        Ok(models)
+        let model_metadata = self
+            .fetch_models_dev_metadata(provider, &models)
+            .await
+            .unwrap_or_default();
+        Ok(ModelCatalogResult {
+            models,
+            model_metadata,
+        })
+    }
+
+    async fn fetch_models_dev_metadata(
+        &self,
+        provider: &ProviderConfig,
+        models: &[String],
+    ) -> Result<BTreeMap<String, ModelMetadata>> {
+        let response = provider_timeout(
+            AI_MODEL_LIST_TIMEOUT_MS,
+            "models.dev request timed out.",
+            async {
+                self.http
+                    .get(MODELS_DEV_API_URL)
+                    .header("accept", "application/json")
+                    .send()
+                    .await
+                    .context("models.dev request failed")
+            },
+        )
+        .await?;
+        if !response.status().is_success() {
+            return Ok(BTreeMap::new());
+        }
+        let text = provider_timeout(
+            AI_MODEL_LIST_TIMEOUT_MS,
+            "models.dev response timed out.",
+            async {
+                read_bounded_text(
+                    response,
+                    MAX_AI_PROVIDER_TEXT_RESPONSE_BYTES,
+                    "models.dev response",
+                )
+                .await
+                .context("models.dev response read failed")
+            },
+        )
+        .await?;
+        let catalog: Value = serde_json::from_str(&text).context("models.dev response is not valid JSON")?;
+        Ok(models_dev_metadata(&catalog, provider, models))
     }
 
     pub async fn generate_image(

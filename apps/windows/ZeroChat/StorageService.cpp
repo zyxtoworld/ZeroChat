@@ -347,6 +347,137 @@ namespace ZeroChat
             return values;
         }
 
+        JsonObject ModelMetadataToJson(ModelMetadata const& metadata)
+        {
+            JsonObject object;
+            object.Insert(L"id", JsonValue::CreateStringValue(metadata.id));
+            if (!metadata.displayName.empty())
+            {
+                object.Insert(L"displayName", JsonValue::CreateStringValue(metadata.displayName));
+            }
+            if (metadata.contextWindowTokens)
+            {
+                object.Insert(
+                    L"contextWindowTokens",
+                    JsonValue::CreateNumberValue(static_cast<double>(*metadata.contextWindowTokens)));
+            }
+            if (metadata.maxInputTokens)
+            {
+                object.Insert(
+                    L"maxInputTokens",
+                    JsonValue::CreateNumberValue(static_cast<double>(*metadata.maxInputTokens)));
+            }
+            if (metadata.maxOutputTokens)
+            {
+                object.Insert(
+                    L"maxOutputTokens",
+                    JsonValue::CreateNumberValue(static_cast<double>(*metadata.maxOutputTokens)));
+            }
+            if (!metadata.capabilities.empty())
+            {
+                object.Insert(L"capabilities", StringArray(metadata.capabilities));
+            }
+            object.Insert(L"source", JsonValue::CreateStringValue(metadata.source));
+            if (metadata.verifiedAt)
+            {
+                object.Insert(
+                    L"verifiedAt",
+                    JsonValue::CreateNumberValue(static_cast<double>(*metadata.verifiedAt)));
+            }
+            return object;
+        }
+
+        ModelMetadata ModelMetadataFromJson(JsonObject const& object)
+        {
+            RequireObjectShape(
+                object,
+                { L"id", L"displayName", L"contextWindowTokens", L"maxInputTokens",
+                  L"maxOutputTokens", L"capabilities", L"source", L"verifiedAt" },
+                { L"id", L"source" });
+            ModelMetadata metadata;
+            metadata.id = GetString(object, L"id");
+            metadata.displayName = GetString(object, L"displayName");
+            if (object.HasKey(L"contextWindowTokens"))
+            {
+                metadata.contextWindowTokens = GetInt64(object, L"contextWindowTokens");
+            }
+            if (object.HasKey(L"maxInputTokens"))
+            {
+                metadata.maxInputTokens = GetInt64(object, L"maxInputTokens");
+            }
+            if (object.HasKey(L"maxOutputTokens"))
+            {
+                metadata.maxOutputTokens = GetInt64(object, L"maxOutputTokens");
+            }
+            metadata.capabilities = ReadStringArray(object, L"capabilities");
+            metadata.source = GetString(object, L"source");
+            if (object.HasKey(L"verifiedAt"))
+            {
+                metadata.verifiedAt = GetInt64(object, L"verifiedAt");
+            }
+            return metadata;
+        }
+
+        JsonObject ConversationCompactionToJson(ConversationContextCompaction const& compaction)
+        {
+            JsonObject object;
+            object.Insert(L"source", JsonValue::CreateStringValue(compaction.source));
+            if (!compaction.summary.empty())
+            {
+                object.Insert(L"summary", JsonValue::CreateStringValue(compaction.summary));
+            }
+            if (!compaction.itemsJson.empty())
+            {
+                try
+                {
+                    object.Insert(L"items", JsonArray::Parse(compaction.itemsJson));
+                }
+                catch (...)
+                {
+                    ThrowInvalidSnapshot();
+                }
+            }
+            object.Insert(
+                L"compactedThroughMessageId",
+                JsonValue::CreateStringValue(compaction.compactedThroughMessageId));
+            object.Insert(L"model", JsonValue::CreateStringValue(compaction.model));
+            if (compaction.inputTokens)
+            {
+                object.Insert(
+                    L"inputTokens",
+                    JsonValue::CreateNumberValue(static_cast<double>(*compaction.inputTokens)));
+            }
+            object.Insert(
+                L"createdAt",
+                JsonValue::CreateNumberValue(static_cast<double>(compaction.createdAt)));
+            return object;
+        }
+
+        ConversationContextCompaction ConversationCompactionFromJson(JsonObject const& object)
+        {
+            RequireObjectShape(
+                object,
+                { L"source", L"summary", L"items", L"compactedThroughMessageId", L"model",
+                  L"inputTokens", L"createdAt" },
+                { L"source", L"compactedThroughMessageId", L"model", L"createdAt" });
+            ConversationContextCompaction compaction;
+            compaction.source = GetString(object, L"source");
+            compaction.summary = GetString(object, L"summary");
+            if (object.HasKey(L"items"))
+            {
+                auto items = GetArray(object, L"items", true);
+                compaction.itemsJson = std::wstring(items.Stringify());
+            }
+            compaction.compactedThroughMessageId = GetString(object, L"compactedThroughMessageId");
+            compaction.model = GetString(object, L"model");
+            if (object.HasKey(L"inputTokens"))
+            {
+                compaction.inputTokens = GetInt64(object, L"inputTokens");
+            }
+            compaction.createdAt = GetInt64(object, L"createdAt");
+            return compaction;
+        }
+
         JsonObject ProviderToJson(ProviderConfig const& provider)
         {
             JsonObject object;
@@ -385,6 +516,15 @@ namespace ZeroChat
                 object.Insert(L"realtimeModel", JsonValue::CreateStringValue(provider.realtimeModel));
             }
             object.Insert(L"models", StringArray(provider.models));
+            if (!provider.modelMetadata.empty())
+            {
+                JsonObject metadata;
+                for (auto const& [modelId, modelMetadata] : provider.modelMetadata)
+                {
+                    metadata.Insert(hstring(modelId), ModelMetadataToJson(modelMetadata));
+                }
+                object.Insert(L"modelMetadata", metadata);
+            }
             object.Insert(L"capabilities", StringArray(provider.capabilities));
             object.Insert(L"enabled", JsonValue::CreateBooleanValue(provider.enabled));
             object.Insert(L"needsApiKey", JsonValue::CreateBooleanValue(provider.needsApiKey));
@@ -401,7 +541,7 @@ namespace ZeroChat
                 { L"id", L"name", L"kind", L"baseUrl", L"proxyUrl", L"clientRequestMode",
                   L"model", L"imageModel", L"audioSpeechModel", L"audioTranscriptionModel",
                   L"embeddingModel", L"moderationModel", L"realtimeModel", L"models",
-                  L"capabilities", L"enabled", L"needsApiKey", L"custom", L"createdAt", L"updatedAt" },
+                  L"modelMetadata", L"capabilities", L"enabled", L"needsApiKey", L"custom", L"createdAt", L"updatedAt" },
                 { L"id", L"name", L"kind", L"baseUrl", L"model", L"enabled",
                   L"needsApiKey", L"createdAt", L"updatedAt" });
             ProviderConfig provider;
@@ -419,6 +559,20 @@ namespace ZeroChat
             provider.moderationModel = GetString(object, L"moderationModel");
             provider.realtimeModel = GetString(object, L"realtimeModel");
             provider.models = ReadStringArray(object, L"models");
+            auto modelMetadata = GetObject(object, L"modelMetadata");
+            if (modelMetadata)
+            {
+                for (auto const& entry : modelMetadata)
+                {
+                    if (entry.Value().ValueType() != JsonValueType::Object)
+                    {
+                        ThrowInvalidSnapshot();
+                    }
+                    provider.modelMetadata.emplace(
+                        std::wstring(entry.Key()),
+                        ModelMetadataFromJson(entry.Value().GetObject()));
+                }
+            }
             provider.capabilities = ReadStringArray(object, L"capabilities");
             provider.enabled = GetBool(object, L"enabled", true);
             provider.needsApiKey = GetBool(object, L"needsApiKey", true);
@@ -585,6 +739,10 @@ namespace ZeroChat
             object.Insert(L"title", JsonValue::CreateStringValue(conversation.title));
             object.Insert(L"providerId", JsonValue::CreateStringValue(conversation.providerId));
             object.Insert(L"model", JsonValue::CreateStringValue(conversation.model));
+            if (conversation.contextCompaction)
+            {
+                object.Insert(L"contextCompaction", ConversationCompactionToJson(*conversation.contextCompaction));
+            }
             JsonArray messages;
             for (auto const& message : conversation.messages)
             {
@@ -600,16 +758,20 @@ namespace ZeroChat
         {
             RequireObjectShape(
                 object,
-                { L"id", L"title", L"providerId", L"model", L"messages", L"createdAt", L"updatedAt" },
+                { L"id", L"title", L"providerId", L"model", L"messages", L"contextCompaction", L"createdAt", L"updatedAt" },
                 { L"id", L"title", L"providerId", L"model", L"messages", L"createdAt", L"updatedAt" });
             Conversation conversation;
             conversation.id = GetString(object, L"id");
             conversation.title = GetString(object, L"title");
             conversation.providerId = GetString(object, L"providerId");
             conversation.model = GetString(object, L"model");
+            auto contextCompaction = GetObject(object, L"contextCompaction");
+            if (contextCompaction)
+            {
+                conversation.contextCompaction = ConversationCompactionFromJson(contextCompaction);
+            }
             conversation.createdAt = GetInt64(object, L"createdAt");
             conversation.updatedAt = GetInt64(object, L"updatedAt");
-
             auto messages = GetArray(object, L"messages", true);
             for (uint32_t index = 0; index < messages.Size(); ++index)
             {
@@ -895,12 +1057,57 @@ namespace ZeroChat
                     (!message.offlineReplayClaim->claimId.empty() && !message.offlineReplayClaim->owner.empty()));
         }
 
+        bool IsCanonicalModelMetadata(ModelMetadata const& metadata)
+        {
+            return !metadata.id.empty() &&
+                Contains(
+                    { L"models-dev", L"provider-api", L"provider-docs", L"manual", L"heuristic" },
+                    metadata.source) &&
+                IsNonEmpty(metadata.capabilities) &&
+                std::all_of(metadata.capabilities.begin(), metadata.capabilities.end(), [](auto const& capability)
+                {
+                    return Contains(
+                        { L"chat", L"vision", L"tools", L"image-generation", L"image-editing",
+                          L"audio", L"realtime", L"embeddings", L"moderation", L"video", L"model-list" },
+                        capability);
+                });
+        }
+
+        bool IsCanonicalCompaction(ConversationContextCompaction const& compaction)
+        {
+            if (!Contains({ L"remote-compaction", L"local-summary" }, compaction.source) ||
+                compaction.compactedThroughMessageId.empty() ||
+                compaction.model.empty() ||
+                compaction.createdAt < 0)
+            {
+                return false;
+            }
+            if (compaction.source == L"local-summary" && compaction.summary.empty())
+            {
+                return false;
+            }
+            if (!compaction.itemsJson.empty())
+            {
+                try
+                {
+                    JsonArray::Parse(compaction.itemsJson);
+                }
+                catch (...)
+                {
+                    return false;
+                }
+            }
+            return !compaction.inputTokens || *compaction.inputTokens >= 0;
+        }
+
         bool IsCanonicalConversation(Conversation const& conversation)
         {
             return !conversation.id.empty() &&
                 !conversation.providerId.empty() &&
                 conversation.createdAt >= 0 &&
                 conversation.updatedAt >= 0 &&
+                (!conversation.contextCompaction ||
+                    IsCanonicalCompaction(*conversation.contextCompaction)) &&
                 std::all_of(conversation.messages.begin(), conversation.messages.end(), IsCanonicalMessage);
         }
 
@@ -930,6 +1137,10 @@ namespace ZeroChat
                         { L"chat", L"vision", L"tools", L"image-generation", L"image-editing",
                           L"audio", L"realtime", L"embeddings", L"moderation", L"video", L"model-list" },
                         capability);
+                }) &&
+                std::all_of(provider.modelMetadata.begin(), provider.modelMetadata.end(), [](auto const& entry)
+                {
+                    return IsCanonicalModelMetadata(entry.second);
                 }) &&
                 provider.createdAt >= 0 &&
                 provider.updatedAt >= 0;

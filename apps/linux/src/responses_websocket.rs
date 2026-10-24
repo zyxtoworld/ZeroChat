@@ -10,7 +10,8 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 
 use crate::ai::{AI_STREAM_IDLE_TIMEOUT_MS, ensure_non_empty_chat_response};
 use crate::ai_protocol::{
-    endpoint_for, provider_needs_client_key, responses_chat_messages, select_context_messages,
+    endpoint_for, model_context_char_budget, provider_needs_client_key, responses_chat_messages,
+    select_context_messages_with_char_budget,
 };
 use crate::models::{ChatMessage, ProviderConfig, ProviderKind};
 
@@ -51,13 +52,18 @@ fn websocket_endpoint(provider: &ProviderConfig) -> Result<(String, bool)> {
 }
 
 fn response_create_message(
+    provider: &ProviderConfig,
     model: &str,
     messages: &[ChatMessage],
     context_message_limit: i32,
 ) -> String {
-    let context = select_context_messages(messages, context_message_limit)
-        .into_iter()
-        .collect::<Vec<_>>();
+    let context = select_context_messages_with_char_budget(
+        messages,
+        context_message_limit,
+        model_context_char_budget(provider, model),
+    )
+    .into_iter()
+    .collect::<Vec<_>>();
     json!({
         "type": "response.create",
         "model": model.trim(),
@@ -181,7 +187,7 @@ where
 
     socket
         .send(Message::Text(
-            response_create_message(model, messages, context_message_limit).into(),
+            response_create_message(provider, model, messages, context_message_limit).into(),
         ))
         .await
         .context("Responses WebSocket request send failed")?;

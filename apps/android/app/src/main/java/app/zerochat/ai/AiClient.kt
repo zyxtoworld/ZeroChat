@@ -1,6 +1,8 @@
 package app.zerochat.ai
 
 import app.zerochat.data.ChatMessage
+import app.zerochat.data.ConversationContextCompaction
+import app.zerochat.data.ModelMetadata
 import app.zerochat.data.ProviderConfig
 import app.zerochat.data.ProviderKind
 import app.zerochat.data.isLikelyImageEditingModel
@@ -19,7 +21,27 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import java.util.Base64
+private const val MODELS_DEV_API_URL = "https://models.dev/api.json"
+
+data class ModelCatalogResult(
+    val models: List<String>,
+    val modelMetadata: Map<String, ModelMetadata>,
+)
+
+data class PreparedChatContext(
+    val messages: List<ChatMessage>,
+    val compactionItems: List<JsonElement> = emptyList(),
+    val checkpoint: ConversationContextCompaction? = null,
+)
 
 const val AI_CONNECT_TIMEOUT_MS = 30_000L
 const val AI_MODEL_LIST_TIMEOUT_MS = 30_000L
@@ -213,7 +235,13 @@ class AiClient(
         provider: ProviderConfig,
         apiKey: String,
         proxyToken: String = "",
-    ): List<String> = withTimeout(AI_MODEL_LIST_TIMEOUT_MS) {
+    ): List<String> = listModelCatalog(provider, apiKey, proxyToken).models
+
+    suspend fun listModelCatalog(
+        provider: ProviderConfig,
+        apiKey: String,
+        proxyToken: String = "",
+    ): ModelCatalogResult = withTimeout(AI_MODEL_LIST_TIMEOUT_MS) {
         require(!providerNeedsClientKey(provider) || apiKey.isNotBlank()) {
             "Provider API key is required"
         }
@@ -222,7 +250,7 @@ class AiClient(
             applyAuthHeaders(provider, apiKey)
             applyProxyHeaders(provider, proxyToken, "models")
         }
-        statement.execute { response ->
+        val models = statement.execute { response ->
             if (response.status.value !in 200..299) {
                 throw response.readAiProviderHttpException("Model list request failed")
             }
@@ -230,11 +258,70 @@ class AiClient(
                 MAX_AI_PROVIDER_TEXT_RESPONSE_BYTES,
                 "AI model list response",
             )
-
-            val models = parseModelIds(json.parseToJsonElement(text))
-            require(models.isNotEmpty()) { "No models found in provider response" }
-            models
+            parseModelIds(json.parseToJsonElement(text))
         }
+        require(models.isNotEmpty()) { "No models found in provider response" }
+        ModelCatalogResult(models, loadModelsDevMetadata(models))
+    }
+
+    private suspend fun loadModelsDevMetadata(models: List<String>): Map<String, ModelMetadata> {
+        val result = runCatching {
+            withTimeout(5_000L) {
+                client.prepareGet(MODELS_DEV_API_URL) {
+                    header(HttpHeaders.Accept, ContentType.Application.Json.toString())
+                }.execute { response ->
+                    if (response.status.value !in 200..299) return@execute emptyMap()
+                    val root = json.parseToJsonElement(
+                        response.readBoundedAiProviderText(
+                            MAX_AI_PROVIDER_TEXT_RESPONSE_BYTES,
+                            "Models.dev catalog",
+                        ),
+                    ) as? JsonObject ?: return@execute emptyMap()
+                    val wanted = models.associateBy { it.trim().lowercase() }
+                    val found = linkedMapOf<String, ModelMetadata>()
+                    root.values.forEach { providerValue ->
+                        val providerObject = providerValue as? JsonObject ?: return@forEach
+                        val catalogModels = providerObject["models"] as? JsonObject ?: return@forEach
+                        catalogModels.forEach { (key, value) ->
+                            val modelObject = value as? JsonObject ?: return@forEach
+                            val candidates = listOfNotNull(
+                                key,
+                                modelObject["id"]?.jsonPrimitive?.contentOrNull,
+                                modelObject["canonical_model_id"]?.jsonPrimitive?.contentOrNull,
+                            )
+                            val matched = models.firstOrNull { model ->
+                                candidates.any { it.equals(model, ignoreCase = true) }
+                            } ?: return@forEach
+                            val limit = modelObject["limit"] as? JsonObject
+                            val modalities = modelObject["modalities"] as? JsonObject
+                            val input = (modalities?.get("input") as? JsonArray)
+                                ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+                                .orEmpty()
+                            val capabilities = buildList {
+                                add("chat")
+                                if (modelObject["tool_call"]?.jsonPrimitive?.booleanOrNull == true) {
+                                    add("tools")
+                                }
+                                if (input.any { it.contains("image", ignoreCase = true) }) add("vision")
+                                if (input.any { it.contains("audio", ignoreCase = true) }) add("audio")
+                            }
+                            found[matched] = ModelMetadata(
+                                id = matched,
+                                displayName = modelObject["name"]?.jsonPrimitive?.contentOrNull,
+                                contextWindowTokens = limit?.get("context")?.jsonPrimitive?.longOrNull,
+                                maxInputTokens = limit?.get("input")?.jsonPrimitive?.longOrNull,
+                                maxOutputTokens = limit?.get("output")?.jsonPrimitive?.longOrNull,
+                                capabilities = capabilities,
+                                source = "models-dev",
+                                verifiedAt = System.currentTimeMillis(),
+                            )
+                        }
+                    }
+                    found.filterKeys { wanted.containsKey(it.lowercase()) }
+                }
+            }
+        }
+        return result.getOrElse { emptyMap() }
     }
 
     suspend fun generateImage(

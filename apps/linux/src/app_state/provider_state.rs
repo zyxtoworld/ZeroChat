@@ -44,6 +44,7 @@ impl LinuxAppState {
             moderation_model: None,
             realtime_model: None,
             models: vec![],
+            model_metadata: std::collections::BTreeMap::new(),
             capabilities: CUSTOM_OPENAI_RELAY_CAPABILITIES
                 .iter()
                 .map(|capability| (*capability).to_owned())
@@ -145,6 +146,7 @@ impl LinuxAppState {
                         provider_id,
                         model,
                         messages: vec![],
+                        context_compaction: None,
                         created_at: now,
                         updated_at: now,
                     },
@@ -377,6 +379,7 @@ mod tests {
             moderation_model: None,
             realtime_model: None,
             models: models.iter().map(|model| (*model).to_owned()).collect(),
+            model_metadata: std::collections::BTreeMap::new(),
             capabilities: vec!["chat".to_owned()],
             enabled,
             needs_api_key: true,
@@ -393,6 +396,7 @@ mod tests {
             provider_id: provider_id.to_owned(),
             model: model.to_owned(),
             messages: vec![],
+            context_compaction: None,
             created_at: 1,
             updated_at: 1,
         }

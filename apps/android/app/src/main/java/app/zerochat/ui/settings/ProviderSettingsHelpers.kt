@@ -103,13 +103,20 @@ fun providerSettingsApplyProviderChange(
 fun providerSettingsApplyConnectivityModels(
     provider: ProviderConfig,
     models: List<String>,
+    modelMetadata: Map<String, app.zerochat.data.ModelMetadata> = emptyMap(),
     now: Long,
-): ProviderConfig = modelSettingsApplyFetchedModels(provider, models, now)
+): ProviderConfig = modelSettingsApplyFetchedModels(
+    provider = provider,
+    models = models,
+    now = now,
+    modelMetadata = modelMetadata,
+)
 
 internal fun providerSettingsApplyConnectivityModelsToSnapshot(
     snapshot: AppSnapshot,
     providerId: String,
     models: List<String>,
+    modelMetadata: Map<String, app.zerochat.data.ModelMetadata> = emptyMap(),
     now: Long,
     expectedOwner: ModelSettingsFetchOwner,
     currentOwner: ModelSettingsFetchOwner?,
@@ -121,7 +128,12 @@ internal fun providerSettingsApplyConnectivityModelsToSnapshot(
     return snapshot.copy(
         providers = providerSettingsReplaceProvider(
             snapshot.providers,
-            providerSettingsApplyConnectivityModels(provider, models, now),
+            providerSettingsApplyConnectivityModels(
+                provider = provider,
+                models = models,
+                modelMetadata = modelMetadata,
+                now = now,
+            ),
         ),
     )
 }

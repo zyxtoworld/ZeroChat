@@ -29,9 +29,7 @@ class SyncVaultValidationTest {
     @Test
     fun decodesCanonicalVault() {
         val vault = canonicalVault()
-
         val decoded = decodeValidatedSyncVault(json, encode(vault))
-
         assertEquals(vault, decoded)
         assertEquals(
             QueuedTextRequest(providerId = "provider-1", model = "chat-model"),

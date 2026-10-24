@@ -3,7 +3,8 @@ use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 
 use crate::models::{
-    AppSnapshot, ChatMessage, Conversation, MessageAttachment, OfflineReplayClaim, Preferences,
+    AppSnapshot, ChatMessage, Conversation, MessageAttachment, ModelMetadata, OfflineReplayClaim,
+    Preferences,
     ProviderConfig, QueuedTextRequest, SkillSettings, SyncConfig, SyncVault, UserSkill,
     UserSkillChunk,
 };
@@ -53,14 +54,50 @@ fn is_canonical_sync_vault_json(value: &Value) -> bool {
         return false;
     }
 
-    if array_objects(data.get("providers"), PROVIDER_KEYS, PROVIDER_REQUIRED_KEYS).is_none() {
+    let Some(providers) =
+        array_objects(data.get("providers"), PROVIDER_KEYS, PROVIDER_REQUIRED_KEYS)
+    else {
+        return false;
+    };
+    if !providers.iter().all(|provider| {
+        provider
+            .get("modelMetadata")
+            .is_none_or(|metadata| {
+                metadata.as_object().is_some_and(|entries| {
+                    entries.values().all(|value| {
+                        let Some(object) = value.as_object() else {
+                            return false;
+                        };
+                        object_with_shape(
+                            value,
+                            MODEL_METADATA_KEYS,
+                            MODEL_METADATA_REQUIRED_KEYS,
+                        )
+                        .is_some()
+                            && object
+                                .get("source")
+                                .and_then(Value::as_str)
+                                .is_some_and(|source| {
+                                    matches!(
+                                        source,
+                                        "models-dev"
+                                            | "provider-api"
+                                            | "provider-docs"
+                                            | "manual"
+                                            | "heuristic"
+                                    )
+                                })
+                    })
+                })
+            })
+    }) {
         return false;
     }
 
     let Some(conversations) = array_objects(
         data.get("conversations"),
         CONVERSATION_KEYS,
-        CONVERSATION_KEYS,
+        CONVERSATION_REQUIRED_KEYS,
     ) else {
         return false;
     };
@@ -209,12 +246,36 @@ pub(crate) fn has_unique_snapshot_record_ids(data: &AppSnapshot) -> bool {
             .all(|skill| unique_ids(skill.chunks.iter().map(|chunk| chunk.id.as_str())))
 }
 
+fn is_canonical_model_metadata(metadata: &ModelMetadata) -> bool {
+    !metadata.id.is_empty()
+        && matches!(
+            metadata.source.as_str(),
+            "models-dev" | "provider-api" | "provider-docs" | "manual" | "heuristic"
+        )
+        && metadata
+            .context_window_tokens
+            .is_none_or(|value| value > 0)
+        && metadata.max_input_tokens.is_none_or(|value| value > 0)
+        && metadata.max_output_tokens.is_none_or(|value| value > 0)
+        && metadata
+            .capabilities
+            .iter()
+            .all(|capability| PROVIDER_CAPABILITIES.contains(&capability.as_str()))
+        && metadata.capabilities.iter().collect::<BTreeSet<_>>().len()
+            == metadata.capabilities.len()
+        && metadata.verified_at.is_none_or(|value| value >= 0)
+}
+
 fn is_canonical_provider(provider: &ProviderConfig) -> bool {
     !provider.id.is_empty()
         && !provider.name.is_empty()
         && !provider.base_url.is_empty()
         && provider.models.iter().all(|model| !model.is_empty())
         && provider.models.iter().collect::<BTreeSet<_>>().len() == provider.models.len()
+        && provider
+            .model_metadata
+            .iter()
+            .all(|(model_id, metadata)| !model_id.is_empty() && is_canonical_model_metadata(metadata))
         && provider
             .capabilities
             .iter()
@@ -329,6 +390,18 @@ fn is_canonical_preferences(preferences: &Preferences) -> bool {
 }
 
 const VAULT_KEYS: &[&str] = &["data", "secrets"];
+const MODEL_METADATA_KEYS: &[&str] = &[
+    "id",
+    "displayName",
+    "contextWindowTokens",
+    "maxInputTokens",
+    "maxOutputTokens",
+    "capabilities",
+    "source",
+    "verifiedAt",
+];
+const MODEL_METADATA_REQUIRED_KEYS: &[&str] = &["id", "source"];
+
 const SECRETS_KEYS: &[&str] = &["providerKeys"];
 const APP_DATA_KEYS: &[&str] = &[
     "version",
@@ -355,6 +428,7 @@ const PROVIDER_KEYS: &[&str] = &[
     "moderationModel",
     "realtimeModel",
     "models",
+    "modelMetadata",
     "capabilities",
     "enabled",
     "needsApiKey",
@@ -374,6 +448,16 @@ const PROVIDER_REQUIRED_KEYS: &[&str] = &[
     "updatedAt",
 ];
 const CONVERSATION_KEYS: &[&str] = &[
+    "id",
+    "title",
+    "providerId",
+    "model",
+    "messages",
+    "contextCompaction",
+    "createdAt",
+    "updatedAt",
+];
+const CONVERSATION_REQUIRED_KEYS: &[&str] = &[
     "id",
     "title",
     "providerId",

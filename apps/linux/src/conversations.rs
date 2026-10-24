@@ -87,6 +87,7 @@ fn ensure_active_conversation_with_provider(
         provider_id,
         model,
         messages: vec![],
+        context_compaction: None,
         created_at: now,
         updated_at: now,
     });

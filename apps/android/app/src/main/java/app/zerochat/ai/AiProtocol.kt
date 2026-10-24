@@ -27,7 +27,8 @@ import java.util.Locale
 const val DEFAULT_CHAT_CONTEXT_MESSAGE_LIMIT = 24
 private const val MIN_CHAT_CONTEXT_MESSAGE_LIMIT = 4
 private const val MAX_CHAT_CONTEXT_MESSAGE_LIMIT = 200
-private const val MAX_CHAT_CONTEXT_CHARS = 48_000
+private const val MAX_CHAT_CONTEXT_CHARS = 256_000
+private const val DEFAULT_CHAT_CONTEXT_CHARS = 48_000
 private const val MAX_CHAT_CONTEXT_MESSAGE_CHARS = 8_000
 private const val CHAT_CONTEXT_TRUNCATION_MARKER =
     "\n\n[Earlier content omitted for context size.]\n\n"
@@ -75,7 +76,16 @@ internal fun chatRequestBody(
     contextMessageLimit: Int,
     stream: Boolean,
 ): String {
-    val contextMessages = selectContextMessages(messages, contextMessageLimit)
+    val maxContextChars = provider.modelMetadata[model.trim()]?.let { metadata ->
+        val tokenBudget = metadata.maxInputTokens ?: metadata.contextWindowTokens
+        tokenBudget
+            ?.minus(metadata.maxOutputTokens ?: 8_192L)
+            ?.coerceAtLeast(1_024L)
+            ?.times(4)
+            ?.coerceIn(DEFAULT_CHAT_CONTEXT_CHARS.toLong(), MAX_CHAT_CONTEXT_CHARS.toLong())
+            ?.toInt()
+    } ?: DEFAULT_CHAT_CONTEXT_CHARS
+    val contextMessages = selectContextMessages(messages, contextMessageLimit, maxContextChars)
     val systemContent = contextMessages
         .filter { it.role == MessageRole.System }
         .map { it.content.trim() }
@@ -1143,18 +1153,19 @@ private fun decimalString(value: Double): String =
 private fun selectContextMessages(
     messages: List<ChatMessage>,
     contextMessageLimit: Int,
+    maxContextChars: Int = DEFAULT_CHAT_CONTEXT_CHARS,
 ): List<ChatMessage> {
     val normalizedLimit = normalizeChatContextMessageLimit(contextMessageLimit)
     val systemMessages = messages
         .filter { it.role == MessageRole.System && it.content.trim().isNotEmpty() }
         .map { trimContextMessage(it, MAX_CHAT_CONTEXT_MESSAGE_CHARS) }
-    val systemBudget = MAX_CHAT_CONTEXT_CHARS / 3
+    val systemBudget = maxContextChars / 3
     val boundedSystemMessages = takeContextBudget(systemMessages, systemBudget)
     val chatMessages = messages
         .filter { it.role != MessageRole.System }
         .takeLast(normalizedLimit)
         .map { trimContextMessage(it, MAX_CHAT_CONTEXT_MESSAGE_CHARS) }
-    val chatBudget = (MAX_CHAT_CONTEXT_CHARS - boundedSystemMessages.sumOf { it.content.length })
+    val chatBudget = (maxContextChars - boundedSystemMessages.sumOf { it.content.length })
         .coerceAtLeast(0)
 
     return boundedSystemMessages + takeContextBudget(chatMessages, chatBudget)

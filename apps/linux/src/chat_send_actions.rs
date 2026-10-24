@@ -100,6 +100,7 @@ pub(crate) fn connect_send_action(
     send: &gtk::Button,
     messages: &gtk::ListBox,
     scroller: &gtk::ScrolledWindow,
+    input: &gtk::TextView,
     notice: &gtk::Label,
     locale: &str,
     compact: bool,

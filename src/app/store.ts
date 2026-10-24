@@ -67,6 +67,11 @@ import {
   modelForProviderAudioTranscription,
 } from '../services/providerModelCore'
 import { streamAssistantText } from '../services/chatGenerationTextStream'
+import {
+  effectiveInputTokenBudget,
+  modelMetadataForProviderModels,
+} from '../services/modelMetadata'
+import { prepareConversationContext } from '../services/contextCompaction'
 import { downloadJsonFile } from '../services/downloadJsonFile'
 import {
   AUTO_CONVERSATION_TITLE_MAX_LENGTH,
@@ -2985,14 +2990,46 @@ export const useAppStore = create<AppState>()((set, get) => {
       abort.signal.throwIfAborted()
 
       const runtime = await state.runtimeLoader()
-      const requestMessages = await requestMessagesWithSkills({
+      const requestMessagesWithSkillsResult = await requestMessagesWithSkills({
         snapshot: get().data,
         messages: baseMessages,
         latestInput,
       })
-      if (abort.signal.aborted) {
-        if (dataReplacementQueued()) return true
-        abort.signal.throwIfAborted()
+      const preparedContext = await prepareConversationContext({
+        apiKey,
+        existingCompaction: conversation.contextCompaction,
+        maxInputTokens: effectiveInputTokenBudget(requestProvider, model),
+        messages: requestMessagesWithSkillsResult,
+        model,
+        provider: requestProvider,
+        proxyToken,
+        signal: abort.signal,
+      })
+      const requestMessages = preparedContext.messages
+      if (preparedContext.compaction) {
+        await commitSkillDataMutation((current) => {
+          if (abort.signal.aborted) return null
+          const target = current.conversations.find(
+            (candidate) =>
+              candidate.id === conversationId &&
+              candidate.createdAt === conversation.createdAt,
+          )
+          if (!target) return null
+          return {
+            ...current,
+            conversations: current.conversations.map((candidate) =>
+              candidate.id === conversationId &&
+              candidate.createdAt === conversation.createdAt
+                ? {
+                    ...candidate,
+                    contextCompaction: preparedContext.compaction,
+                    updatedAt: now(),
+                  }
+                : candidate,
+            ),
+            updatedAt: now(),
+          }
+        })
       }
       await runGenerationWithAutoRetry(
         async () => {
@@ -3028,9 +3065,11 @@ export const useAppStore = create<AppState>()((set, get) => {
               proxyToken,
               model,
               messages: requestMessages,
+              compactionItems: preparedContext.compactionItems,
               contextMessageLimit: normalizeChatContextMessageLimit(
                 get().data?.preferences.chatContextMessageLimit,
               ),
+              maxInputTokens: effectiveInputTokenBudget(requestProvider, model),
               signal: abort.signal,
               onToken: (token) => {
                 if (!abort.signal.aborted) buffer.push(token)
@@ -5127,6 +5166,10 @@ export const useAppStore = create<AppState>()((set, get) => {
           apiKey,
           proxyToken,
         })
+        const modelsDevMetadata = await modelMetadataForProviderModels(
+          currentProvider,
+          models,
+        ).catch(() => ({}))
         if (models.length > 0) {
           if (!providerModelFetchOwnerIsCurrent(owner)) return
           const accepted = await runProviderModelMutation(
@@ -5138,6 +5181,10 @@ export const useAppStore = create<AppState>()((set, get) => {
               ]
               return {
                 models: merged,
+                modelMetadata: {
+                  ...(current.modelMetadata ?? {}),
+                  ...modelsDevMetadata,
+                },
                 model: current.model.trim() || merged[0],
               }
             },
