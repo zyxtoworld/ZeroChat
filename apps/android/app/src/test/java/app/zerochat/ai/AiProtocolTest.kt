@@ -59,6 +59,29 @@ class AiProtocolTest {
     }
 
     @Test
+    fun chatRequestBodyTruncatesLongContextWithoutDroppingLatestTurn() {
+        val body = chatRequestBody(
+            json = json,
+            provider = provider(),
+            model = "gpt-5",
+            messages = listOf(
+                message("old", MessageRole.User, "x".repeat(100_000)),
+                message("latest", MessageRole.User, "latest prompt"),
+            ),
+            contextMessageLimit = 24,
+            stream = true,
+        )
+        val root = json.parseToJsonElement(body) as JsonObject
+        val messages = root["messages"] as JsonArray
+
+        assertTrue(body.length < 60_000)
+        assertEquals("latest prompt", primitive(messages.last() as JsonObject, "content"))
+        assertTrue(
+            messages.any { primitive(it as JsonObject, "content").contains("Earlier content omitted") },
+        )
+    }
+
+    @Test
     fun chatRequestBodyIncludesUserImageAttachmentsAsMultimodalContent() {
         val messages = listOf(
             message(

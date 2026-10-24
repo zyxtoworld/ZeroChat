@@ -118,7 +118,10 @@ class AiClient(
         }
         require(model.isNotBlank()) { "Model is required" }
 
-        if (provider.kind == ProviderKind.OpenAIResponses) {
+        if (
+            provider.kind == ProviderKind.OpenAIResponses &&
+            (!provider.custom || !provider.proxyUrl.isNullOrBlank())
+        ) {
             try {
                 return streamResponsesWebSocket(
                     client = client,

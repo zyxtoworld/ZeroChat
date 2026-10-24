@@ -27,6 +27,10 @@ import java.util.Locale
 const val DEFAULT_CHAT_CONTEXT_MESSAGE_LIMIT = 24
 private const val MIN_CHAT_CONTEXT_MESSAGE_LIMIT = 4
 private const val MAX_CHAT_CONTEXT_MESSAGE_LIMIT = 200
+private const val MAX_CHAT_CONTEXT_CHARS = 48_000
+private const val MAX_CHAT_CONTEXT_MESSAGE_CHARS = 8_000
+private const val CHAT_CONTEXT_TRUNCATION_MARKER =
+    "\n\n[Earlier content omitted for context size.]\n\n"
 private val LEGACY_IPV4_LABEL_PATTERN = Regex("^(?:[0-9]+|0[xX][0-9a-fA-F]+)$")
 
 private val AUDIO_MIME_BY_EXTENSION = mapOf(
@@ -1141,14 +1145,56 @@ private fun selectContextMessages(
     contextMessageLimit: Int,
 ): List<ChatMessage> {
     val normalizedLimit = normalizeChatContextMessageLimit(contextMessageLimit)
-    val systemMessages = messages.filter {
-        it.role == MessageRole.System && it.content.trim().isNotEmpty()
-    }
+    val systemMessages = messages
+        .filter { it.role == MessageRole.System && it.content.trim().isNotEmpty() }
+        .map { trimContextMessage(it, MAX_CHAT_CONTEXT_MESSAGE_CHARS) }
+    val systemBudget = MAX_CHAT_CONTEXT_CHARS / 3
+    val boundedSystemMessages = takeContextBudget(systemMessages, systemBudget)
     val chatMessages = messages
         .filter { it.role != MessageRole.System }
         .takeLast(normalizedLimit)
+        .map { trimContextMessage(it, MAX_CHAT_CONTEXT_MESSAGE_CHARS) }
+    val chatBudget = (MAX_CHAT_CONTEXT_CHARS - boundedSystemMessages.sumOf { it.content.length })
+        .coerceAtLeast(0)
 
-    return systemMessages + chatMessages
+    return boundedSystemMessages + takeContextBudget(chatMessages, chatBudget)
+}
+
+private fun trimContextMessage(
+    message: ChatMessage,
+    maxChars: Int,
+): ChatMessage {
+    if (message.content.length <= maxChars) return message
+
+    val availableChars = (maxChars - CHAT_CONTEXT_TRUNCATION_MARKER.length).coerceAtLeast(0)
+    val headChars = (availableChars * 2 / 3).coerceAtLeast(0)
+    val tailChars = (availableChars - headChars).coerceAtLeast(0)
+    val trimmedContent = message.content.take(headChars) +
+        CHAT_CONTEXT_TRUNCATION_MARKER +
+        message.content.takeLast(tailChars)
+    return message.copy(content = trimmedContent)
+}
+
+private fun takeContextBudget(
+    messages: List<ChatMessage>,
+    budget: Int,
+): List<ChatMessage> {
+    if (budget <= 0) return emptyList()
+
+    val selected = ArrayDeque<ChatMessage>()
+    var remaining = budget
+    for (message in messages.asReversed()) {
+        if (message.content.length <= remaining) {
+            selected.addFirst(message)
+            remaining -= message.content.length
+            continue
+        }
+        if (remaining > CHAT_CONTEXT_TRUNCATION_MARKER.length) {
+            selected.addFirst(trimContextMessage(message, remaining))
+        }
+        break
+    }
+    return selected.toList()
 }
 
 private fun readModelId(element: JsonElement): String? {
