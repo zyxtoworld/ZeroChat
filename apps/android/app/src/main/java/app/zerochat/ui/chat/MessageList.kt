@@ -260,7 +260,7 @@ internal fun MessageList(
             renderedMessageItemsState.value?.source === targetMessages &&
                 messageListState.layoutInfo.totalItemsCount > lastRenderedItemIndex
         }.first { it }
-        messageListState.scrollToItem(lastRenderedItemIndex)
+        messageListState.scrollToItem(lastRenderedItemIndex, scrollOffset = Int.MAX_VALUE)
     }
 
     LaunchedEffect(
@@ -277,7 +277,7 @@ internal fun MessageList(
         val isNearBottom = !messageListState.canScrollForward ||
             lastVisibleItem?.index == lastRenderedItemIndex
         if (isNearBottom) {
-            messageListState.scrollToItem(lastRenderedItemIndex)
+            messageListState.scrollToItem(lastRenderedItemIndex, scrollOffset = Int.MAX_VALUE)
         }
     }
 

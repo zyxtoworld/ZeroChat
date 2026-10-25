@@ -2650,13 +2650,13 @@ function ensureSettingsSheetOpen(label) {
   }
   invalidateHierarchyCache()
   let entries = nodeEntries(dumpVisibleXml())
+  const settingsSheetOpen = entries.some((entry) =>
+    ['关闭工作表', 'Close sheet'].includes(entry.description),
+  )
 
-  if (entries.some((entry) => matchesAny(entry, settingsSheetLabels))) {
+  if (settingsSheetOpen) {
     const providerTab = findEntry(['Providers', 'AI providers', 'AI 服务'])
     const handle = findEntry(['拖动手柄', 'Drag handle'])
-    console.error(
-      `[android-ui-smoke] sheet recovery provider=${Boolean(providerTab)} handle=${Boolean(handle)}`,
-    )
     if (providerTab) {
       return
     }
@@ -2698,7 +2698,6 @@ function ensureSettingsSheetOpen(label) {
   )
   const center = settingsEntry ? boundsCenter(settingsEntry.bounds) : null
   const viewport = androidGestureViewportFromBounds(entries[0]?.bounds)
-
   const bypassActivityRecreationSafety = /Activity recreation/u.test(label)
   if (
     !settingsEntry ||
@@ -2712,7 +2711,7 @@ function ensureSettingsSheetOpen(label) {
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     tapBounds(settingsEntry.bounds)
-    if (findEntry(settingsSheetLabels)) {
+    if (findEntry(['关闭工作表', 'Close sheet'])) {
       return
     }
     sleep(400)
