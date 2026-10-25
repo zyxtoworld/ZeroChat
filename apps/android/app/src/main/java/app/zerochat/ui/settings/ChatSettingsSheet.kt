@@ -1,9 +1,13 @@
 package app.zerochat.ui.settings
 
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.unit.dp
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import app.zerochat.ai.AiClient
 import app.zerochat.data.AppSnapshot
 import app.zerochat.data.ProviderConfig
@@ -12,6 +16,7 @@ import app.zerochat.sync.FirstSyncStrategy
 import app.zerochat.sync.SyncClient
 import app.zerochat.ui.NativeI18n
 import app.zerochat.ui.chat.GenerationTaskOwner
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -45,8 +50,16 @@ internal fun ChatSettingsSheet(
     generationTasks: GenerationTaskOwner,
 ) {
     val settingsSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
+    LaunchedEffect(settingsSheetState) {
+        settingsSheetState.show()
+        settingsSheetState.expand()
+        delay(350)
+        onDismissKeyboard()
+    }
     ModalBottomSheet(
+        modifier = androidx.compose.ui.Modifier
+            .fillMaxHeight()
+            .heightIn(min = 600.dp),
         onDismissRequest = onDismiss,
         sheetState = settingsSheetState,
     ) {

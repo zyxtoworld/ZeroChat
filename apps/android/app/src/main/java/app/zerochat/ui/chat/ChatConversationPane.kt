@@ -328,8 +328,12 @@ private fun ChatMainColumn(
     Column(
         modifier = modifier.fillMaxSize(),
     ) {
-        val hasMessages = activeConversation?.messages?.isNotEmpty() == true
-
+        val hasMessages = activeConversation?.messages?.any { message ->
+            message.content.isNotBlank() ||
+                message.attachments.isNotEmpty() ||
+                message.status == "queued" ||
+                message.status == "streaming"
+        } == true
         if (!keyboardVisible) {
             ProviderModelSelector(
                 providers = enabledProviders,
@@ -373,7 +377,7 @@ private fun ChatMainColumn(
         MessageList(
             conversationId = activeConversation?.id,
             messages = activeConversation?.messages.orEmpty(),
-            hasActiveChat = activeConversation != null,
+            hasActiveChat = hasMessages,
             keyboardVisible = keyboardVisible,
             manualSyncRefreshing = manualSyncRefreshing,
             onRefresh = onManualSync,

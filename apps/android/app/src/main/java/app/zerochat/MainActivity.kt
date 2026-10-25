@@ -30,17 +30,34 @@ class MainActivity : ComponentActivity() {
     private val lifecycleInstanceId = nextLifecycleInstanceId.getAndIncrement()
     private val quickAskDeliveryCount = mutableLongStateOf(0L)
     private val quickAskOwner = QuickAskActivityOwner()
+    private var dismissImeOnFirstFocus = true
+
+    private fun dismissIme() {
+        currentFocus?.clearFocus()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.hide(android.view.WindowInsets.Type.ime())
+        }
+        getSystemService(InputMethodManager::class.java)
+            ?.hideSoftInputFromWindow(window.decorView.windowToken, 0)
+    }
+
     private val backupTaskViewModel by lazy(LazyThreadSafetyMode.NONE) {
         ViewModelProvider(this)[BackupTaskViewModel::class.java]
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         if (event.actionMasked == MotionEvent.ACTION_DOWN && isImeVisible()) {
-            currentFocus?.clearFocus()
-            getSystemService(InputMethodManager::class.java)
-                ?.hideSoftInputFromWindow(window.decorView.windowToken, 0)
+            dismissIme()
         }
         return super.dispatchTouchEvent(event)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && dismissImeOnFirstFocus) {
+            dismissImeOnFirstFocus = false
+            window.decorView.post { dismissIme() }
+        }
     }
 
     private fun isImeVisible(): Boolean =
@@ -93,6 +110,18 @@ class MainActivity : ComponentActivity() {
                     backupTaskViewModel = backupTaskViewModel,
                 )
             }
+        }
+        if (savedInstanceState != null) {
+            window.setSoftInputMode(
+                android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN,
+            )
+        }
+        if (savedInstanceState != null) {
+            window.decorView.post {
+                dismissIme()
+            }
+            window.decorView.postDelayed({ dismissIme() }, 350)
+            window.decorView.postDelayed({ dismissIme() }, 900)
         }
     }
 

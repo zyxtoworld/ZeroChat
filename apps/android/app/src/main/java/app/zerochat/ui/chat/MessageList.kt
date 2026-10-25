@@ -309,7 +309,11 @@ internal fun MessageList(
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(0.dp),
             ) {
-                if (!hasActiveChat) {
+                if (
+                    !hasActiveChat ||
+                    renderedMessageItems.isEmpty() ||
+                    messages.none { it.content.isNotBlank() || it.attachments.isNotEmpty() }
+                ) {
                     item(key = "empty-state") {
                         emptyContent()
                     }

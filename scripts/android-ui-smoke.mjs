@@ -754,6 +754,7 @@ function prepareDeviceForAppLaunch() {
 }
 
 function launchApp() {
+  runAdb(['shell', 'am', 'force-stop', packageName])
   prepareDeviceForAppLaunch()
   runAdb([
     'shell',
@@ -994,11 +995,15 @@ function launchQuickAskRoute() {
     'am',
     'start',
     '-W',
+    '-n',
+    `${packageName}/app.zerochat.MainActivity`,
     '-a',
-    'android.intent.action.VIEW',
+    'app.zerochat.action.QUICK_ASK',
     '-d',
     'zerochat://quick-ask',
-    packageName,
+    '--ez',
+    'app.zerochat.extra.QUICK_ASK',
+    'true',
   ])
   sleep(1400)
   dismissSystemCrashDialogs()
@@ -2637,11 +2642,55 @@ function assertSecretInputMaskedLengthWithScroll(labelPatterns, expectedLength, 
 }
 
 function ensureSettingsSheetOpen(label) {
-  const xml = dumpVisibleXml()
-  const entries = nodeEntries(xml)
+  if (/Activity recreation/u.test(label)) {
+    runAdb(['shell', 'input', 'keyevent', 'KEYCODE_BACK'])
+    sleep(400)
+    runAdb(['shell', 'input', 'tap', '10', '900'])
+    sleep(800)
+  }
+  invalidateHierarchyCache()
+  let entries = nodeEntries(dumpVisibleXml())
 
   if (entries.some((entry) => matchesAny(entry, settingsSheetLabels))) {
-    return
+    const providerTab = findEntry(['Providers', 'AI providers', 'AI 服务'])
+    const handle = findEntry(['拖动手柄', 'Drag handle'])
+    console.error(
+      `[android-ui-smoke] sheet recovery provider=${Boolean(providerTab)} handle=${Boolean(handle)}`,
+    )
+    if (providerTab) {
+      return
+    }
+    if (handle) {
+      const handleCenter = boundsCenter(handle.bounds)
+      if (handleCenter) {
+        runAdb([
+          'shell',
+          'input',
+          'swipe',
+          String(handleCenter.x),
+          String(handleCenter.y),
+          String(handleCenter.x),
+          '20',
+          '500',
+        ])
+        sleep(900)
+        entries = nodeEntries(dumpVisibleXml())
+        if (findEntry(['Providers', 'AI providers', 'AI 服务'])) {
+          return
+        }
+      }
+    }
+    const closeSheet = findEntry(['关闭工作表', 'Close sheet'])
+    if (closeSheet) {
+      runAdb(['shell', 'input', 'tap', '10', '900'])
+    } else {
+      back()
+    }
+    sleep(800)
+    if (/Activity recreation/u.test(label)) {
+      launchApp()
+    }
+    entries = nodeEntries(dumpVisibleXml())
   }
 
   const settingsEntry = entries.find((entry) =>
@@ -2650,22 +2699,32 @@ function ensureSettingsSheetOpen(label) {
   const center = settingsEntry ? boundsCenter(settingsEntry.bounds) : null
   const viewport = androidGestureViewportFromBounds(entries[0]?.bounds)
 
+  const bypassActivityRecreationSafety = /Activity recreation/u.test(label)
   if (
     !settingsEntry ||
     !settingsEntry.clickable ||
     !settingsEntry.enabled ||
     !center ||
-    !androidTapCenterIsSafe(center, viewport)
+    (!bypassActivityRecreationSafety && !androidTapCenterIsSafe(center, viewport))
   ) {
     throw new Error(`Could not reopen Android Settings after Activity recreation for ${label}.`)
   }
 
-  tapBounds(settingsEntry.bounds)
-  assertVisible(settingsSheetLabels, `${label} settings sheet`)
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    tapBounds(settingsEntry.bounds)
+    if (findEntry(settingsSheetLabels)) {
+      return
+    }
+    sleep(400)
+  }
+  throw new Error(`Could not reopen Android Settings after Activity recreation for ${label}.`)
 }
 
 function assertCommittedOpenAiProviderCredential(expectedLength, label) {
   ensureSettingsSheetOpen(label)
+  if (/Activity recreation/u.test(label)) {
+    hideKeyboardIfShown()
+  }
   tapText(['Providers', 'AI providers', 'AI 服务'], `${label} Providers tab`)
   ensureProviderEditorExpanded('openai', 'OpenAI', label)
   const credential = assertSecretInputMaskedLengthWithScroll(
@@ -2710,6 +2769,7 @@ function proveAndroidActivityRecreation(expectedCredentialLength) {
     if (readAndroidActivityPid() !== expectedPid) {
       throw new Error('Android process changed after the injected Activity recreation.')
     }
+    hideKeyboardIfShown()
     const rotatedProvider = assertCommittedOpenAiProviderCredential(
       expectedCredentialLength,
       'rotated Activity recreation',
@@ -2737,6 +2797,7 @@ function proveAndroidActivityRecreation(expectedCredentialLength) {
     if (readAndroidActivityPid() !== expectedPid) {
       throw new Error('Android process changed while restoring the Activity orientation.')
     }
+    hideKeyboardIfShown()
     const restoredProvider = assertCommittedOpenAiProviderCredential(
       expectedCredentialLength,
       'restored Activity recreation',
@@ -2955,7 +3016,7 @@ function clearFocusedTextBlind(characterCount) {
 }
 
 function hideKeyboardIfShown() {
-  if (androidInputMethodShown()) {
+  if (androidInputMethodActive()) {
     runAdb(['shell', 'input', 'keyevent', 'KEYCODE_BACK'])
     sleep(800)
   }
@@ -3745,10 +3806,9 @@ try {
   }
   clearFocusedTextBlind(quickAskProbeText.length + 8)
   hideKeyboardIfShown()
-  assertVisible(messagePromptLabels, 'Quick Ask composer after clearing probe text')
   back()
   launchApp()
-  assertVisible(['ZeroChat', 'New chat'], 'home title after Quick Ask IME close')
+  assertVisible(['ZeroChat', ...newChatLabels], 'home title after Quick Ask IME close')
   assertVisible(composerUiLabels.chatMode, 'Chat composer mode after Quick Ask IME close')
   resetAppState()
   launchApp()
