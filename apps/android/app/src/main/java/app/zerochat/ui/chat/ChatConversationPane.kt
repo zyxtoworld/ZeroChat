@@ -113,6 +113,7 @@ internal fun ChatConversationPane(
                         activeConversation = activeConversation,
                         conversationPickerOpen = conversationPickerOpen,
                         onConversationPickerOpenChange = onConversationPickerOpenChange,
+                        onDismissKeyboard = onDismissKeyboard,
                         onSelectConversation = onSelectConversation,
                         onDeleteConversation = onDeleteConversation,
                         i18n = i18n,

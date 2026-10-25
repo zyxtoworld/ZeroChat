@@ -131,7 +131,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-import java.util.concurrent.atomic.AtomicReference
 
 enum class ComposerMode(val title: String) {
     Chat("Chat"),
@@ -195,7 +194,7 @@ internal fun ChatScreen(
     var conversationSearch by rememberSaveable { mutableStateOf("") }
     var conversationPickerOpen by rememberSaveable { mutableStateOf(false) }
     var conversationPendingDeleteId by rememberSaveable { mutableStateOf<String?>(null) }
-    val pendingNewConversation = remember { AtomicReference<Conversation?>(null) }
+    var pendingNewConversationId by remember { mutableStateOf<String?>(null) }
     var sourceImageUriString by rememberSaveable { mutableStateOf<String?>(null) }
     var maskImageUriString by rememberSaveable { mutableStateOf<String?>(null) }
     var sourceImage by remember { mutableStateOf<ImageUpload?>(null) }
@@ -425,7 +424,7 @@ internal fun ChatScreen(
     }
 
     fun selectConversation(id: String) {
-        pendingNewConversation.set(null)
+        pendingNewConversationId = null
         commit(selectConversationSnapshot(data, id))
     }
 
@@ -607,7 +606,9 @@ internal fun ChatScreen(
 
     fun createChat(): Conversation? {
         val fallbackTitle = i18n.t("title.newChat")
-        val pending = pendingNewConversation.get()
+        val pending = pendingNewConversationId?.let { pendingId ->
+            data.conversations.firstOrNull { it.id == pendingId }
+        }
         if (
             canReuseUninteractedNewConversation(
                 conversation = pending,
@@ -661,7 +662,7 @@ internal fun ChatScreen(
         }
 
         val conversation = newConversation(provider, model, i18n.t("title.newChat"))
-        pendingNewConversation.set(conversation)
+        pendingNewConversationId = conversation.id
         commit(addConversation(data, conversation))
         return conversation
     }
@@ -983,7 +984,12 @@ internal fun ChatScreen(
                 onConversationSearchChange = { conversationSearch = it },
                 onClearConversationSearch = { conversationSearch = "" },
                 conversationPickerOpen = conversationPickerOpen,
-                onConversationPickerOpenChange = { conversationPickerOpen = it },
+                onConversationPickerOpenChange = { open ->
+                    conversationPickerOpen = open
+                    if (!open) {
+                        dismissKeyboard()
+                    }
+                },
                 filteredConversations = filteredConversations,
                 conversationSearchActive = conversationSearchActive,
                 activeConversation = activeConversation,

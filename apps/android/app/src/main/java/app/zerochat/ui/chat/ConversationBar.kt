@@ -55,6 +55,7 @@ internal fun CompactConversationBar(
     onConversationPickerOpenChange: (Boolean) -> Unit,
     onSelectConversation: (String) -> Unit,
     onDeleteConversation: (Conversation) -> Unit,
+    onDismissKeyboard: () -> Unit,
     i18n: NativeI18n,
     showTrigger: Boolean,
 ) {
@@ -84,7 +85,8 @@ internal fun CompactConversationBar(
                 modifier = Modifier
                     .fillMaxHeight(0.82f)
                     .fillMaxWidth()
-                    .navigationBarsPadding(),
+                    .navigationBarsPadding()
+                    .clickable(onClick = onDismissKeyboard),
             ) {
                 ConversationSearchField(
                     value = conversationSearch,
@@ -98,8 +100,9 @@ internal fun CompactConversationBar(
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        .weight(1f)
+                        .clickable(onClick = onDismissKeyboard)
+                        .padding(PaddingValues(horizontal = 12.dp, vertical = 8.dp)),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     items(filteredConversations, key = { it.id }) { conversation ->

@@ -18,7 +18,7 @@ ZeroChat uses platform-native user interfaces with a shared data protocol.
 The Web/PWA client remains available because browsers and Cloudflare Pages provide broad reach with low hosting cost. Desktop and mobile clients do not use Tauri or Capacitor as the primary direction:
 
 - Windows uses WinUI 3 for native notifications, windows, credentials, and installation behavior.
-- Android uses Kotlin and Compose for list performance, input-method behavior, background constraints, and system sharing. The chat list treats a long latest message as a scrollable item and aligns its bottom when new content arrives, so streaming does not reset the viewport to the answer's first line.
+- Android uses Kotlin and Compose for list performance, input-method behavior, background constraints, and system sharing. The chat list treats a long latest message as a scrollable item and aligns its bottom when new content arrives, so streaming does not reset the viewport to the answer's first line. Conversation creation keeps one pending empty session per active UI state; opening the conversation sheet or tapping its content dismisses the IME before returning to chat.
 - iOS and macOS use SwiftUI with Keychain, files, windows, and platform multi-device conventions.
 - Linux uses Rust and GTK4 for fast startup, low memory overhead, and desktop-environment integration.
 
