@@ -75,6 +75,7 @@ import { prepareConversationContext } from '../services/contextCompaction'
 import { downloadJsonFile } from '../services/downloadJsonFile'
 import {
   AUTO_CONVERSATION_TITLE_MAX_LENGTH,
+  canReuseUninteractedNewConversation,
   CONVERSATION_PLACEHOLDER_TITLE,
   normalizeConversationTitleDraft,
   normalizeConversationTitleText,
@@ -4505,6 +4506,15 @@ export const useAppStore = create<AppState>()((set, get) => {
         notifyContained(appT(data, 'composer.addProviderFirst'), 'error')
         set({ settingsOpen: true })
         return Promise.resolve(false)
+      }
+
+      const activeConversation =
+        data.conversations.find(
+          (conversation) =>
+            conversation.id === data.preferences.activeConversationId,
+        ) ?? data.conversations[0]
+      if (canReuseUninteractedNewConversation(activeConversation)) {
+        return Promise.resolve(true)
       }
 
       return runConversationMutation(async () => {

@@ -1,6 +1,22 @@
 import SwiftUI
 import ZeroChatCore
 
+private struct AppleMessageScrollGeometry: Equatable {
+    let viewportHeight: CGFloat
+    let bottomY: CGFloat
+}
+
+private struct AppleMessageScrollGeometryKey: PreferenceKey {
+    static let defaultValue = AppleMessageScrollGeometry(viewportHeight: 0, bottomY: 0)
+
+    static func reduce(
+        value: inout AppleMessageScrollGeometry,
+        nextValue: () -> AppleMessageScrollGeometry
+    ) {
+        value = nextValue()
+    }
+}
+
 struct AppleChatConversationPane: View {
     @ObservedObject var model: ZeroChatViewModel
     let i18n: NativeI18n
@@ -14,6 +30,8 @@ struct AppleChatConversationPane: View {
     @FocusState.Binding var composerFocused: Bool
     let createConversation: () -> Void
     let onConversationChange: (String?) -> Void
+    @State private var messageListPinnedToBottom = true
+    @State private var messageScrollConversationId: String?
     let openSettings: (SettingsTab) -> Void
 
     var body: some View {
@@ -44,7 +62,8 @@ struct AppleChatConversationPane: View {
                     .padding(.bottom, 6)
             }
 
-            ScrollViewReader { proxy in
+            GeometryReader { viewport in
+                ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 12) {
                         if activeConversation == nil || (activeConversation?.messages.isEmpty ?? true) {
@@ -103,16 +122,49 @@ struct AppleChatConversationPane: View {
                             )
                             .id(message.id)
                         }
+                        GeometryReader { bottom in
+                            Color.clear
+                                .preference(
+                                    key: AppleMessageScrollGeometryKey.self,
+                                    value: AppleMessageScrollGeometry(
+                                        viewportHeight: viewport.size.height,
+                                        bottomY: bottom.frame(in: .named("apple-message-scroll")).maxY
+                                    )
+                                )
+                        }
+                        .frame(height: 1)
+                        .id("apple-message-list-bottom")
                     }
                     .padding()
                 }
+                .coordinateSpace(name: "apple-message-scroll")
+#if os(iOS)
+                .scrollDismissesKeyboard(.interactively)
+#endif
+                .simultaneousGesture(
+                    TapGesture().onEnded {
+                        composerFocused = false
+                    }
+                )
                 .refreshable {
                     await model.pullToRefreshSync()
                 }
+                .onPreferenceChange(AppleMessageScrollGeometryKey.self) { geometry in
+                    guard geometry.viewportHeight > 0 else { return }
+                    messageListPinnedToBottom = geometry.bottomY <= geometry.viewportHeight + 48
+                }
                 .task(id: messageScrollKey) {
-                    if let id = activeConversation?.messages.last?.id {
-                        proxy.scrollTo(id, anchor: .bottom)
+                    if messageScrollConversationId != activeConversationId {
+                        messageScrollConversationId = activeConversationId
+                        messageListPinnedToBottom = true
                     }
+                    guard messageListPinnedToBottom,
+                          let id = activeConversation?.messages.last?.id
+                    else {
+                        return
+                    }
+                    proxy.scrollTo(id, anchor: .bottom)
+                }
                 }
             }
 

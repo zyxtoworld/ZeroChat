@@ -687,14 +687,39 @@ describe('app store helpers', () => {
     ).toBe(translate('en-US', CONVERSATION_PLACEHOLDER_TITLE))
   })
 
-  it('creates unique Store conversations when WebCrypto collides or fails', async () => {
+  it('does not duplicate an untouched placeholder conversation', async () => {
     const data = resetStore()
+    const initialId = data.conversations[0].id
+
+    await expect(useAppStore.getState().createNewConversation()).resolves.toBe(true)
+
+    expect(useAppStore.getState().data?.conversations).toHaveLength(1)
+    expect(useAppStore.getState().data?.conversations[0]?.id).toBe(initialId)
+  })
+
+  it('creates unique Store conversations when WebCrypto collides or fails', async () => {
+    const data = freshData()
+    data.conversations[0].messages = [message('existing-turn', 'user', 'already used')]
+    resetStore(data)
     const restoredId = data.conversations[0].id
     vi.stubGlobal('crypto', { randomUUID: vi.fn(() => restoredId) })
 
     await expect(useAppStore.getState().createNewConversation()).resolves.toBe(true)
     const collision = useAppStore.getState().data?.conversations[0]
     expect(collision?.id).not.toBe(restoredId)
+    const collisionData = useAppStore.getState().data!
+    useAppStore.setState({
+      data: {
+        ...collisionData,
+        conversations: [
+          {
+            ...collisionData.conversations[0],
+            messages: [message('used-collision', 'user', 'already used')],
+          },
+          ...collisionData.conversations.slice(1),
+        ],
+      },
+    })
 
     vi.stubGlobal('crypto', {
       randomUUID: vi.fn(() => {
@@ -725,7 +750,9 @@ describe('app store helpers', () => {
   })
 
   it('updates conversations, providers, preferences, and settings state', async () => {
-    const data = resetStore()
+    const data = freshData()
+    data.conversations[0].messages = [message('existing-turn', 'user', 'already used')]
+    resetStore(data)
     const firstId = data.conversations[0].id
     const firstProviderId = data.providers[0].id
 

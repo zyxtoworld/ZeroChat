@@ -81,41 +81,49 @@ internal fun CompactConversationBar(
             onDismissRequest = { onConversationPickerOpenChange(false) },
             sheetState = sheetState,
         ) {
-            Column(
+            Box(
                 modifier = Modifier
                     .fillMaxHeight(0.82f)
                     .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .clickable(onClick = onDismissKeyboard),
+                    .navigationBarsPadding(),
             ) {
-                ConversationSearchField(
-                    value = conversationSearch,
-                    onValueChange = onConversationSearchChange,
-                    onClear = onClearConversationSearch,
-                    i18n = i18n,
-                )
-                if (conversationSearchActive && filteredConversations.isEmpty()) {
-                    ConversationSearchEmptyState(i18n)
-                }
-                LazyColumn(
+                Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .clickable(onClick = onDismissKeyboard)
-                        .padding(PaddingValues(horizontal = 12.dp, vertical = 8.dp)),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                        .fillMaxSize()
+                        .clickable(onClick = onDismissKeyboard),
                 ) {
-                    items(filteredConversations, key = { it.id }) { conversation ->
-                        ConversationListItem(
-                            conversation = conversation,
-                            selected = conversation.id == activeConversation?.id,
-                            onSelect = {
-                                onConversationPickerOpenChange(false)
-                                onSelectConversation(conversation.id)
-                            },
-                            onDelete = { onDeleteConversation(conversation) },
+                    ConversationSearchField(
+                        value = conversationSearch,
+                        onValueChange = onConversationSearchChange,
+                        onClear = onClearConversationSearch,
+                        i18n = i18n,
+                    )
+                    if (conversationSearchActive && filteredConversations.isEmpty()) {
+                        ConversationSearchEmptyState(
                             i18n = i18n,
+                            onDismissKeyboard = { onConversationPickerOpenChange(false) },
                         )
+                    }
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .clickable(onClick = onDismissKeyboard)
+                            .padding(PaddingValues(horizontal = 12.dp, vertical = 8.dp)),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(filteredConversations, key = { it.id }) { conversation ->
+                            ConversationListItem(
+                                conversation = conversation,
+                                selected = conversation.id == activeConversation?.id,
+                                onSelect = {
+                                    onConversationPickerOpenChange(false)
+                                    onSelectConversation(conversation.id)
+                                },
+                                onDelete = { onDeleteConversation(conversation) },
+                                i18n = i18n,
+                            )
+                        }
                     }
                 }
             }
@@ -266,13 +274,17 @@ internal fun ConversationSearchField(
 }
 
 @Composable
-internal fun ConversationSearchEmptyState(i18n: NativeI18n) {
+internal fun ConversationSearchEmptyState(
+    i18n: NativeI18n,
+    onDismissKeyboard: () -> Unit = {},
+) {
     Card(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant,
         ),
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(onClick = onDismissKeyboard)
             .padding(horizontal = 12.dp, vertical = 4.dp),
     ) {
         Column(

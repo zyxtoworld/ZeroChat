@@ -1,3 +1,4 @@
+use uuid::Uuid;
 use crate::{
     models::{AppSnapshot, Conversation, ProviderConfig},
     skills::normalize_whitespace,
@@ -34,7 +35,21 @@ pub(crate) fn default_conversation_provider(snapshot: &AppSnapshot) -> (String, 
             .unwrap_or_default(),
     )
 }
-
+pub(crate) fn active_conversation_is_untouched(snapshot: &AppSnapshot) -> bool {
+    snapshot
+        .preferences
+        .active_conversation_id
+        .as_deref()
+        .and_then(|id| {
+            snapshot
+                .conversations
+                .iter()
+                .find(|conversation| conversation.id == id)
+        })
+        .is_some_and(|conversation| {
+            conversation.messages.is_empty() && conversation.title.trim().is_empty()
+        })
+}
 pub(crate) fn ensure_active_conversation(
     snapshot: &mut AppSnapshot,
     first_message: &str,
@@ -74,7 +89,7 @@ fn ensure_active_conversation_with_provider(
         return existing_id;
     }
 
-    let conversation_id = format!("linux-conversation-{}", now);
+    let conversation_id = format!("linux-conversation-{}", Uuid::new_v4());
     let title = title_from_message(first_message);
     let (provider_id, model) = provider.map_or_else(
         || default_conversation_provider(snapshot),
@@ -114,5 +129,44 @@ pub(crate) fn title_from_message(message: &str) -> String {
         format!("{}...", preview)
     } else {
         preview
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::active_conversation_is_untouched;
+    use crate::{defaults::default_snapshot, models::Conversation};
+
+    #[test]
+    fn active_empty_placeholder_is_reused_but_used_chat_is_not() {
+        let mut snapshot = default_snapshot();
+        let now = snapshot.updated_at;
+        snapshot.conversations.push(Conversation {
+            id: "empty".to_owned(),
+            title: String::new(),
+            provider_id: "openai".to_owned(),
+            model: "gpt-5.5".to_owned(),
+            messages: vec![],
+            context_compaction: None,
+            created_at: now,
+            updated_at: now,
+        });
+        snapshot.preferences.active_conversation_id = Some("empty".to_owned());
+        assert!(active_conversation_is_untouched(&snapshot));
+
+        snapshot.conversations[0]
+            .messages
+            .push(crate::models::ChatMessage {
+                id: "message".to_owned(),
+                role: crate::models::MessageRole::User,
+                content: "used".to_owned(),
+                created_at: now,
+                status: Some("done".to_owned()),
+                error: None,
+                attachments: vec![],
+                queued_text_request: None,
+                offline_replay_claim: None,
+            });
+        assert!(!active_conversation_is_untouched(&snapshot));
     }
 }

@@ -1,5 +1,9 @@
-use super::{LinuxAppState, now_millis};
-use crate::{conversations::default_conversation_provider, models::Conversation};
+use super::{now_millis, LinuxAppState};
+use crate::{
+    conversations::{active_conversation_is_untouched, default_conversation_provider},
+    models::Conversation,
+};
+use uuid::Uuid;
 
 impl LinuxAppState {
     pub(crate) fn conversations(&self) -> Vec<Conversation> {
@@ -33,9 +37,13 @@ impl LinuxAppState {
     pub(crate) fn create_empty_conversation(&self) {
         {
             let mut snapshot = self.snapshot.borrow_mut();
+            if active_conversation_is_untouched(&snapshot) {
+                return;
+            }
+
             let now = now_millis();
             let (provider_id, model) = default_conversation_provider(&snapshot);
-            let conversation_id = format!("linux-conversation-{}", now);
+            let conversation_id = format!("linux-conversation-{}", Uuid::new_v4());
             snapshot.conversations.insert(
                 0,
                 Conversation {

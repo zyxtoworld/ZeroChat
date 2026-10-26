@@ -137,7 +137,7 @@ impl LinuxAppState {
                     snapshot.updated_at = now;
                 }
             } else {
-                let conversation_id = format!("linux-conversation-{}", now);
+                let conversation_id = format!("linux-conversation-{}", Uuid::new_v4());
                 snapshot.conversations.insert(
                     0,
                     Conversation {

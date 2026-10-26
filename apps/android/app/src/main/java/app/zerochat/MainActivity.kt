@@ -48,9 +48,15 @@ class MainActivity : ComponentActivity() {
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         if (event.actionMasked == MotionEvent.ACTION_DOWN && isImeVisible()) {
             dismissIme()
+            window.decorView.post { dismissIme() }
+            window.decorView.postDelayed({ dismissIme() }, 120)
         }
         return super.dispatchTouchEvent(event)
     }
+
+    private fun isImeVisible(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            window.decorView.rootWindowInsets?.isVisible(android.view.WindowInsets.Type.ime()) == true
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
@@ -60,9 +66,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun isImeVisible(): Boolean =
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-            window.decorView.rootWindowInsets?.isVisible(android.view.WindowInsets.Type.ime()) == true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()

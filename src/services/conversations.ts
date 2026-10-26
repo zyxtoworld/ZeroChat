@@ -54,6 +54,17 @@ export function displayConversationTitle(title: string, t: Translator): string {
     : title
 }
 
+export function canReuseUninteractedNewConversation(
+  conversation: Conversation | null | undefined,
+): boolean {
+  return (
+    conversation != null &&
+    conversation.messages.length === 0 &&
+    (conversation.title.trim() === '' ||
+      conversation.title === CONVERSATION_PLACEHOLDER_TITLE)
+  )
+}
+
 export function normalizeConversationTitleDraft(
   value: string,
 ): string {

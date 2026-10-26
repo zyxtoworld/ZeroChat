@@ -74,10 +74,12 @@ extension ZeroChatViewModel {
             notice = AppNotice(message: i18n.t("message.modelRequired"), kind: .warning)
             return nil
         }
-        guard let conversation = newConversationIfPossible(provider: provider, model: model) else {
-            return nil
+        if input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let existing = untouchedActiveConversation()
+        {
+            return existing.id
         }
-        return conversation.id
+        return newConversationIfPossible(provider: provider, model: model)?.id
     }
 
     func select(provider: ProviderConfig, model: String) {
@@ -188,8 +190,19 @@ extension ZeroChatViewModel {
             notice = AppNotice(message: i18n.t("message.modelRequired"), kind: .warning)
             return nil
         }
-        return newConversationIfPossible(provider: provider, model: model)
+        return untouchedActiveConversation()
+            ?? newConversationIfPossible(provider: provider, model: model)
     }
+    private func untouchedActiveConversation() -> Conversation? {
+        guard let conversation = activeConversation,
+              conversation.messages.isEmpty,
+              (conversation.title.isEmpty || conversation.title == i18n.t("title.newChat"))
+        else {
+            return nil
+        }
+        return conversation
+    }
+
 
     private func newConversationIfPossible(provider: ProviderConfig, model: String) -> Conversation? {
         let conversation = newConversation(
