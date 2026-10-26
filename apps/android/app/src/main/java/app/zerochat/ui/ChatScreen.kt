@@ -722,10 +722,10 @@ internal fun ChatScreen(
         val baseMessages = pending.baseMessages
         val assistantMessage = pending.pendingAssistantMessage
         if (!lease.runIfCurrent {
+            mainNotice = null
             commitWithSync(pendingSnapshot, autoSync = false)
             input = ""
             editingMessageId = null
-            mainNotice = InlineNotice(i18n.t("message.savedLocallySyncQueued"), NoticeKind.Success)
         }) {
             lease.release()
             return
@@ -803,6 +803,7 @@ internal fun ChatScreen(
                 }
             } catch (error: CancellationException) {
                 lease.runIfCurrent {
+                    mainNotice = null
                     commitAssistantMessage(
                         stoppedAssistantMessage(
                             pendingMessage = assistantMessage,
@@ -813,6 +814,7 @@ internal fun ChatScreen(
                 }
             } catch (error: Throwable) {
                 lease.runIfCurrent {
+                    mainNotice = null
                     commitAssistantMessage(
                         assistantMessage.copy(
                             content = i18n.t("message.generationFailed"),
