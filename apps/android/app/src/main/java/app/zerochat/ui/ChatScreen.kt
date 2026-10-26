@@ -784,6 +784,7 @@ internal fun ChatScreen(
                     },
                     onVisibleText = { visibleText ->
                         lease.runIfCurrent {
+                            mainNotice = null
                             commitStreamingContent(normalizeAssistantMessageContent(visibleText))
                         }
                     },
@@ -791,6 +792,7 @@ internal fun ChatScreen(
                 currentCoroutineContext().ensureActive()
                 val normalizedText = normalizeAssistantMessageContent(completedText)
                 lease.runIfCurrent {
+                    mainNotice = null
                     commitAssistantMessage(
                         assistantMessage.copy(
                             content = normalizedText.ifBlank { i18n.t("message.providerEmptyResponse") },
