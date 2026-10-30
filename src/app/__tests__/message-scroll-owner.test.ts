@@ -143,6 +143,7 @@ vi.mock('../../services/messageContextMenuController', () => ({
 
 vi.mock('../../services/messageRendering', () => ({
   messageCopyText: () => '',
+  messageDisplayContent: (message: { content: string }) => message.content,
 }))
 
 vi.mock('../../services/messageVirtualization', async (importOriginal) => {

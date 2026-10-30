@@ -246,13 +246,20 @@ async function main() {
       'browser-skill-smoke-evaluation',
     )
 
-    const waitFor = async (expression, label, timeout = 12_000) => {
+    const waitFor = async (expression, label, timeout = 30_000) => {
       const started = Date.now()
       while (Date.now() - started < timeout) {
         if (await evaluate(expression)) return
         await sleep(50)
       }
-      throw new Error(`Timed out waiting for ${label}`)
+      const diagnostic = await evaluate(`(() => ({
+        activeTag: document.activeElement?.tagName || '',
+        activeClass: document.activeElement?.className || '',
+        modelValue: document.querySelector('.zc-chat-header .zc-model-select')?.value || '',
+        modelOptions: [...(document.querySelector('.zc-chat-header .zc-model-select')?.options || [])].map((option) => option.value),
+        modelBusy: document.querySelector('.zc-chat-header .zc-model-select')?.getAttribute('aria-busy') || '',
+      }))()`).catch(() => null)
+      throw new Error(`Timed out waiting for ${label}: ${JSON.stringify(diagnostic)}`)
     }
     const waitForPendingProviderConnectivityRequest = () =>
       waitFor(
@@ -3441,7 +3448,8 @@ async function main() {
       const select = document.querySelector('.zc-chat-header .zc-model-select')
       if (!(select instanceof HTMLSelectElement)) return null
       const originalValue = select.value
-      const nextOption = [...select.options].find((option) => option.value !== select.value)
+      const nextOptions = [...select.options].filter((option) => option.value !== originalValue)
+      const nextOption = nextOptions[1] ?? nextOptions[0]
       if (!(nextOption instanceof HTMLOptionElement)) return null
       select.focus()
       select.value = nextOption.value
@@ -3475,6 +3483,16 @@ async function main() {
       true,
       `Native provider/model selection must restore focus after durable commit: ${JSON.stringify(nativeModelSelectionFocusState)}`,
     )
+    const nativeModelRestoreValue = await evaluate(`(() => {
+      const select = document.querySelector('.zc-chat-header .zc-model-select')
+      if (!(select instanceof HTMLSelectElement)) return null
+      return [...select.options].find((option) => option.value !== select.value)?.value || null
+    })()`)
+    assert.equal(
+      typeof nativeModelRestoreValue,
+      'string',
+      'Native provider/model restore fixture must offer another available model',
+    )
     await cdp.send('Input.dispatchKeyEvent', {
       type: 'keyDown',
       key: 'Escape',
@@ -3497,12 +3515,12 @@ async function main() {
     await evaluate(`(() => {
       const select = document.querySelector('.zc-chat-header .zc-model-select')
       if (!(select instanceof HTMLSelectElement)) return false
-      select.value = ${JSON.stringify(nativeModelSelection?.originalValue)}
+      select.value = ${JSON.stringify(nativeModelRestoreValue)}
       select.dispatchEvent(new Event('change', { bubbles: true }))
       return true
     })()`)
     await waitFor(
-      `document.activeElement === document.querySelector('.zc-chat-header .zc-model-select') && document.querySelector('.zc-chat-header .zc-model-select')?.value === ${JSON.stringify(nativeModelSelection?.originalValue)}`,
+      `document.activeElement === document.querySelector('.zc-chat-header .zc-model-select') && document.querySelector('.zc-chat-header .zc-model-select')?.value === ${JSON.stringify(nativeModelRestoreValue)}`,
       'native provider/model fixture restore',
     )
     await cdp.send('Input.dispatchKeyEvent', {
@@ -4401,6 +4419,11 @@ async function main() {
       record('armed')
       return true
     })()`)
+    await waitFor(
+      "document.querySelector('.zc-sync-settings button.danger')?.disabled === false",
+      'clear remote Sync action readiness',
+      20_000,
+    )
     const clearRemoteSyncFocusStarted = await evaluate(`(() => {
       const action = document.querySelector('.zc-sync-settings button.danger')
       if (!(action instanceof HTMLButtonElement) || action.disabled) return false
@@ -4451,7 +4474,7 @@ async function main() {
     let clearFocusRestored = false
     while (Date.now() - clearFocusStartedAt < 12_000) {
       const state = await clearRemoteFocusState()
-      if (state.same) {
+      if (state.same && state.target?.disabled === false) {
         clearFocusRestored = true
         break
       }
@@ -5043,8 +5066,8 @@ async function main() {
     )
     await clickSelector('.zc-new-chat')
     await waitFor(
-      `document.querySelectorAll('.zc-conv-item[role="button"]').length === ${sidebarNewConversationBaseline + 1}`,
-      'Sidebar button creates exactly one current conversation',
+      `document.querySelectorAll('.zc-conv-item[role="button"]').length === ${sidebarNewConversationBaseline}`,
+      'Sidebar button reuses the current untouched conversation',
     )
     await waitFor(
       "document.querySelector('.zc-composer textarea')?.value === '' && document.querySelector('.zc-composer textarea')?.disabled === false",

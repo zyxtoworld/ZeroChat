@@ -195,17 +195,37 @@ public actor AiClient {
         var totalBytes = 0
         var streamShouldContinue = true
 
+        func appendStreamText(_ candidate: String, cumulative: Bool) -> String? {
+            guard !candidate.isEmpty else { return nil }
+            if !cumulative {
+                received += candidate
+                return received
+            }
+            if candidate == received || received.hasPrefix(candidate) {
+                return nil
+            }
+
+            let next = received.isEmpty || !candidate.hasPrefix(received)
+                ? candidate
+                : String(candidate.dropFirst(received.count))
+            guard !next.isEmpty else { return nil }
+
+            received += next
+            return received
+        }
+
         func consumeSseLine(_ rawLine: String) -> (partial: String?, shouldContinue: Bool) {
             let line = rawLine.trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
 
             if line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let event = sseEventDelta(from: eventData)
                 eventData.removeAll(keepingCapacity: true)
-                if let delta = event.delta, !delta.isEmpty {
-                    received += delta
-                    return (received, event.shouldContinue)
-                }
-                return (nil, event.shouldContinue)
+                return (
+                    event.delta.flatMap {
+                        appendStreamText($0, cumulative: event.cumulative)
+                    },
+                    event.shouldContinue
+                )
             }
 
             if line.hasPrefix("data:") {
@@ -261,9 +281,10 @@ public actor AiClient {
 
         if streamShouldContinue, !eventData.isEmpty {
             let event = sseEventDelta(from: eventData)
-            if let delta = event.delta, !delta.isEmpty {
-                received += delta
-                await onPartial(received)
+            if let partial = event.delta.flatMap({
+                appendStreamText($0, cumulative: event.cumulative)
+            }) {
+                await onPartial(partial)
             }
         }
 

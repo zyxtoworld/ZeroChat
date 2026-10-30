@@ -23,6 +23,7 @@ export interface PreparedConversationContext {
   messages: ChatMessage[]
   compactionItems?: unknown[]
   compaction?: ConversationContextCompaction
+  maxInputTokens?: number
 }
 
 interface PrepareConversationContextOptions {
@@ -263,8 +264,12 @@ export async function prepareConversationContext(
     options.provider,
     options.model,
   )
-  if (totalTokens(existing.messages) <= budget) return existing
-  if (totalTokens(options.messages) < REMOTE_COMPACTION_MIN_TOKENS) return existing
+  if (totalTokens(existing.messages) <= budget) {
+    return { ...existing, maxInputTokens: budget }
+  }
+  if (totalTokens(options.messages) < REMOTE_COMPACTION_MIN_TOKENS) {
+    return { ...existing, maxInputTokens: budget }
+  }
 
   if (!options.existingCompaction) {
     try {
@@ -272,6 +277,7 @@ export async function prepareConversationContext(
       if (items) {
         return {
           messages: [],
+          maxInputTokens: budget,
           compactionItems: items,
           compaction: {
             source: 'remote-compaction',
@@ -290,7 +296,9 @@ export async function prepareConversationContext(
   }
 
   const { older, recent } = splitForLocalCompaction(existing.messages, budget)
-  if (older.length === 0 || recent.length === 0) return existing
+  if (older.length === 0 || recent.length === 0) {
+    return { ...existing, maxInputTokens: budget }
+  }
   let summary: string
   try {
     summary = await runLocalSummary(options, older, recent)
@@ -299,7 +307,7 @@ export async function prepareConversationContext(
     summary = deterministicSummary(older)
   }
   const checkpoint = older.at(-1)?.id
-  if (!checkpoint) return existing
+  if (!checkpoint) return { ...existing, maxInputTokens: budget }
   const summaryMessage: ChatMessage = {
     id: `context-summary-${Date.now()}`,
     role: 'system',
@@ -307,6 +315,7 @@ export async function prepareConversationContext(
     createdAt: Date.now(),
   }
   return {
+    maxInputTokens: budget,
     messages: [
       ...existing.messages.filter((message) => message.role === 'system'),
       summaryMessage,

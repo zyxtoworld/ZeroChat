@@ -51,16 +51,22 @@ fun ProviderEditor(
     onEditorBroughtIntoView: () -> Unit,
     onProviderChange: (ProviderConfig) -> Unit,
     onApiKeyChange: (String) -> Unit,
-    savingKey: Boolean,
     checking: Boolean,
     deleting: Boolean,
     i18n: NativeI18n,
     onCheckConnectivity: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    var localKey by remember(provider.id, apiKey) { mutableStateOf(apiKey) }
+    var localKey by remember(provider.id) { mutableStateOf(apiKey) }
     val connected = providerSettingsIsConnected(provider, apiKey)
+    var lastCommittedKey by remember(provider.id) { mutableStateOf(apiKey) }
     val editorTopRequester = remember(provider.id) { BringIntoViewRequester() }
+    LaunchedEffect(provider.id, apiKey) {
+        if (localKey == lastCommittedKey) {
+            localKey = apiKey
+        }
+        lastCommittedKey = apiKey
+    }
 
     if (!expanded) {
         ProviderSummaryCard(
@@ -145,7 +151,10 @@ fun ProviderEditor(
             if (provider.needsApiKey) {
                 OutlinedTextField(
                     value = localKey,
-                    onValueChange = { localKey = it },
+                    onValueChange = {
+                        localKey = it
+                        onApiKeyChange(it)
+                    },
                     label = { Text(i18n.t("field.providerKey")) },
                     supportingText = { Text(i18n.t("settings.providerKeyHint")) },
                     modifier = Modifier
@@ -155,13 +164,6 @@ fun ProviderEditor(
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                 )
-                OutlinedButton(
-                    onClick = { onApiKeyChange(localKey) },
-                    enabled = localKey != apiKey && !savingKey,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(i18n.t("button.save"))
-                }
             }
             if (provider.kind != ProviderKind.Anthropic) {
                 Row(verticalAlignment = Alignment.CenterVertically) {

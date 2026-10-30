@@ -200,4 +200,14 @@ class SkillSettingsHelpersTest {
         assertFalse(notice.contains("provider.invalid"))
         assertFalse(notice.contains("sk-test-not-a-real-key"))
     }
+
+    @Test
+    fun skillImportFailureNoticeShowsSafeLocalValidationMessage() {
+        val i18n = NativeI18n.forMode("en-US")
+        val expected = i18n.t("message.skillFileEmpty")
+
+        val notice = skillImportFailureNotice(i18n, SkillImportUserError(expected))
+
+        assertEquals(expected, notice)
+    }
 }

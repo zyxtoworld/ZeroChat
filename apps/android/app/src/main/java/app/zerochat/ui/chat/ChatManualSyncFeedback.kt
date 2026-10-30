@@ -50,4 +50,10 @@ internal fun manualSyncActionEnabled(
 ): Boolean =
     !manualSyncRunning && (!cloudSyncConfigured || manualSyncBlockedReason == null)
 
+internal fun shouldShowCloudSyncBlockedReason(
+    syncStatus: String,
+    blockedReason: String?,
+): Boolean =
+    blockedReason != null && blockedReason != syncStatus
+
 private const val MANUAL_SYNC_COMPLETE_STATUS = "Sync complete"

@@ -11,7 +11,6 @@ import {
 } from './android-device-selection.mjs'
 import {
   ANDROID_ACTIVITY_LIFECYCLE_LOG_TAG,
-  androidActivityLifecycleEventsAfterCursor,
   assertAndroidActivityRecreationEvents,
   firstAndroidActivityRecreationEvents,
   parseAndroidActivityLifecycleEvents,
@@ -475,6 +474,69 @@ const settingsActionLabels = [
   '설정',
   'Réglages',
 ]
+const providerTabLabels = [
+  'Providers',
+  'AI 服务',
+  'Proveedores',
+  'प्रदाता',
+  'المزودون',
+  'Provedores',
+  'Провайдеры',
+  'プロバイダー',
+  '공급자',
+  'Fournisseurs',
+]
+
+const dataTabLabels = [
+  'Data',
+  '数据',
+  'Datos',
+  'डेटा',
+  'البيانات',
+  'Dados',
+  'Данные',
+  'データ',
+  '데이터',
+  'Données',
+]
+const githubTokenFieldLabels = [
+  'GitHub token',
+  'GitHub 令牌',
+  'Token de GitHub',
+  'GitHub टोकन',
+  'رمز GitHub',
+  'Token do GitHub',
+  'Токен GitHub',
+  'GitHub トークン',
+  'GitHub 토큰',
+  'Jeton GitHub',
+]
+
+const dataPassphraseFieldLabels = [
+  'Data encryption password',
+  '数据加密密码',
+  'Contraseña de cifrado de datos',
+  'डेटा एन्क्रिप्शन पासवर्ड',
+  'كلمة مرور تشفير البيانات',
+  'Senha de criptografia de dados',
+  'Пароль шифрования данных',
+  'データ暗号化パスワード',
+  '데이터 암호화 비밀번호',
+  'Mot de passe de chiffrement des données',
+]
+
+const saveActionLabels = [
+  'Save',
+  '保存',
+  'Guardar',
+  'सहेजें',
+  'حفظ',
+  'Salvar',
+  'Сохранить',
+  '保存',
+  '저장',
+  'Enregistrer',
+]
 
 const featureHintDismissLabels = [
   'Got it',
@@ -609,6 +671,18 @@ const providerKeyFieldLabels = [
   'プロバイダーキー',
   '공급자 키',
   'Clé du fournisseur',
+]
+const providerNotConnectedLabels = [
+  'Not connected',
+  '未连接',
+  'No conectado',
+  'कनेक्टेड नहीं',
+  'غير متصل',
+  'Não conectado',
+  'Не подключено',
+  '未接続',
+  '연결 안 됨',
+  'Non connecté',
 ]
 
 const composerUiLabels = {
@@ -866,39 +940,20 @@ function androidActivityLifecycleLog() {
   })
 }
 
-function androidActivityLifecycleCursor(expectedPid) {
-  const output = androidActivityLifecycleLog()
-  const events = parseAndroidActivityLifecycleEvents(output).filter(
-    (event) => event.pid === expectedPid,
-  )
-
-  if (events.length === 0) {
-    throw new Error('Expected the current Android process to have a lifecycle log event.')
-  }
-
-  return {
-    lastInstanceId: Math.max(...events.map((event) => event.instanceId)),
-  }
+function clearAndroidActivityLifecycleLog() {
+  runAdb(['logcat', '-c'])
 }
 
-function lifecycleEventsAfterCursor(output, expectedPid, cursor) {
-  return androidActivityLifecycleEventsAfterCursor(
-    parseAndroidActivityLifecycleEvents(output).filter(
-      (event) => event.pid === expectedPid,
-    ),
-    cursor.lastInstanceId,
-  )
-}
-
-function waitForAndroidActivityRecreation(expectedPid, lifecycleCursor, label) {
+function waitForAndroidActivityRecreation(expectedPid, label) {
   let lastError = null
   let lastEvents = []
 
   for (let attempt = 0; attempt < 30; attempt += 1) {
-    const currentLog = androidActivityLifecycleLog()
-    lastEvents = lifecycleEventsAfterCursor(currentLog, expectedPid, lifecycleCursor)
-
     try {
+      const currentLog = androidActivityLifecycleLog()
+      lastEvents = parseAndroidActivityLifecycleEvents(currentLog).filter(
+        (event) => event.pid === expectedPid,
+      )
       return assertAndroidActivityRecreationEvents({
         expectedPid,
         events: firstAndroidActivityRecreationEvents(lastEvents),
@@ -913,7 +968,7 @@ function waitForAndroidActivityRecreation(expectedPid, lifecycleCursor, label) {
   throw new Error(
     `Could not verify ${label}: ${
       lastError instanceof Error ? lastError.message : 'lifecycle events were unavailable'
-    }. Events after cursor: ${JSON.stringify(lastEvents)}`,
+    }. Events observed: ${JSON.stringify(lastEvents)}`,
   )
 }
 
@@ -1535,20 +1590,28 @@ function waitForAndroidExternalLinkOpenOrNull() {
   return null
 }
 
-function tapTextEntryTarget(entry, target, label, adjustment = 0) {
+function tapTextEntryTarget(entry, target, label, options = {}) {
   const rect = boundsRect(entry.bounds)
   const text = entry.text || entry.description
   const index = text.indexOf(target)
+  const {
+    adjustment = 0,
+    contentWidthRatio = 1,
+    verticalRatio = 0.5,
+  } = options
 
   if (!rect || index < 0 || !text.length) {
     throw new Error(`Could not locate Android text target for ${label}.`)
   }
 
   const targetRatio = (index + target.length / 2) / text.length
-  const xRatio = Math.min(0.92, Math.max(0.08, targetRatio + adjustment))
+  const xRatio = Math.min(
+    0.92,
+    Math.max(0.08, targetRatio * contentWidthRatio + adjustment),
+  )
   const point = {
     x: Math.round(rect.left + rect.width * xRatio),
-    y: Math.round((rect.top + rect.bottom) / 2),
+    y: Math.round(rect.top + rect.height * verticalRatio),
   }
 
   runAdb(['shell', 'input', 'tap', String(point.x), String(point.y)])
@@ -1559,8 +1622,13 @@ function tapTextEntryTarget(entry, target, label, adjustment = 0) {
 function openMarkdownInlineLink(entry, url, label) {
   let lastPoint = null
 
-  for (const adjustment of [0, 0.08, -0.08, 0.14]) {
-    lastPoint = tapTextEntryTarget(entry, url, label, adjustment)
+  for (const options of [
+    { contentWidthRatio: 0.6, verticalRatio: 0.75 },
+    { contentWidthRatio: 0.6, verticalRatio: 0.5 },
+    { contentWidthRatio: 0.6, verticalRatio: 0.25 },
+    { contentWidthRatio: 0.45, verticalRatio: 0.75 },
+  ]) {
+    lastPoint = tapTextEntryTarget(entry, url, label, options)
     const evidence = waitForAndroidExternalLinkOpenOrNull()
 
     if (evidence) {
@@ -1577,6 +1645,8 @@ function openMarkdownInlineLink(entry, url, label) {
     if (!visiblePackages(xml).includes(packageName)) {
       break
     }
+
+    back()
   }
 
   return {
@@ -1587,6 +1657,7 @@ function openMarkdownInlineLink(entry, url, label) {
     tapPoint: lastPoint,
   }
 }
+
 
 function assertAndroidDocumentPickerVisible(kind) {
   for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -1606,6 +1677,14 @@ function assertAndroidDocumentPickerVisible(kind) {
         'Files in Downloads',
         'Downloads',
         'Documents',
+        '下载',
+        '文档',
+        '文件',
+        '最近',
+        '打开',
+        '保存',
+        '显示根目录',
+        '搜索',
         'No items',
         'Show roots',
         /zerochat-encrypted/u,
@@ -1659,7 +1738,7 @@ function androidInputMethodActive() {
     return false
   }
 
-  return /(?:mInputShown|mIsInputViewShown|inputShown)=true/u.test(result.stdout)
+  return /\b(?:mInputShown|inputShown)=true\b/u.test(result.stdout)
 }
 
 function assertAndroidImeVisible() {
@@ -1699,6 +1778,57 @@ function assertAndroidInputMethodShown(label) {
   }
 
   throw new Error(`Expected Android IME to be shown for ${label}.`)
+}
+
+function tapSettingsNonInteractiveArea(label) {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const entries = nodeEntries(dumpVisibleXml())
+    const viewport = androidGestureViewportFromBounds(entries[0]?.bounds)
+    const right = viewport.left + viewport.width
+    const bottom = viewport.top + viewport.height
+    const candidates = [
+      { x: viewport.left + 60, y: viewport.top + 520 },
+      { x: right - 60, y: viewport.top + 520 },
+      { x: viewport.left + 60, y: viewport.top + 450 },
+      { x: right - 60, y: viewport.top + 450 },
+      { x: viewport.left + 24, y: viewport.top + 300 },
+      { x: right - 24, y: viewport.top + 300 },
+    ]
+    const target = candidates.find((point) =>
+      point.x >= viewport.left &&
+      point.x <= right &&
+      point.y >= viewport.top &&
+      point.y <= bottom &&
+      !entries.some((entry) =>
+        (entry.className === 'android.widget.EditText' ||
+          entry.clickable === true ||
+          entry.clickable === 'true') &&
+        boundsContainsPoint(entry.bounds, point, 4),
+      ),
+    )
+
+    if (target) {
+      runAdb(['shell', 'input', 'tap', String(target.x), String(target.y)])
+      sleep(800)
+      if (!androidInputMethodActive()) {
+        return
+      }
+    }
+    sleep(300)
+  }
+
+  throw new Error(`Could not dismiss Android IME by tapping settings blank area for ${label}.`)
+}
+
+function assertAndroidInputMethodHidden(label) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (!androidInputMethodActive()) {
+      return
+    }
+    sleep(500)
+  }
+
+  throw new Error(`Expected Android IME to be hidden for ${label}.`)
 }
 
 function dismissBlockingSystemDialog(xml) {
@@ -2618,40 +2748,43 @@ function assertEmptySecretInputWithScroll(labelPatterns, label) {
 }
 
 function assertSecretInputMaskedLengthWithScroll(labelPatterns, expectedLength, label) {
-  tapLabeledEditTextWithScroll(labelPatterns, label)
+  let observed = null
 
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const focused = focusedEditTextEntry()
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    const match = findLabeledEditText(labelPatterns)
+    const editText = match?.editText ?? null
+    observed = editText
 
-    if (focused?.password && focused.text.length === expectedLength) {
+    if (editText?.password && editText.text.length === expectedLength) {
+      sleep(800)
       return {
-        bounds: focused.bounds,
-        maskedLength: focused.text.length,
+        bounds: editText.bounds,
+        maskedLength: editText.text.length,
       }
     }
 
-    sleep(400)
+    if (!match) {
+      swipeContentUpBounded()
+    } else {
+      sleep(400)
+    }
   }
 
-  const focused = focusedEditTextEntry()
   throw new Error(
     `Expected masked Android credential length ${expectedLength} for ${label}, saw ${
-      focused?.password ? focused.text.length : '<non-password>'
+      observed?.password ? observed.text.length : '<non-password>'
     }.`,
   )
 }
 
 function ensureSettingsSheetOpen(label) {
   if (/Activity recreation/u.test(label)) {
-    runAdb(['shell', 'input', 'keyevent', 'KEYCODE_BACK'])
-    sleep(400)
-    runAdb(['shell', 'input', 'tap', '10', '900'])
-    sleep(800)
+    hideKeyboardIfShown()
   }
   invalidateHierarchyCache()
   let entries = nodeEntries(dumpVisibleXml())
   const settingsSheetOpen = entries.some((entry) =>
-    ['关闭工作表', 'Close sheet'].includes(entry.description),
+    ['关闭工作表', 'Close sheet', '拖动手柄', 'Drag handle'].includes(entry.description)
   )
 
   if (settingsSheetOpen) {
@@ -2680,16 +2813,9 @@ function ensureSettingsSheetOpen(label) {
         }
       }
     }
-    const closeSheet = findEntry(['关闭工作表', 'Close sheet'])
-    if (closeSheet) {
-      runAdb(['shell', 'input', 'tap', '10', '900'])
-    } else {
-      back()
-    }
+    back()
     sleep(800)
-    if (/Activity recreation/u.test(label)) {
-      launchApp()
-    }
+    invalidateHierarchyCache()
     entries = nodeEntries(dumpVisibleXml())
   }
 
@@ -2732,17 +2858,11 @@ function assertCommittedOpenAiProviderCredential(expectedLength, label) {
     label,
   )
   hideKeyboardIfShown()
-  const saveAction = assertTextButtonEnabledWithScroll(
-    ['Save'],
-    false,
-    `${label} Save`,
-  )
 
   return {
     maskedLength: credential.maskedLength,
     providerId: 'openai',
-    saveActionDisabled: true,
-    saveActionBounds: saveAction.bounds,
+    autoSaved: true,
   }
 }
 
@@ -2757,12 +2877,11 @@ function proveAndroidActivityRecreation(expectedCredentialLength) {
     writeAndroidSystemSetting('system', 'accelerometer_rotation', 0)
     sleep(400)
 
-    const targetLogCursor = androidActivityLifecycleCursor(expectedPid)
+    clearAndroidActivityLifecycleLog()
     writeAndroidSystemSetting('system', 'user_rotation', targetRotation)
     waitForHierarchyRotation(targetRotation, 'injected Activity recreation')
     const rotatedLifecycle = waitForAndroidActivityRecreation(
       expectedPid,
-      targetLogCursor,
       'injected Activity recreation',
     )
     if (readAndroidActivityPid() !== expectedPid) {
@@ -2778,7 +2897,7 @@ function proveAndroidActivityRecreation(expectedCredentialLength) {
       'rotated Activity recreation',
     )
 
-    const restoreLogCursor = androidActivityLifecycleCursor(expectedPid)
+    clearAndroidActivityLifecycleLog()
     writeAndroidSystemSetting(
       'system',
       'user_rotation',
@@ -2790,7 +2909,6 @@ function proveAndroidActivityRecreation(expectedCredentialLength) {
     )
     const restoredLifecycle = waitForAndroidActivityRecreation(
       expectedPid,
-      restoreLogCursor,
       'Activity recreation orientation restore',
     )
     if (readAndroidActivityPid() !== expectedPid) {
@@ -2880,9 +2998,21 @@ function findTextButton(patterns) {
   }
 
   const entries = nodeEntries(xml)
+  const patternList = Array.isArray(patterns) ? patterns : [patterns]
   const labels = entries
     .map((entry) => ({ entry, center: boundsCenter(entry.bounds) }))
-    .filter(({ entry, center }) => center && matchesAny(entry, patterns))
+    .filter(({ entry, center }) => center && matchesAny(entry, patternList))
+    .sort((left, right) => {
+      const leftExact = patternList.some((pattern) =>
+        typeof pattern === 'string' &&
+          [left.entry.text, left.entry.description, left.entry.hint].includes(pattern),
+      )
+      const rightExact = patternList.some((pattern) =>
+        typeof pattern === 'string' &&
+          [right.entry.text, right.entry.description, right.entry.hint].includes(pattern),
+      )
+      return Number(rightExact) - Number(leftExact)
+    })
 
   for (const label of labels) {
     const candidates = entries
@@ -2907,11 +3037,16 @@ function findEnabledTextButton(patterns) {
 }
 
 function assertTextButtonEnabledWithScroll(patterns, expected, label) {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  for (let attempt = 0; attempt < 24; attempt += 1) {
     const entry = findTextButton(patterns)
 
     if (entry && entry.enabled === expected) {
       return { bounds: entry.bounds }
+    }
+
+    if (entry && !expected && entry.enabled) {
+      sleep(500)
+      continue
     }
 
     if (attempt > 3) {
@@ -3448,32 +3583,57 @@ function waitForZeroChatAfterSystemPicker(label) {
   )
 }
 
+function androidDocumentPickerFileNameEntry(xml = dumpVisibleXml()) {
+  return nodeEntries(xml).find((entry) =>
+    hasAndroidDocumentPickerPackage([entry.packageName]) &&
+      entry.resourceId === 'android:id/title' &&
+      entry.className === 'android.widget.EditText',
+  ) ?? null
+}
+
 function setAndroidDocumentPickerFileName(fileName, label) {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const xml = dumpVisibleXml()
-    const fileNameInput = nodeEntries(xml).find((entry) =>
-      entry.packageName === 'com.android.documentsui' &&
-        entry.resourceId === 'android:id/title' &&
-        entry.className === 'android.widget.EditText',
-    )
+  let observedFileName = null
+
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const fileNameInput = androidDocumentPickerFileNameEntry()
     const center = fileNameInput ? boundsCenter(fileNameInput.bounds) : null
 
     if (fileNameInput && center) {
       runAdb(['shell', 'input', 'tap', String(center.x), String(center.y)])
-      sleep(300)
+      sleep(500)
       clearFocusedText(Math.max(fileNameInput.text.length + 8, fileName.length + 8))
-      inputText(fileName)
-      hideKeyboardIfShown()
+      inputTextUntilVisible(fileName, label)
 
-      if (findEntry([fileName])) {
-        return
+      for (let verifyAttempt = 0; verifyAttempt < 6; verifyAttempt += 1) {
+        observedFileName = androidDocumentPickerFileNameEntry()?.text ?? null
+        if (observedFileName === fileName) {
+          break
+        }
+        sleep(300)
+      }
+
+      if (observedFileName !== fileName) {
+        continue
+      }
+
+      hideKeyboardIfShown()
+      for (let verifyAttempt = 0; verifyAttempt < 6; verifyAttempt += 1) {
+        observedFileName = androidDocumentPickerFileNameEntry()?.text ?? null
+        if (observedFileName === fileName) {
+          return
+        }
+        sleep(300)
       }
     }
 
     sleep(400)
   }
 
-  throw new Error(`Could not set a unique Android document picker file name for ${label}.`)
+  throw new Error(
+    `Could not set a unique Android document picker file name for ${label}; observed ${
+      observedFileName ? JSON.stringify(observedFileName) : '<none>'
+    }.`,
+  )
 }
 
 function saveAndroidDocumentPicker(label) {
@@ -3520,7 +3680,7 @@ function openAndroidDocumentPickerFile(fileName, label) {
     const entryCenter = entry ? boundsCenter(entry.bounds) : null
     const fileCard = entryCenter
       ? entries.find((candidate) =>
-          candidate.resourceId === 'com.android.documentsui:id/item_root' &&
+          candidate.resourceId.endsWith('/item_root') &&
             candidate.clickable &&
             candidate.enabled &&
             boundsContainsPoint(candidate.bounds, entryCenter),
@@ -3901,13 +4061,11 @@ try {
     exportedProviderCredentialFixture,
     'OpenAI backup Provider credential fixture',
   )
-  hideKeyboardIfShown()
+  tapSettingsNonInteractiveArea('OpenAI Provider key auto-save')
+  assertAndroidInputMethodHidden('OpenAI Provider key blank-area dismissal')
   assertVisibleWithScroll(['Base URL'], 'provider Base URL field')
   screenshots.push(capture('android-ui-smoke-04-providers.png'))
-  assertTextButtonEnabledWithScroll(['Save'], true, 'OpenAI Provider key Save before backup export')
-  tapEnabledTextButtonWithScroll(['Save'], 'save OpenAI Provider key before backup export')
-  assertTextButtonEnabledWithScroll(['Save'], false, 'OpenAI Provider key Save after backup fixture commit')
-  assertVisibleWithReverseScroll(['Connected'], 'OpenAI Provider connected status after backup fixture commit')
+  assertVisibleWithReverseScroll(['Connected'], 'OpenAI Provider connected status after automatic key save')
   ensureProviderEditorExpanded(
     'openai',
     'OpenAI',
@@ -4103,10 +4261,9 @@ try {
     overwrittenProviderCredentialFixture,
     'OpenAI Provider credential overwrite after backup export',
   )
-  hideKeyboardIfShown()
-  assertTextButtonEnabledWithScroll(['Save'], true, 'OpenAI Provider key Save before overwrite')
-  tapEnabledTextButtonWithScroll(['Save'], 'overwrite OpenAI Provider key after backup export')
-  assertTextButtonEnabledWithScroll(['Save'], false, 'OpenAI Provider key Save after overwrite')
+  tapSettingsNonInteractiveArea('OpenAI Provider key overwrite auto-save')
+  assertAndroidInputMethodHidden('OpenAI Provider key overwrite blank-area dismissal')
+  assertVisibleWithReverseScroll(['Connected'], 'OpenAI Provider connected status after automatic key overwrite')
   ensureProviderEditorExpanded(
     'openai',
     'OpenAI',
@@ -4162,7 +4319,7 @@ try {
     'OpenAI Provider credential restored by backup import',
   )
   hideKeyboardIfShown()
-  assertTextButtonEnabledWithScroll(['Save'], false, 'restored OpenAI Provider key Save after import')
+  assertVisibleWithReverseScroll(['Connected'], 'Provider connection restored after encrypted backup import')
   const backupImportProviderCredentialScreenshot = capture(
     'android-ui-smoke-08g1-backup-import-provider-key-restored.png',
   )
@@ -4183,7 +4340,7 @@ try {
     'OpenAI Provider credential after backup import process relaunch',
   )
   hideKeyboardIfShown()
-  assertTextButtonEnabledWithScroll(['Save'], false, 'OpenAI Provider key Save after import relaunch')
+  assertVisibleWithReverseScroll(['Connected'], 'Provider connection restored after encrypted backup import relaunch')
   const backupImportRelaunchScreenshot = capture('android-ui-smoke-08h-backup-import-relaunch.png')
   screenshots.push(backupImportRelaunchScreenshot)
 
@@ -4211,6 +4368,7 @@ try {
         editor: backupProviderEditor,
         enteredMaskedLength: exportedProviderCredential.maskedLength,
         committedMaskedLength: committedProviderCredential.maskedLength,
+        autoSavedAfterInput: true,
         screenshot: providerCredentialSavedScreenshot,
       },
       passphrase: {
@@ -4223,6 +4381,7 @@ try {
       editor: overwrittenProviderEditor,
       enteredMaskedLength: overwrittenProviderCredential.maskedLength,
       committedMaskedLength: committedOverwrittenProviderCredential.maskedLength,
+      autoSavedAfterInput: true,
       screenshot: providerCredentialOverwrittenScreenshot,
       passphrasePersistedMaskedLength: backupPassphraseAfterProviderOverwrite.maskedLength,
     },
@@ -4295,7 +4454,7 @@ try {
   const settingsBackScreenshot = capture('android-ui-smoke-11-home-after-close.png')
   screenshots.push(settingsBackScreenshot)
   const imeProbeText = 'AndroidIMEProbeOneTwoThreeFourFiveSixSevenEightNineTen'
-  tapExactText(['Message'], 'chat composer prompt field')
+  tapExactText(messagePromptLabels, 'chat composer prompt field')
   inputTextInChunks(imeProbeText)
   assertAndroidInputMethodShown('long chat composer input')
   const imeScreenshot = capture('android-ui-smoke-11a-chat-ime-open.png')
@@ -4307,7 +4466,7 @@ try {
   }
   clearFocusedTextBlind(imeProbeText.length + 8)
   hideKeyboardIfShown()
-  assertVisible(['Message'], 'empty chat composer after IME smoke cleanup')
+  assertVisible(messagePromptLabels, 'empty chat composer after IME smoke cleanup')
   assertVisible(composerUiLabels.chatMode, 'Chat composer mode after closing IME')
   dismissFeatureHintIfVisible('chat composer before image mode')
 
@@ -4387,7 +4546,7 @@ try {
       'rendered Markdown table header',
     ),
     tableCell: assertVisibleTextEvidenceWithMessageScroll(
-      ['ok'],
+      [/\bok\b/u],
       'rendered Markdown table cell',
     ),
   }
@@ -4434,15 +4593,16 @@ try {
   screenshots.push(markdownLinkOpenScreenshot)
   screenshots.push(markdownCodeScreenshot)
   setCurrentStep('Conversation search and delete dialog')
+  tapText(['Search chats'], 'open seeded conversation picker')
   tapText(['Android message menu smoke'], 'select seeded Android message-menu conversation')
   assertVisible(['Android message menu smoke'], 'seeded Android message-menu conversation title')
-  assertVisible(['Android hidden search smoke'], 'seeded Android secondary conversation title')
   assertVisible(['Android menu user probe'], 'seeded Android user message')
   assertVisible(['Android menu assistant probe'], 'seeded Android assistant message')
   assertNotVisible(['Edit and resend'], 'message actions before long-press menu')
   assertNotVisible(['Regenerate'], 'assistant actions before long-press menu')
 
   tapExactText(['Search chats'], 'open conversation picker')
+  assertVisible(['Android hidden search smoke'], 'seeded Android secondary conversation in picker')
   tapExactText(['Search chats'], 'conversation search field')
   inputText('assistant')
   assertVisible(['Android message menu smoke'], 'message-content conversation search result')
@@ -4463,7 +4623,8 @@ try {
   assertVisible(['I understand'], 'conversation delete confirmation acknowledgement')
   screenshots.push(capture('android-ui-smoke-15b-delete-conversation-dialog.png'))
   back()
-  assertVisible(['Android message menu smoke'], 'conversation remains after backing out of delete confirmation')
+  assertVisible(['Android message menu smoke'], 'conversation picker remains after backing out of delete confirmation')
+  tapText(['Android message menu smoke'], 'return to preserved conversation after delete dialog')
   assertVisible(['Android menu assistant probe'], 'assistant message remains after backing out of delete confirmation')
   assertNotVisible(['Delete chat'], 'delete confirmation dismissed by system Back')
   assertNotVisible(['I understand'], 'delete acknowledgement dismissed by system Back')
@@ -4508,6 +4669,7 @@ try {
   assertVisible(['Android menu assistant probe'], 'assistant message after cancelling share chooser')
   assertVisible(['Android message menu smoke'], 'conversation after cancelling share chooser')
   setCurrentStep('Confirmed conversation delete')
+  tapExactText(['Search chats'], 'reopen conversation picker for confirmed delete')
   tapExactText(['Delete'], 'open conversation delete confirmation for confirmed delete')
   assertVisible(['Delete chat'], 'confirmed conversation delete title')
   tapCheckboxBeforeLabel('I understand', 'confirmed conversation delete acknowledgement')
@@ -4521,8 +4683,8 @@ try {
   screenshots.push(deleteConfirmedScreenshot)
 
   setCurrentStep('Confirmed local reset transaction')
-  tapExactText(['Settings'], 'open Settings for confirmed local reset')
-  tapExactText(['Cloud sync'], 'Cloud sync tab for local reset credential seed')
+  tapExactText(settingsActionLabels, 'open Settings for confirmed local reset')
+  tapExactText(cloudSyncStatusLabels, 'Cloud sync tab for local reset credential seed')
   tapExactText(['GitHub Gist'], 'Gist mode for local reset credential seed')
   inputSecretIntoLabeledEditText(
     ['GitHub token'],
@@ -4532,7 +4694,7 @@ try {
   hideKeyboardIfShown()
   tapEnabledTextButtonWithScroll(['Save'], 'save local reset credential seed')
   assertTextButtonEnabledWithScroll(['Save'], false, 'saved local reset credential seed')
-  tapText(['Data'], 'Data tab for confirmed local reset')
+  tapText(dataTabLabels, 'Data tab for confirmed local reset')
   tapTextWithScroll(['Reset local data'], 'open confirmed local reset warning')
   tapCheckboxBeforeLabel('I understand', 'confirmed local reset acknowledgement')
   assertCheckboxBeforeLabel('I understand', true, 'confirmed local reset acknowledgement')
@@ -4541,24 +4703,24 @@ try {
   const localResetScreenshot = capture('android-ui-smoke-19-local-reset-complete.png')
   screenshots.push(localResetScreenshot)
   back()
-  assertVisible(['New chat'], 'fresh home after local reset')
+  assertVisible(newChatLabels, 'fresh home after local reset')
   assertNotVisible(['Android hidden search smoke'], 'old conversation removed by local reset')
   relaunchApp()
-  assertVisible(['New chat'], 'fresh home after local reset relaunch')
+  assertVisible(newChatLabels, 'fresh home after local reset relaunch')
   assertNotVisible(['Android hidden search smoke'], 'old conversation remains absent after relaunch')
-  tapExactText(['Settings'], 'reopen Settings after local reset relaunch')
-  tapExactText(['Cloud sync'], 'Cloud sync tab after local reset relaunch')
+  tapExactText(settingsActionLabels, 'reopen Settings after local reset relaunch')
+  tapExactText(cloudSyncStatusLabels, 'Cloud sync tab after local reset relaunch')
   tapExactText(['GitHub Gist'], 'Gist mode after local reset relaunch')
   const emptyGithubToken = assertEmptySecretInputWithScroll(
-    ['GitHub token'],
+    githubTokenFieldLabels,
     'GitHub token after local reset relaunch',
   )
   hideKeyboardIfShown()
-  assertTextButtonEnabledWithScroll(['Save'], false, 'GitHub token Save after local reset')
+  assertTextButtonEnabledWithScroll(saveActionLabels, false, 'GitHub token Save after local reset')
   const localResetRelaunchScreenshot = capture('android-ui-smoke-19a-local-reset-relaunch.png')
   screenshots.push(localResetRelaunchScreenshot)
 
-  tapText(['Providers', 'AI providers', 'AI 服务'], 'Providers tab after local reset relaunch')
+  tapText(providerTabLabels, 'Providers tab after local reset relaunch')
   const resetProviderEditor = ensureProviderEditorExpanded(
     'openai',
     'OpenAI',
@@ -4568,14 +4730,15 @@ try {
     providerKeyFieldLabels,
     'OpenAI Provider key after local reset relaunch',
   )
-  hideKeyboardIfShown()
-  assertTextButtonEnabledWithScroll(['Save'], false, 'OpenAI Provider key Save after local reset')
+  tapSettingsNonInteractiveArea('OpenAI Provider key after local reset relaunch')
+  assertAndroidInputMethodHidden('OpenAI Provider key after local reset relaunch')
+  assertVisibleWithReverseScroll(providerNotConnectedLabels, 'Provider connection cleared after local reset')
   const localResetProviderScreenshot = capture('android-ui-smoke-19b-local-reset-provider-key.png')
   screenshots.push(localResetProviderScreenshot)
 
-  tapText(['Data'], 'Data tab after local reset relaunch')
+  tapText(dataTabLabels, 'Data tab after local reset relaunch')
   const emptySyncPassphrase = assertEmptySecretInputWithScroll(
-    ['Data encryption password'],
+    dataPassphraseFieldLabels,
     'sync password after local reset relaunch',
   )
   hideKeyboardIfShown()

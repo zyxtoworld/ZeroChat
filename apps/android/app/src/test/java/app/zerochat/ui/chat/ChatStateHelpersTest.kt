@@ -133,6 +133,50 @@ class ChatStateHelpersTest {
             ),
         )
     }
+
+    @Test
+    fun unsavedComposerDraftCoversTextEditsAndSelectedImages() {
+        assertFalse(
+            hasUnsavedComposerDraft(
+                input = "",
+                editing = false,
+                hasSourceImage = false,
+                hasMaskImage = false,
+            ),
+        )
+        assertTrue(
+            hasUnsavedComposerDraft(
+                input = "draft",
+                editing = false,
+                hasSourceImage = false,
+                hasMaskImage = false,
+            ),
+        )
+        assertTrue(
+            hasUnsavedComposerDraft(
+                input = "",
+                editing = true,
+                hasSourceImage = false,
+                hasMaskImage = false,
+            ),
+        )
+        assertTrue(
+            hasUnsavedComposerDraft(
+                input = "",
+                editing = false,
+                hasSourceImage = true,
+                hasMaskImage = false,
+            ),
+        )
+        assertTrue(
+            hasUnsavedComposerDraft(
+                input = "",
+                editing = false,
+                hasSourceImage = false,
+                hasMaskImage = true,
+            ),
+        )
+    }
     @Test
     fun applyProviderModelSelectionUpdatesChatConversationWithoutChangingProviderImageModel() {
         val oldProvider = provider("old", model = "old-chat")
@@ -1269,7 +1313,7 @@ class ChatStateHelpersTest {
     }
 
     @Test
-    fun stoppedAssistantMessagePreservesPartialOutputAndClearsError() {
+    fun stoppedAssistantMessagePreservesPartialOutputAndMarksItStopped() {
         val pending = message("assistant").copy(
             role = MessageRole.Assistant,
             content = "",
@@ -1285,7 +1329,26 @@ class ChatStateHelpersTest {
 
         assertEquals("partial answer", stopped.content)
         assertEquals("done", stopped.status)
-        assertNull(stopped.error)
+        assertEquals("Generation stopped", stopped.error)
+
+    }
+
+    @Test
+    fun stoppedAssistantMessageDropsAnIncompleteFinalMarkdownListItem() {
+        val pending = message("assistant").copy(
+            role = MessageRole.Assistant,
+            content = "",
+            status = "streaming",
+        )
+
+        val stopped = stoppedAssistantMessage(
+            pendingMessage = pending,
+            partialContent = "7. Complete fact\n8. **",
+            stoppedCopy = "Generation stopped",
+        )
+
+        assertEquals("7. Complete fact", stopped.content)
+        assertEquals("Generation stopped", stopped.error)
     }
 
     @Test

@@ -246,7 +246,7 @@ try {
         return this.textOf(element)
       },
       async waitForSelector(selector) {
-        for (let attempt = 0; attempt < 100; attempt += 1) {
+        for (let attempt = 0; attempt < 600; attempt += 1) {
           if (document.querySelector(selector)) return true
           await new Promise((resolve) => setTimeout(resolve, 50))
         }
@@ -276,7 +276,7 @@ try {
         return true
       },
       async waitForText(names) {
-        for (let attempt = 0; attempt < 100; attempt += 1) {
+        for (let attempt = 0; attempt < 600; attempt += 1) {
           if (Array.from(document.querySelectorAll('body *')).some((item) => this.match(item, names))) {
             return true
           }

@@ -76,7 +76,10 @@ fun Composer(
             .then(if (keyboardVisible) Modifier else Modifier.navigationBarsPadding()),
     ) {
         val compactKeyboardComposer = keyboardVisible && mode == ComposerMode.Chat
-        val compactImageComposer = mode == ComposerMode.Image && maxWidth < 300.dp
+        val lowHeightImageComposer = mode == ComposerMode.Image && maxHeight < 450.dp
+        val compactKeyboardImageComposer = keyboardVisible &&
+            mode == ComposerMode.Image && maxHeight < 300.dp
+        val compactImageComposer = mode == ComposerMode.Image && (maxWidth < 300.dp || lowHeightImageComposer)
         val composerPadding = when {
             compactKeyboardComposer -> 4.dp
             compactImageComposer -> 6.dp
@@ -85,6 +88,7 @@ fun Composer(
         val composerGap = if (compactKeyboardComposer || compactImageComposer) 4.dp else 8.dp
         val stackImageAction = mode == ComposerMode.Image && maxWidth < 260.dp
         val compactImageTaskSelector = mode == ComposerMode.Image && maxWidth < 380.dp
+        val hasWideInpaintPickerRow = maxWidth >= 600.dp
 
         LaunchedEffect(mode, imageTask, compactImageTaskSelector) {
             if (mode == ComposerMode.Image && !compactImageTaskSelector) {
@@ -98,7 +102,7 @@ fun Composer(
                 .padding(composerPadding),
             verticalArrangement = Arrangement.spacedBy(composerGap),
         ) {
-            if (!compactKeyboardComposer) {
+            if (!compactKeyboardComposer && !lowHeightImageComposer) {
                 SingleChoiceSegmentedButtonRow {
                     ComposerMode.entries.forEachIndexed { index, item ->
                         SegmentedButton(
@@ -112,11 +116,30 @@ fun Composer(
                 }
             }
 
-            if (mode == ComposerMode.Image) {
-                val combineEmptyInpaintPickers = imageTask == ImageTaskMode.Inpaint &&
-                    sourceImage == null &&
-                    maskImage == null
-                if (compactImageTaskSelector) {
+            if (mode == ComposerMode.Image && !compactKeyboardImageComposer) {
+                val inlineInpaintPickers = imageTask == ImageTaskMode.Inpaint &&
+                    ((sourceImage == null && maskImage == null) || hasWideInpaintPickerRow)
+                if (lowHeightImageComposer) {
+                    LazyRow(
+                        state = imageTaskListState,
+                        horizontalArrangement = Arrangement.spacedBy(composerGap),
+                    ) {
+                        item {
+                            FilterChip(
+                                selected = false,
+                                onClick = { onModeChange(ComposerMode.Chat) },
+                                label = { Text(i18n.composerModeTitle(ComposerMode.Chat)) },
+                            )
+                        }
+                        items(ImageTaskMode.entries) { item ->
+                            FilterChip(
+                                selected = imageTask == item,
+                                onClick = { onImageTaskChange(item) },
+                                label = { Text(i18n.imageTaskTitle(item)) },
+                            )
+                        }
+                    }
+                } else if (compactImageTaskSelector) {
                     SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                         ImageTaskMode.entries.forEachIndexed { index, item ->
                             SegmentedButton(
@@ -151,7 +174,7 @@ fun Composer(
                         }
                     }
                 }
-                if (combineEmptyInpaintPickers) {
+                if (inlineInpaintPickers) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(composerGap),
@@ -166,10 +189,19 @@ fun Composer(
                                 },
                         ) {
                             Text(
-                                i18n.sourcePickerCompactTitle(),
+                                sourceImage?.fileName ?: i18n.sourcePickerCompactTitle(),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
+                        }
+                        if (sourceImage != null) {
+                            TextButton(onClick = onClearSource) {
+                                Text(
+                                    i18n.t("action.clear"),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
                         OutlinedButton(
                             onClick = onPickMask,
@@ -180,10 +212,19 @@ fun Composer(
                                 },
                         ) {
                             Text(
-                                i18n.maskPickerCompactTitle(),
+                                maskImage?.fileName ?: i18n.maskPickerCompactTitle(),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
+                        }
+                        if (maskImage != null) {
+                            TextButton(onClick = onClearMask) {
+                                Text(
+                                    i18n.t("action.clear"),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
                     }
                 } else if (imageTask != ImageTaskMode.Generate) {
@@ -213,7 +254,7 @@ fun Composer(
                         }
                     }
                 }
-                if (imageTask == ImageTaskMode.Inpaint && !combineEmptyInpaintPickers) {
+                if (imageTask == ImageTaskMode.Inpaint && !inlineInpaintPickers) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(composerGap),

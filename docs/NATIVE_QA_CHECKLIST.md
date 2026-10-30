@@ -225,9 +225,9 @@ picker proof must include
 The Provider pass must also prove a same-process Activity recreation instead of
 treating `force-stop` as a substitute. Debug-only sanitized lifecycle markers
 must show one configuration-change destruction and a distinct Activity instance
-under the same PID for the landscape transition, then another such transition
-when the original orientation is restored. The committed Provider credential
-must remain masked with Save disabled in both orientations, and the harness must
+when the original orientation is restored. The Provider credential must remain masked
+in both orientations, and the credential must have been persisted by input-time
+auto-save rather than a separate Save button. The harness must
 restore and re-read the exact original `accelerometer_rotation` and
 `user_rotation` values on every exit. Required frames are
 `.manual-qa/android-ui-smoke-04c-activity-recreation.png` and
@@ -327,10 +327,10 @@ Runtime checks:
   delete-chat confirmation without deleting the chat.
 - Inspect the required Activity-recreation frames and report. Confirm the PID is
   unchanged, Activity instance ids are distinct, the old instance reports a
-  configuration-change destruction, the Provider credential stays masked with
-  Save disabled, and the exact original rotation settings are restored. Repeat
-  on a physical device when available; emulator proof does not replace manual
-  device rotation and lifecycle QA.
+  configuration-change destruction, the Provider credential stays masked, auto-saves
+  while editing, and the exact original rotation settings are restored. The smoke
+  also confirms a non-interactive settings-area tap hides the keyboard. Repeat on a
+  physical device when available; emulator proof does not replace manual device rotation and lifecycle QA.
 - Install the debug APK on an emulator and on one physical phone if available.
 - Verify one-handed chat ergonomics, system back behavior, IME open/close,
   long composer text, attachment controls, and destructive dialogs.

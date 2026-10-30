@@ -624,12 +624,14 @@ class SyncClient(
             )
         }
 
-        return SyncVault(
-            data = manifest.data.copy(
-                conversations = conversations,
-                skills = skills,
+        return normalizeSyncVaultForProtocol(
+            SyncVault(
+                data = manifest.data.copy(
+                    conversations = conversations,
+                    skills = skills,
+                ),
+                secrets = manifest.secrets,
             ),
-            secrets = manifest.secrets,
         )
     }
 

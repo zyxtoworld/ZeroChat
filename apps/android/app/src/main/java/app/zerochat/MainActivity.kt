@@ -70,11 +70,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        if (savedInstanceState != null) {
-            window.setSoftInputMode(
-                android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN,
-            )
-        }
         if (isDebuggable()) {
             Log.i(
                 ACTIVITY_LIFECYCLE_LOG_TAG,

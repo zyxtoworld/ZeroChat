@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -347,7 +348,8 @@ internal fun CloudSyncStatusStrip(
 ) {
     val userTriggeredSyncAction = LocalUserTriggeredSyncAction.current
     val cloudSyncConfigured = snapshot.sync.mode != "local"
-    val syncSummary = cloudSyncSummary(snapshot, i18n)
+    val syncStatus = cloudSyncStatus(snapshot, i18n)
+    val syncSummary = cloudSyncSummary(snapshot, syncStatus, i18n)
     val primaryActionText = if (cloudSyncConfigured) {
         i18n.t("button.syncNow")
     } else {
@@ -500,14 +502,19 @@ internal fun CloudSyncStatusStrip(
                         Text(primaryActionText)
                     }
                 }
-                manualSyncBlockedReason?.takeIf { snapshot.sync.mode != "local" }?.let { reason ->
-                    Text(
-                        reason,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
+                manualSyncBlockedReason
+                    ?.takeIf {
+                        snapshot.sync.mode != "local" &&
+                            shouldShowCloudSyncBlockedReason(syncStatus, it)
+                    }
+                    ?.let { reason ->
+                        Text(
+                            reason,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
             }
         }
     }
@@ -573,6 +580,34 @@ internal fun EmptyState(
     }
 }
 
+@Composable
+internal fun DiscardComposerDraftDialog(
+    confirmLabel: String,
+    i18n: NativeI18n,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(i18n.t("message.discardDraftTitle")) },
+        text = { Text(i18n.t("message.discardDraftBody")) },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(i18n.t("action.cancel"))
+            }
+        },
+        confirmButton = {
+            Button(onClick = onConfirm) {
+                Text(
+                    confirmLabel,
+                    maxLines = 2,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        },
+    )
+}
+
 internal fun imageComposerHint(
     provider: ProviderConfig?,
     providerKeyMissing: Boolean,
@@ -596,25 +631,32 @@ internal fun String.isCompletedSyncStatus(): Boolean =
         this == "Remote data restored" ||
         this == "Remote encrypted data applied"
 
-private fun cloudSyncSummary(snapshot: AppSnapshot, i18n: NativeI18n): String {
+private fun cloudSyncSummary(
+    snapshot: AppSnapshot,
+    status: String,
+    i18n: NativeI18n,
+): String {
     if (snapshot.sync.mode == "local") {
         return i18n.t("sync.localSummary")
     }
 
-    val lastSyncAt = snapshot.sync.lastSyncAt
     val mode = when (snapshot.sync.mode) {
         "gist" -> i18n.t("mode.gist")
         "cloudflare" -> i18n.t("mode.cloudflare")
         else -> i18n.t("mode.local")
     }
-    val status = when {
+
+    return "$mode · $status"
+}
+
+private fun cloudSyncStatus(snapshot: AppSnapshot, i18n: NativeI18n): String {
+    val lastSyncAt = snapshot.sync.lastSyncAt
+    return when {
         !snapshot.sync.lastSyncStatus.isNullOrBlank() ->
             i18n.syncStatusMessage(snapshot.sync.lastSyncStatus)
         lastSyncAt != null -> formatTimestamp(lastSyncAt)
         else -> i18n.t("button.syncNow")
     }
-
-    return "$mode · $status"
 }
 
 private fun formatTimestamp(value: Long): String =

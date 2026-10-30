@@ -251,6 +251,15 @@ Requests must set `store: false`:
 }
 ```
 
+### Streaming text events
+
+All clients append provider delta fields exactly once per event, including
+identical consecutive fragments. Final `message.content`, top-level `content`,
+and Responses `*.done` text fields are cumulative snapshots: clients append
+only the unseen suffix and ignore an already-published snapshot. Web and native
+clients use the same distinction so a valid repeated token is never discarded
+and a final snapshot cannot duplicate the streamed response.
+
 ### Browser Responses transport
 
 For `openai-responses` providers using a user-owned Worker proxy, the Web/PWA

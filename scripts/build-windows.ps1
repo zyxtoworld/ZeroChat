@@ -79,8 +79,7 @@ function Get-AsciiBuildRoot {
   }
 
   foreach ($Letter in @("Z", "Y", "X", "W", "V")) {
-    & subst "$Letter`:" 2>$null
-    if ($LASTEXITCODE -eq 0) {
+    if (Get-PSDrive -Name $Letter -PSProvider FileSystem -ErrorAction SilentlyContinue) {
       continue
     }
 

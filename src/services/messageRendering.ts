@@ -1,4 +1,5 @@
 import type { ChatMessage, MessageAttachment } from '../types'
+import { normalizeAssistantMessageContent } from './assistantMessageContent'
 import { imageAttachmentSrc } from './imageAttachments'
 
 interface MessageAccessibleNameOptions {
@@ -74,11 +75,17 @@ export function shouldRenderMarkdown(content: string): boolean {
   )
 }
 
+export function messageDisplayContent(message: ChatMessage): string {
+  return message.role === 'assistant'
+    ? normalizeAssistantMessageContent(message.content)
+    : message.content
+}
+
 export function messageCopyText(
   message: ChatMessage,
   imageGeneratedLabel: string,
 ): string {
-  const content = message.content.trim()
+  const content = messageDisplayContent(message).trim()
 
   if (content) {
     return content
@@ -94,7 +101,7 @@ export function messageCopyText(
 export function messageCanSpeak(message: ChatMessage): boolean {
   return (
     message.role === 'assistant' &&
-    Boolean(message.content.trim()) &&
+    Boolean(messageDisplayContent(message).trim()) &&
     message.status !== 'streaming' &&
     message.status !== 'queued'
   )

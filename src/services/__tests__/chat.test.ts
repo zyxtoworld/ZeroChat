@@ -1031,6 +1031,117 @@ describe('provider chat service runtime', () => {
     },
   )
 
+  it.each([
+    {
+      kind: 'openai-compatible' as const,
+      chunk: 'data: {"choices":[{"delta":{"content":"tail"}}]}\n\n',
+    },
+    {
+      kind: 'anthropic' as const,
+      chunk: 'data: {"delta":{"text":"tail"}}\n\n',
+    },
+    {
+      kind: 'openai-responses' as const,
+      chunk: 'data: {"type":"response.output_text.delta","delta":"tail"}\n\n',
+    },
+  ])('requests a streaming response for the $kind provider', async ({ kind, chunk }) => {
+    const fetchMock = completedStreamingFetch([chunk])
+    vi.stubGlobal('fetch', fetchMock)
+
+    await streamChat({
+      provider: provider({ kind }),
+      apiKey: 'sk-test',
+      proxyToken: '',
+      model: 'model-1',
+      messages: [textMessage()],
+      contextMessageLimit: 6,
+      signal: new AbortController().signal,
+      onToken: vi.fn(),
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        headers: expect.objectContaining({ accept: 'text/event-stream' }),
+      }),
+    )
+  })
+
+  it.each([
+    {
+      kind: 'openai-compatible' as const,
+      chunks: [
+        'data: {"choices":[{"message":{"content":"Hel"}}]}\n\n',
+        'data: {"choices":[{"message":{"content":"Hello"}}]}\n\n',
+      ],
+    },
+    {
+      kind: 'anthropic' as const,
+      chunks: [
+        'data: {"content":[{"type":"text","text":"Hel"}]}\n\n',
+        'data: {"content":[{"type":"text","text":"Hello"}]}\n\n',
+      ],
+    },
+  ])('appends only new text from cumulative $kind stream events', async ({ kind, chunks }) => {
+    const fetchMock = completedStreamingFetch(chunks)
+    const tokens: string[] = []
+    vi.stubGlobal('fetch', fetchMock)
+
+    await streamChat({
+      provider: provider({ kind }),
+      apiKey: 'sk-test',
+      proxyToken: '',
+      model: 'model-1',
+      messages: [textMessage()],
+      contextMessageLimit: 6,
+      signal: new AbortController().signal,
+      onToken: (token) => tokens.push(token),
+    })
+
+    expect(tokens).toEqual(['Hel', 'lo'])
+  })
+
+  it.each([
+    {
+      kind: 'openai-compatible' as const,
+      chunks: [
+        'data: {"choices":[{"delta":{"content":"a"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"a"}}]}\n\n',
+      ],
+    },
+    {
+      kind: 'anthropic' as const,
+      chunks: [
+        'data: {"delta":{"text":"a"}}\n\n',
+        'data: {"delta":{"text":"a"}}\n\n',
+      ],
+    },
+    {
+      kind: 'openai-responses' as const,
+      chunks: [
+        'data: {"type":"response.output_text.delta","delta":"a"}\n\n',
+        'data: {"type":"response.output_text.delta","delta":"a"}\n\n',
+      ],
+    },
+  ])('preserves repeated fragments in $kind delta streams', async ({ kind, chunks }) => {
+    const fetchMock = completedStreamingFetch(chunks)
+    const tokens: string[] = []
+    vi.stubGlobal('fetch', fetchMock)
+
+    await streamChat({
+      provider: provider({ kind }),
+      apiKey: 'sk-test',
+      proxyToken: '',
+      model: 'model-1',
+      messages: [textMessage()],
+      contextMessageLimit: 6,
+      signal: new AbortController().signal,
+      onToken: (token) => tokens.push(token),
+    })
+
+    expect(tokens).toEqual(['a', 'a'])
+  })
+
   it('reads ordered text blocks from an OpenAI-compatible SSE delta', async () => {
     const fetchMock = completedStreamingFetch([
       'data: {"choices":[{"delta":{"content":[{"type":"text","text":"Hello "},{"type":"image_url"},{"type":"text","text":"world"}]}}]}\n\n',

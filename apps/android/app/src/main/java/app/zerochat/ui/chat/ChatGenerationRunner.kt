@@ -44,16 +44,26 @@ internal fun normalizeAssistantMessageContent(content: String): String {
     }
 
     val result = normalized.toString()
-    if (!removedWritingEnvelope) {
-        return result
-    }
-
-    val trimmedResult = result.trimEnd()
-    return if (trimmedResult.endsWith(":::")) {
-        trimmedResult.dropLast(3).trimEnd()
-    } else {
+    val cleanedResult = if (!removedWritingEnvelope) {
         result
+    } else {
+        val trimmedResult = result.trimEnd()
+        if (trimmedResult.endsWith(":::")) {
+            trimmedResult.dropLast(3).trimEnd()
+        } else {
+            result
+        }
     }
+    return normalizeAssistantHtmlOutsideCodeFences(cleanedResult)
+}
+
+internal fun nextStreamingTextFrame(
+    visible: String,
+    target: String,
+): String = when {
+    visible == target -> visible
+    !target.startsWith(visible) -> target
+    else -> target.substring(0, target.offsetByCodePoints(visible.length, 1))
 }
 
 internal suspend fun runStreamingChatGenerationWithRetry(
@@ -63,17 +73,17 @@ internal suspend fun runStreamingChatGenerationWithRetry(
     retryDelay: suspend (retryIndex: Int) -> Unit = { retryIndex ->
         delay(chatAutoRetryDelayMs(retryIndex))
     },
-    stream: suspend (onDelta: suspend (String) -> Unit) -> String,
+    stream: suspend (onText: suspend (String) -> Unit) -> String,
 ): String {
     var retryIndex = 0
 
     while (true) {
         try {
-            val finalText = stream { delta ->
-                receivedText.append(delta)
-                val visibleText = receivedText.toString()
-                if (visibleText.isNotBlank()) {
-                    onVisibleText(visibleText)
+            val finalText = stream { text ->
+                receivedText.clear()
+                receivedText.append(text)
+                if (text.isNotBlank()) {
+                    onVisibleText(text)
                 }
             }
 
@@ -111,7 +121,7 @@ internal suspend fun streamChatGenerationWithRetry(
     receivedText = receivedText,
     onRetry = onRetry,
     onVisibleText = onVisibleText,
-) { onDelta ->
+) { onText ->
     aiClient.stream(
         provider = request.requestProvider,
         apiKey = apiKey,
@@ -119,7 +129,7 @@ internal suspend fun streamChatGenerationWithRetry(
         model = request.model,
         messages = messages,
         contextMessageLimit = contextMessageLimit,
-        onDelta = onDelta,
+        onText = onText,
     )
 }
 

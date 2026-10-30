@@ -53,7 +53,6 @@ fun SyncModeSection(
         }
     }
     when (snapshot.sync.mode) {
-        "local" -> Text(i18n.t("sync.requirement.local"))
         "gist" -> Text(i18n.t("sync.compare.gist.fit"))
         "cloudflare" -> Text(i18n.t("sync.compare.cloudflare.fit"))
     }

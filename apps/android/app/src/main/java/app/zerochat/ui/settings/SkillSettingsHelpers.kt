@@ -14,18 +14,31 @@ import java.security.MessageDigest
 import java.util.Locale
 import java.util.UUID
 
-fun readSkillFromUri(context: Context, uri: Uri, i18n: NativeI18n): UserSkill {
+internal class SkillImportUserError(message: String) : IllegalArgumentException(message)
+
+internal fun readSkillFromUri(context: Context, uri: Uri, i18n: NativeI18n): UserSkill {
     val resolver = context.contentResolver
     val fileName = resolver.query(uri, null, null, null, null)?.use { cursor ->
         val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
         if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
     } ?: "skill.txt"
-    val bytes = readBoundedLocalUriBytes(
-        context,
-        uri,
-        MAX_SKILL_FILE_BYTES,
-        localFileTooLargeMessage(i18n, MAX_SKILL_FILE_BYTES),
-    )
+    val tooLargeMessage = localFileTooLargeMessage(i18n, MAX_SKILL_FILE_BYTES)
+    val bytes = try {
+        readBoundedLocalUriBytes(
+            context,
+            uri,
+            MAX_SKILL_FILE_BYTES,
+            tooLargeMessage,
+        )
+    } catch (error: IllegalArgumentException) {
+        if (error.message == tooLargeMessage) {
+            throw SkillImportUserError(tooLargeMessage)
+        }
+        throw error
+    }
+    if (bytes.isEmpty()) {
+        throw SkillImportUserError(i18n.t("message.skillFileEmpty"))
+    }
     val content = bytes.toString(Charsets.UTF_8)
     val contentType = when {
         fileName.endsWith(".json", ignoreCase = true) -> "json"
@@ -35,19 +48,27 @@ fun readSkillFromUri(context: Context, uri: Uri, i18n: NativeI18n): UserSkill {
     }
     val name = fileName.substringBeforeLast('.').replace(Regex("[-_]+"), " ")
         .ifBlank { i18n.t("fallback.skillName") }
+    val emptyContentMessage = i18n.t("message.skillContentEmpty")
 
-    return createNativeSkill(
-        name = name,
-        content = content,
-        contentType = contentType,
-        fileName = fileName,
-        fallbackSkillName = i18n.t("fallback.skillName"),
-        fallbackHeading = i18n.t("fallback.skillHeading"),
-        emptyContentMessage = i18n.t("message.skillContentEmpty"),
-    )
+    return try {
+        createNativeSkill(
+            name = name,
+            content = content,
+            contentType = contentType,
+            fileName = fileName,
+            fallbackSkillName = i18n.t("fallback.skillName"),
+            fallbackHeading = i18n.t("fallback.skillHeading"),
+            emptyContentMessage = emptyContentMessage,
+        )
+    } catch (error: IllegalArgumentException) {
+        if (error.message == emptyContentMessage) {
+            throw SkillImportUserError(emptyContentMessage)
+        }
+        throw error
+    }
 }
 
-fun createNativeSkill(
+internal fun createNativeSkill(
     name: String,
     content: String,
     contentType: String,

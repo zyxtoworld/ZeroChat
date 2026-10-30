@@ -38,6 +38,10 @@ apps/**/*.msix
 apps/**/*.msi
 apps/**/*.exe
 
+# Android local configuration and compiler state
+apps/**/.kotlin/
+apps/**/local.properties
+
 # Local agent/session state and scratch output
 .claude/
 .pi/

@@ -72,6 +72,7 @@ afterEvaluate {
             .removePrefix("test")
             .replaceFirstChar { it.lowercase() }
         val kotlinTestClasses = files(layout.buildDirectory.dir("tmp/kotlin-classes/$testVariantName"))
+        testClassesDirs = files(testClassesDirs, kotlinTestClasses)
         classpath += kotlinTestClasses
     }
 }

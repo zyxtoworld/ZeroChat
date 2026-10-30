@@ -12,6 +12,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -44,17 +45,21 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -78,6 +83,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -116,25 +122,66 @@ private data class MessageListItem(
 }
 
 private data class RenderedMessageItems(
+    val conversationId: String?,
     val source: List<ChatMessage>,
     val items: List<MessageListItem>,
 )
+
+internal data class StreamingMessageDisplay(
+    val messageId: String,
+    val content: String,
+)
+
+internal enum class MessageBubblePlacement(
+    val containerAlignment: Alignment,
+    val contentAlignment: Alignment.Horizontal,
+    val textAlignment: TextAlign,
+) {
+    Incoming(
+        containerAlignment = Alignment.CenterStart,
+        contentAlignment = Alignment.Start,
+        textAlignment = TextAlign.Start,
+    ),
+    Outgoing(
+        containerAlignment = Alignment.CenterEnd,
+        contentAlignment = Alignment.End,
+        textAlignment = TextAlign.End,
+    ),
+}
+
+internal fun messageBubblePlacement(role: MessageRole): MessageBubblePlacement =
+    if (role == MessageRole.User) MessageBubblePlacement.Outgoing else MessageBubblePlacement.Incoming
 
 private const val MaxMessageChunkCharacters = 900
 private const val MaxOpenCodeChunkCharacters = MaxMessageChunkCharacters * 8
 
 private fun messageListItems(messages: List<ChatMessage>): List<MessageListItem> =
     messages.flatMap { message ->
-        val chunks = messageContentChunks(message.content)
-        chunks.mapIndexed { index, content ->
+        val content = if (message.role == MessageRole.Assistant) {
+            normalizeAssistantMessageContent(message.content)
+        } else {
+            message.content
+        }
+        val chunks = messageContentChunks(content)
+        chunks.mapIndexed { index, chunk ->
             MessageListItem(
                 message = message,
-                renderBlocks = messageRenderBlocks(content),
+                renderBlocks = messageRenderBlocks(chunk),
                 index = index,
                 total = chunks.size,
             )
         }
     }
+
+private fun List<MessageListItem>.replaceMessage(message: ChatMessage): List<MessageListItem> {
+    val firstIndex = indexOfFirst { it.message.id == message.id }
+    val replacement = messageListItems(listOf(message))
+    if (firstIndex < 0) {
+        return this + replacement
+    }
+
+    return take(firstIndex) + replacement + drop(firstIndex).dropWhile { it.message.id == message.id }
+}
 
 private fun messageRenderBlocks(content: String): List<MessageRenderBlock> =
     messageContentBlocks(content).flatMap { contentBlock ->
@@ -150,7 +197,9 @@ private fun messageContentChunks(content: String): List<String> {
     if (content.length <= MaxMessageChunkCharacters) {
         return listOf(content)
     }
-
+    if ('\n' !in content) {
+        return content.chunked(MaxMessageChunkCharacters)
+    }
     val chunks = mutableListOf<String>()
     var chunkStart = 0
     var lineStart = 0
@@ -196,7 +245,9 @@ private fun messageContentChunks(content: String): List<String> {
 internal fun MessageList(
     conversationId: String?,
     messages: List<ChatMessage>,
+    streamingMessageDisplay: StreamingMessageDisplay?,
     hasActiveChat: Boolean,
+    compactDisplay: Boolean,
     keyboardVisible: Boolean,
     manualSyncRefreshing: Boolean,
     onRefresh: () -> Unit,
@@ -213,6 +264,7 @@ internal fun MessageList(
 ) {
     val pullToRefreshState = rememberPullToRefreshState()
     val messageListState = rememberLazyListState()
+    var messagePendingDeletionId by rememberSaveable(conversationId) { mutableStateOf<String?>(null) }
     val latestMessage = messages.lastOrNull()
     val renderedMessageKey = buildString {
         append(conversationId.orEmpty())
@@ -227,19 +279,54 @@ internal fun MessageList(
                 .append(message.content.takeLast(64).hashCode())
         }
     }
-    val renderedMessageItemsState = produceState<RenderedMessageItems?>(
-        initialValue = null,
-        key1 = renderedMessageKey,
-    ) {
-        value = null
+    var renderedMessageItemsState by remember { mutableStateOf<RenderedMessageItems?>(null) }
+    LaunchedEffect(renderedMessageKey) {
+        val targetMessages = messages
         val items = withContext(Dispatchers.Default) {
-            messageListItems(messages)
+            messageListItems(targetMessages)
         }
-        value = RenderedMessageItems(source = messages, items = items)
+        renderedMessageItemsState = RenderedMessageItems(
+            conversationId = conversationId,
+            source = targetMessages,
+            items = items,
+        )
     }
-    val renderedMessageItems = renderedMessageItemsState.value?.items.orEmpty()
-    val canScrollToLatest by remember {
-        derivedStateOf { messageListState.canScrollForward }
+    val baseRenderedMessageItems = renderedMessageItemsState
+        ?.takeIf { it.conversationId == conversationId }
+        ?.items
+        .orEmpty()
+    val immediatelyRenderedMessage = messages.lastOrNull()
+        ?.takeIf { renderedMessageItemsState?.source !== messages }
+    val renderedMessageItems = immediatelyRenderedMessage?.let { message ->
+        baseRenderedMessageItems.replaceMessage(message)
+    } ?: baseRenderedMessageItems
+    var followLatest by remember(conversationId) { mutableStateOf(true) }
+    val canScrollToLatest =
+        !followLatest || messageListState.canScrollForward
+    LaunchedEffect(messages.size, latestMessage?.id) {
+        followLatest = true
+    }
+    LaunchedEffect(messageListState) {
+        snapshotFlow {
+            messageListState.canScrollForward to messageListState.isScrollInProgress
+        }.collect { (canScrollForward, isScrollInProgress) ->
+            if (!canScrollForward && !isScrollInProgress) {
+                followLatest = true
+            }
+        }
+    }
+    val userScrollConnection = remember(conversationId) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(
+                available: Offset,
+                source: NestedScrollSource,
+            ): Offset {
+                if (source == NestedScrollSource.UserInput && available.y != 0f) {
+                    followLatest = false
+                }
+                return Offset.Zero
+            }
+        }
     }
     val messageListScope = rememberCoroutineScope()
     val manualSyncRefreshMarker = if (manualSyncRefreshing) {
@@ -248,37 +335,43 @@ internal fun MessageList(
         Modifier
     }
 
-    LaunchedEffect(conversationId, messages.size, latestMessage?.id, keyboardVisible, renderedMessageItems.size) {
-        val targetMessages = messages
-        val lastRenderedItemIndex = renderedMessageItems.lastIndex
-        if (lastRenderedItemIndex < 0) {
-            messageListState.scrollToItem(0)
-            return@LaunchedEffect
+    suspend fun scrollToLatest(lastRenderedItemIndex: Int) {
+        if (lastRenderedItemIndex < 0) return
+        withFrameNanos { }
+        while (messageListState.canScrollForward) {
+            val consumed = messageListState.animateScrollBy(10_000f)
+            if (consumed <= 0f) return
         }
-
-        snapshotFlow {
-            renderedMessageItemsState.value?.source === targetMessages &&
-                messageListState.layoutInfo.totalItemsCount > lastRenderedItemIndex
-        }.first { it }
-        messageListState.scrollToItem(lastRenderedItemIndex, scrollOffset = Int.MAX_VALUE)
     }
-
+    LaunchedEffect(conversationId, renderedMessageItemsState?.source, keyboardVisible) {
+        val rendered = renderedMessageItemsState
+            ?.takeIf { it.conversationId == conversationId }
+            ?: return@LaunchedEffect
+        snapshotFlow {
+            messageListState.layoutInfo.totalItemsCount >= rendered.items.size &&
+                messageListState.layoutInfo.visibleItemsInfo.isNotEmpty()
+        }.first { it }
+        if (followLatest) {
+            scrollToLatest(rendered.items.lastIndex)
+        }
+    }
     LaunchedEffect(
         latestMessage?.id,
         latestMessage?.status,
         latestMessage?.content,
         renderedMessageItems.size,
+        renderedMessageItemsState?.source,
+        streamingMessageDisplay,
     ) {
+        if (renderedMessageItemsState?.source !== messages || !followLatest) {
+            return@LaunchedEffect
+        }
         val lastRenderedItemIndex = renderedMessageItems.lastIndex
         if (lastRenderedItemIndex < 0) return@LaunchedEffect
-        if (messageListState.layoutInfo.totalItemsCount <= lastRenderedItemIndex) return@LaunchedEffect
-
-        val lastVisibleItem = messageListState.layoutInfo.visibleItemsInfo.lastOrNull()
-        val isNearBottom = !messageListState.canScrollForward ||
-            lastVisibleItem?.index == lastRenderedItemIndex
-        if (isNearBottom) {
-            messageListState.scrollToItem(lastRenderedItemIndex, scrollOffset = Int.MAX_VALUE)
+        if (messageListState.layoutInfo.totalItemsCount <= lastRenderedItemIndex) {
+            return@LaunchedEffect
         }
+        scrollToLatest(lastRenderedItemIndex)
     }
 
     PullToRefreshBox(
@@ -302,11 +395,15 @@ internal fun MessageList(
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             LazyColumn(
+                state = messageListState,
                 modifier = Modifier
                     .fillMaxSize()
+                    .nestedScroll(userScrollConnection)
                     .clickable(onClick = onDismissKeyboard),
-                state = messageListState,
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                contentPadding = PaddingValues(
+                    horizontal = 12.dp,
+                    vertical = if (compactDisplay) 6.dp else 10.dp,
+                ),
                 verticalArrangement = Arrangement.spacedBy(0.dp),
             ) {
                 if (
@@ -323,11 +420,16 @@ internal fun MessageList(
                     items = renderedMessageItems,
                     key = { it.key },
                 ) { item ->
+                    val itemStreamingContent = streamingMessageDisplay
+                        ?.takeIf { it.messageId == item.message.id }
+                        ?.content
                     MessageBubble(
                         item = item,
+                        streamingContent = itemStreamingContent,
+                        compactDisplay = compactDisplay,
                         onEdit = { onEditMessage(item.message) },
                         onRegenerate = { onRegenerateMessage(item.message) },
-                        onDelete = { onDeleteMessage(item.message) },
+                        onDelete = { messagePendingDeletionId = item.message.id },
                         isSpeaking = speakingMessageId == item.message.id,
                         onSpeak = { onSpeakMessage(item.message) },
                         onStopSpeaking = onStopSpeaking,
@@ -338,8 +440,9 @@ internal fun MessageList(
             if (canScrollToLatest) {
                 SmallFloatingActionButton(
                     onClick = {
+                        followLatest = true
                         messageListScope.launch {
-                            messageListState.animateScrollToItem(renderedMessageItems.lastIndex)
+                            scrollToLatest(renderedMessageItems.lastIndex)
                         }
                     },
                     modifier = Modifier
@@ -351,12 +454,25 @@ internal fun MessageList(
                 }
             }
         }
-}
     }
+
+    messages.firstOrNull { it.id == messagePendingDeletionId }?.let { message ->
+        MessageDeleteDialog(
+            i18n = i18n,
+            onDismiss = { messagePendingDeletionId = null },
+            onConfirm = {
+                messagePendingDeletionId = null
+                onDeleteMessage(message)
+            },
+        )
+    }
+}
 
 @Composable
 private fun MessageBubble(
     item: MessageListItem,
+    streamingContent: String?,
+    compactDisplay: Boolean,
     onEdit: () -> Unit,
     onRegenerate: () -> Unit,
     onDelete: () -> Unit,
@@ -371,25 +487,38 @@ private fun MessageBubble(
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     val isUser = message.role == MessageRole.User
+    val placement = messageBubblePlacement(message.role)
+    val displayContent = if (isUser) {
+        message.content
+    } else {
+        normalizeAssistantMessageContent(streamingContent ?: message.content)
+    }
     val isStreamingAssistant = message.role == MessageRole.Assistant && message.status == "streaming"
     val assistantRerunActionKey = if (message.status == "error") "button.retry" else "action.regenerate"
-    val canSpeak = message.content.isNotBlank() && message.status != "streaming"
+    val canSpeak = displayContent.isNotBlank() && message.status != "streaming"
     val shape = when {
         item.isFirst && item.isLast -> RoundedCornerShape(12.dp)
         item.isFirst -> RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)
         item.isLast -> RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp)
         else -> RoundedCornerShape(0.dp)
     }
-    val renderBlocks = item.renderBlocks
+    val renderBlocks = if (streamingContent == null) {
+        item.renderBlocks
+    } else {
+        remember(displayContent) { messageRenderBlocks(displayContent) }
+    }
+    val verticalBubblePadding = if (compactDisplay) 8.dp else 12.dp
+    val internalBubblePadding = if (compactDisplay) 4.dp else 6.dp
 
-    Row(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(bottom = if (item.isLast) 10.dp else 0.dp),
-        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+            .padding(bottom = if (item.isLast) if (compactDisplay) 6.dp else 10.dp else 0.dp),
     ) {
         Box(
-            modifier = Modifier.fillMaxWidth(0.86f),
+            modifier = Modifier
+                .fillMaxWidth(0.86f)
+                .align(placement.containerAlignment),
         ) {
             Card(
                 colors = CardDefaults.cardColors(
@@ -420,12 +549,13 @@ private fun MessageBubble(
                     modifier = Modifier.padding(
                         start = 12.dp,
                         end = 12.dp,
-                        top = if (item.isFirst) 12.dp else 6.dp,
-                        bottom = if (item.isLast) 12.dp else 6.dp,
+                        top = if (item.isFirst) verticalBubblePadding else internalBubblePadding,
+                        bottom = if (item.isLast) verticalBubblePadding else internalBubblePadding,
                     ),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(if (compactDisplay) 6.dp else 8.dp),
+                    horizontalAlignment = placement.contentAlignment,
                 ) {
-                    if (isStreamingAssistant && message.content.isBlank() && item.isFirst) {
+                    if (isStreamingAssistant && displayContent.isBlank() && item.isFirst) {
                         Text(i18n.t("message.generating"))
                     } else {
                         renderBlocks.forEach { block ->
@@ -442,6 +572,8 @@ private fun MessageBubble(
                                     }
                                 },
                                 onOpenLink = { url -> openMessageLink(context, url, i18n) },
+                                messageTextAlign = placement.textAlignment,
+                                fillTextWidth = isUser,
                             )
                         }
                     }
@@ -460,7 +592,7 @@ private fun MessageBubble(
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             },
-                            modifier = Modifier.align(if (isUser) Alignment.End else Alignment.Start),
+                            modifier = Modifier.align(placement.contentAlignment),
                         )
                     }
                 }
@@ -476,12 +608,12 @@ private fun MessageBubble(
                         scope.launch {
                             clipboard.setClipEntry(
                                 ClipEntry(
-                                    ClipData.newPlainText("ZeroChat", message.content),
+                                    ClipData.newPlainText("ZeroChat", displayContent),
                                 ),
                             )
                         }
                     },
-                    enabled = message.content.isNotBlank(),
+                    enabled = displayContent.isNotBlank(),
                 )
                 if (isUser) {
                     DropdownMenuItem(
@@ -496,9 +628,9 @@ private fun MessageBubble(
                         text = { Text(i18n.t("action.share")) },
                         onClick = {
                             menuExpanded = false
-                            shareAssistantReply(context, message.content, i18n)
+                            shareAssistantReply(context, displayContent, i18n)
                         },
-                        enabled = message.content.isNotBlank() && message.status != "streaming",
+                        enabled = displayContent.isNotBlank() && message.status != "streaming",
                     )
                     DropdownMenuItem(
                         text = {
@@ -540,6 +672,8 @@ private fun MessageRenderBlockView(
     i18n: NativeI18n,
     onCopyCode: (String) -> Unit,
     onOpenLink: (String) -> Unit,
+    messageTextAlign: TextAlign,
+    fillTextWidth: Boolean,
 ) {
     when (block) {
         is MessageRenderBlock.Code -> MessageCodeBlockView(
@@ -551,6 +685,8 @@ private fun MessageRenderBlockView(
         is MessageRenderBlock.Markdown -> MessageMarkdownBlockView(
             block = block.value,
             onOpenLink = onOpenLink,
+            messageTextAlign = messageTextAlign,
+            fillTextWidth = fillTextWidth,
         )
     }
 }
@@ -559,16 +695,20 @@ private fun MessageRenderBlockView(
 private fun MessageMarkdownBlockView(
     block: MessageMarkdownBlock,
     onOpenLink: (String) -> Unit,
+    messageTextAlign: TextAlign,
+    fillTextWidth: Boolean,
 ) {
     when (block) {
         is MessageMarkdownHeading -> Text(
             block.text,
+            modifier = if (fillTextWidth) Modifier.fillMaxWidth() else Modifier,
             style = when (block.level) {
                 1 -> MaterialTheme.typography.titleLarge
                 2 -> MaterialTheme.typography.titleMedium
                 else -> MaterialTheme.typography.titleSmall
             },
             fontWeight = FontWeight.SemiBold,
+            textAlign = messageTextAlign,
         )
 
         is MessageMarkdownBulletList -> Column(
@@ -583,6 +723,7 @@ private fun MessageMarkdownBlockView(
                     MessageInlineMarkdownText(
                         text = item.text,
                         onOpenLink = onOpenLink,
+                        textAlign = messageTextAlign,
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -606,6 +747,7 @@ private fun MessageMarkdownBlockView(
                     MessageInlineMarkdownText(
                         text = item.text,
                         onOpenLink = onOpenLink,
+                        textAlign = messageTextAlign,
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -615,16 +757,20 @@ private fun MessageMarkdownBlockView(
         is MessageMarkdownTable -> MessageMarkdownTableView(
             table = block,
             onOpenLink = onOpenLink,
+            textAlign = messageTextAlign,
         )
 
         is MessageMarkdownBlockQuote -> MessageMarkdownBlockQuoteView(
             quote = block,
             onOpenLink = onOpenLink,
+            textAlign = messageTextAlign,
         )
 
         is MessageMarkdownParagraph -> MessageInlineMarkdownText(
             text = block.text,
             onOpenLink = onOpenLink,
+            textAlign = messageTextAlign,
+            modifier = if (fillTextWidth) Modifier.fillMaxWidth() else Modifier,
         )
     }
 }
@@ -634,6 +780,7 @@ private fun MessageInlineMarkdownText(
     text: String,
     onOpenLink: (String) -> Unit,
     modifier: Modifier = Modifier,
+    textAlign: TextAlign = TextAlign.Start,
 ) {
     val linkColor = MaterialTheme.colorScheme.primary
     val codeBackground = MaterialTheme.colorScheme.surfaceVariant
@@ -690,6 +837,7 @@ private fun MessageInlineMarkdownText(
     Text(
         text = annotated,
         modifier = modifier,
+        textAlign = textAlign,
     )
 }
 
@@ -697,6 +845,7 @@ private fun MessageInlineMarkdownText(
 private fun MessageMarkdownBlockQuoteView(
     quote: MessageMarkdownBlockQuote,
     onOpenLink: (String) -> Unit,
+    textAlign: TextAlign,
 ) {
     Row(
         modifier = Modifier
@@ -717,6 +866,7 @@ private fun MessageMarkdownBlockQuoteView(
         MessageInlineMarkdownText(
             text = quote.text,
             onOpenLink = onOpenLink,
+            textAlign = textAlign,
             modifier = Modifier.weight(1f),
         )
     }
@@ -726,6 +876,7 @@ private fun MessageMarkdownBlockQuoteView(
 private fun MessageMarkdownTableView(
     table: MessageMarkdownTable,
     onOpenLink: (String) -> Unit,
+    textAlign: TextAlign,
 ) {
     val tableScroll = rememberScrollState()
 
@@ -736,10 +887,20 @@ private fun MessageMarkdownTableView(
             .background(MaterialTheme.colorScheme.surface)
             .horizontalScroll(tableScroll),
     ) {
-        MessageMarkdownTableRow(cells = table.headers, header = true, onOpenLink = onOpenLink)
+        MessageMarkdownTableRow(
+            cells = table.headers,
+            header = true,
+            onOpenLink = onOpenLink,
+            textAlign = textAlign,
+        )
         table.rows.forEach { row ->
             HorizontalDivider()
-            MessageMarkdownTableRow(cells = row, header = false, onOpenLink = onOpenLink)
+            MessageMarkdownTableRow(
+                cells = row,
+                header = false,
+                onOpenLink = onOpenLink,
+                textAlign = textAlign,
+            )
         }
     }
 }
@@ -749,6 +910,7 @@ private fun MessageMarkdownTableRow(
     cells: List<String>,
     header: Boolean,
     onOpenLink: (String) -> Unit,
+    textAlign: TextAlign,
 ) {
     Row(
         modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
@@ -762,11 +924,13 @@ private fun MessageMarkdownTableRow(
                     modifier = Modifier.widthIn(min = 96.dp, max = 220.dp),
                     color = MaterialTheme.colorScheme.onSurface,
                     fontWeight = FontWeight.SemiBold,
+                    textAlign = textAlign,
                 )
             } else {
                 MessageInlineMarkdownText(
                     text = cell,
                     onOpenLink = onOpenLink,
+                    textAlign = textAlign,
                     modifier = Modifier.widthIn(min = 96.dp, max = 220.dp),
                 )
             }

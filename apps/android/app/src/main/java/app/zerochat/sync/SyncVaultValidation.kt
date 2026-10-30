@@ -25,11 +25,12 @@ internal class InvalidSyncVaultFormatException(cause: Throwable? = null) :
     IllegalArgumentException("Remote snapshot payload has invalid format.", cause)
 
 internal fun decodeValidatedSyncVault(json: Json, payload: String): SyncVault {
-    val element = try {
+    val parsed = try {
         json.parseToJsonElement(payload)
     } catch (error: Exception) {
         throw InvalidSyncVaultFormatException(error)
     }
+    val element = normalizeLegacySyncVaultJson(parsed)
 
     if (!isCanonicalSyncVaultJson(element)) {
         throw InvalidSyncVaultFormatException()
@@ -40,12 +41,152 @@ internal fun decodeValidatedSyncVault(json: Json, payload: String): SyncVault {
     } catch (error: Exception) {
         throw InvalidSyncVaultFormatException(error)
     }
+    val normalizedVault = normalizeSyncVaultForProtocol(vault)
 
-    if (!isCanonicalSyncVault(vault)) {
+    if (!isCanonicalSyncVault(normalizedVault)) {
         throw InvalidSyncVaultFormatException()
     }
 
-    return vault
+    return normalizedVault
+}
+
+internal fun normalizeLegacySyncVaultJson(element: JsonElement): JsonElement {
+    val vault = element as? JsonObject ?: return element
+    val data = vault["data"] as? JsonObject ?: return element
+    val providers = data["providers"] as? JsonArray ?: return element
+    var normalizedProviders: MutableList<JsonElement>? = null
+
+    for (index in providers.indices) {
+        val provider = providers[index] as? JsonObject ?: continue
+        val metadata = provider["modelMetadata"] as? JsonObject ?: continue
+        val normalizedMetadata = normalizeLegacyModelMetadataJson(metadata)
+        if (normalizedMetadata === metadata) {
+            continue
+        }
+
+        val replacement = JsonObject(provider.toMutableMap().apply {
+            put("modelMetadata", normalizedMetadata)
+        })
+        val replacements = normalizedProviders ?: providers.toMutableList().also {
+            normalizedProviders = it
+        }
+        replacements[index] = replacement
+    }
+
+    val replacements = normalizedProviders ?: return element
+    val normalizedData = JsonObject(data.toMutableMap().apply {
+        put("providers", JsonArray(replacements))
+    })
+    return JsonObject(vault.toMutableMap().apply {
+        put("data", normalizedData)
+    })
+}
+
+internal fun normalizeSyncVaultForProtocol(vault: SyncVault): SyncVault {
+    val providers = vault.data.providers
+    var normalizedProviders: MutableList<ProviderConfig>? = null
+
+    for (index in providers.indices) {
+        val provider = providers[index]
+        val normalizedMetadata = normalizeProviderModelMetadataForProtocol(provider.modelMetadata)
+        if (normalizedMetadata === provider.modelMetadata) {
+            continue
+        }
+
+        val replacements = normalizedProviders ?: providers.toMutableList().also {
+            normalizedProviders = it
+        }
+        replacements[index] = provider.copy(modelMetadata = normalizedMetadata)
+    }
+
+    val replacements = normalizedProviders ?: return vault
+    return vault.copy(data = vault.data.copy(providers = replacements))
+}
+
+private fun normalizeLegacyModelMetadataJson(metadata: JsonObject): JsonObject {
+    var normalizedMetadata: MutableMap<String, JsonElement>? = null
+
+    for ((modelId, value) in metadata) {
+        val entry = value as? JsonObject ?: continue
+        val normalizedEntry = normalizeLegacyModelMetadataEntryJson(entry)
+        if (normalizedEntry === entry) {
+            continue
+        }
+
+        val replacements = normalizedMetadata ?: metadata.toMutableMap().also {
+            normalizedMetadata = it
+        }
+        replacements[modelId] = normalizedEntry
+    }
+
+    return normalizedMetadata?.let(::JsonObject) ?: metadata
+}
+
+private fun normalizeLegacyModelMetadataEntryJson(entry: JsonObject): JsonObject {
+    var normalizedEntry: MutableMap<String, JsonElement>? = null
+
+    for (key in LEGACY_ZERO_MODEL_METADATA_FIELDS) {
+        if (!entry[key].isLegacyZeroInteger()) {
+            continue
+        }
+
+        val replacements = normalizedEntry ?: entry.toMutableMap().also {
+            normalizedEntry = it
+        }
+        replacements.remove(key)
+    }
+
+    return normalizedEntry?.let(::JsonObject) ?: entry
+}
+
+private fun JsonElement?.isLegacyZeroInteger(): Boolean {
+    val value = this as? JsonPrimitive ?: return false
+    return !value.isString && value.longOrNull == 0L
+}
+
+private val LEGACY_ZERO_MODEL_METADATA_FIELDS = setOf(
+    "contextWindowTokens",
+    "maxInputTokens",
+    "maxOutputTokens",
+)
+
+private fun normalizeProviderModelMetadataForProtocol(
+    metadata: Map<String, ModelMetadata>,
+): Map<String, ModelMetadata> {
+    var normalizedMetadata: MutableMap<String, ModelMetadata>? = null
+
+    for ((modelId, value) in metadata) {
+        val normalizedValue = normalizeModelMetadataForProtocol(value)
+        if (normalizedValue === value) {
+            continue
+        }
+
+        val replacements = normalizedMetadata ?: metadata.toMutableMap().also {
+            normalizedMetadata = it
+        }
+        replacements[modelId] = normalizedValue
+    }
+
+    return normalizedMetadata ?: metadata
+}
+
+private fun normalizeModelMetadataForProtocol(metadata: ModelMetadata): ModelMetadata {
+    val contextWindowTokens = metadata.contextWindowTokens
+    val maxInputTokens = metadata.maxInputTokens
+    val maxOutputTokens = metadata.maxOutputTokens
+    if (
+        (contextWindowTokens == null || contextWindowTokens > 0) &&
+        (maxInputTokens == null || maxInputTokens > 0) &&
+        (maxOutputTokens == null || maxOutputTokens > 0)
+    ) {
+        return metadata
+    }
+
+    return metadata.copy(
+        contextWindowTokens = contextWindowTokens?.takeIf { it > 0 },
+        maxInputTokens = maxInputTokens?.takeIf { it > 0 },
+        maxOutputTokens = maxOutputTokens?.takeIf { it > 0 },
+    )
 }
 
 private fun isCanonicalSyncVaultJson(element: JsonElement): Boolean {

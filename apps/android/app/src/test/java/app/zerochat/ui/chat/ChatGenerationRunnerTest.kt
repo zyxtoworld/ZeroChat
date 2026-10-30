@@ -73,6 +73,86 @@ class ChatGenerationRunnerTest {
     }
 
     @Test
+    fun normalizeAssistantMessageContentConvertsHtmlToRenderedMarkdown() {
+        val content = """
+            <h2>Release notes</h2>
+            <p>Hello <strong>world</strong><br>next &amp; ready.</p>
+            <ol><li>one</li><li><a href="https://example.com/docs">Docs</a></li></ol>
+        """.trimIndent()
+
+        assertEquals(
+            """
+                ## Release notes
+
+                Hello **world**
+                next & ready.
+
+                1. one
+                2. [Docs](https://example.com/docs)
+            """.trimIndent(),
+            normalizeAssistantMessageContent(content),
+        )
+    }
+
+    @Test
+    fun normalizeAssistantMessageContentFlattensPresentationDslWithoutLeakingTagsOrCitationMetadata() {
+        val content = """
+            <box gap={2}>
+            <text color="primary">天津天气</text>
+            <grid columns={2} gap={2}>
+            <grid-item><row align="center" gap={2}><icon name="cloud-rain" size="xl"/><box gap={1}><text color="secondary">降水概率</text> 约 10%</box></row></grid-item>
+            <grid-item><row align="center" gap={2}><icon name="moon" size="xl"/><box gap={1}><text color="secondary">今晚</text> 气温逐渐下降</box></row></grid-item>
+            </grid>
+            <text color="secondary">天气参考：中国天气网天津站。<Cite refs={["turn0"]}/></text>
+            </box>
+        """.trimIndent()
+
+        assertEquals(
+            """
+                天津天气
+
+                降水概率 约 10%
+
+                今晚 气温逐渐下降
+
+                天气参考：中国天气网天津站。
+            """.trimIndent(),
+            normalizeAssistantMessageContent(content),
+        )
+    }
+
+    @Test
+    fun normalizeAssistantMessageContentPreservesHtmlInsideFencedCode() {
+        val content = """
+            <p>Before</p>
+            ```html
+            <div>Keep this code</div>
+            ```
+            <p>After</p>
+        """.trimIndent()
+
+        assertEquals(
+            "Before\n```html\n<div>Keep this code</div>\n```\nAfter",
+            normalizeAssistantMessageContent(content),
+        )
+    }
+
+    @Test
+    fun nextStreamingTextFrameRevealsOneUnicodeCodePointAtATime() {
+        val target = "A🙂好"
+
+        assertEquals("A", nextStreamingTextFrame("", target))
+        assertEquals("A🙂", nextStreamingTextFrame("A", target))
+        assertEquals(target, nextStreamingTextFrame("A🙂", target))
+        assertEquals(target, nextStreamingTextFrame(target, target))
+    }
+
+    @Test
+    fun nextStreamingTextFrameReplacesNonPrefixCorrections() {
+        assertEquals("Corrected", nextStreamingTextFrame("Draft", "Corrected"))
+    }
+
+    @Test
     fun streamingChatRetriesTransientFailuresBeforeAnyVisibleText() = runBlocking {
         val receivedText = StringBuilder()
         val visibleTexts = mutableListOf<String>()
@@ -88,14 +168,14 @@ class ChatGenerationRunnerTest {
             },
             onVisibleText = { visibleTexts += it },
             retryDelay = { retryDelays += it },
-        ) { onDelta ->
+        ) { onText ->
             streamCalls += 1
             if (streamCalls == 1) {
                 throw IOException("network timeout")
             }
 
-            onDelta("Ze")
-            onDelta("ro")
+            onText("Ze")
+            onText("Zero")
             ""
         }
 
@@ -118,14 +198,14 @@ class ChatGenerationRunnerTest {
             onRetry = { _, _ -> },
             onVisibleText = { visibleTexts += it },
             retryDelay = {},
-        ) { onDelta ->
+        ) { onText ->
             streamCalls += 1
             if (streamCalls == 1) {
-                onDelta("  \n")
+                onText("  \n")
                 throw IOException("empty provider response")
             }
 
-            onDelta("Zero")
+            onText("Zero")
             "Zero"
         }
 
@@ -147,9 +227,9 @@ class ChatGenerationRunnerTest {
                     onRetry = { attempt, _ -> retryAttempts += attempt },
                     onVisibleText = {},
                     retryDelay = {},
-                ) { onDelta ->
+                ) { onText ->
                     streamCalls += 1
-                    onDelta("partial")
+                    onText("partial")
                     throw IOException("network timeout")
                 }
             }

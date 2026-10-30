@@ -4,6 +4,7 @@ import app.zerochat.data.AppSnapshot
 import app.zerochat.data.ChatMessage
 import app.zerochat.data.Conversation
 import app.zerochat.data.ProviderConfig
+import app.zerochat.data.MessageRole
 
 internal enum class MessageSpeechBlocker {
     TextRequired,
@@ -31,7 +32,11 @@ internal fun prepareMessageSpeechRequest(
     message: ChatMessage,
     hasProviderKey: (String) -> Boolean,
 ): MessageSpeechRequestPlan {
-    val input = message.content.trim()
+    val input = (if (message.role == MessageRole.Assistant) {
+        normalizeAssistantMessageContent(message.content)
+    } else {
+        message.content
+    }).trim()
     if (input.isBlank()) {
         return MessageSpeechRequestPlan.Blocked(MessageSpeechBlocker.TextRequired)
     }

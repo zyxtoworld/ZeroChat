@@ -15,7 +15,6 @@ import {
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  androidDebugApkBuildStampPath,
   androidSourceFingerprint,
   sameAndroidSourceFingerprint,
   writeAndroidDebugApkBuildStamp,
@@ -87,6 +86,22 @@ function removeEmptyLegacyResourceDirectories() {
     if (readdirSync(directory).length === 0) {
       rmdirSync(directory)
     }
+  }
+}
+
+function resetDebugApkIntermediates() {
+  // D8 can retain stale merged project dex through the Windows project junction
+  // after Kotlin recompiles a changed Compose call signature. Preserve compiled
+  // Kotlin outputs, but rebuild D8 and package outputs for every debug APK.
+  const directories = [
+    path.join(androidDir, 'app', 'build', 'intermediates', 'project_dex_archive', 'debug'),
+    path.join(androidDir, 'app', 'build', 'intermediates', 'dex', 'debug'),
+    path.join(androidDir, 'app', 'build', 'intermediates', 'incremental', 'packageDebug'),
+    path.join(androidDir, 'app', 'build', 'outputs', 'apk', 'debug'),
+  ]
+
+  for (const directory of directories) {
+    rmSync(directory, { recursive: true, force: true })
   }
 }
 
@@ -314,7 +329,7 @@ const lock = acquireAndroidBuildLock()
 console.log(`Using Android Gradle execution lock=${lock.path}`)
 
 if (assemblesDebugApk) {
-  rmSync(androidDebugApkBuildStampPath(repoRoot), { force: true })
+  resetDebugApkIntermediates()
 }
 
 let result

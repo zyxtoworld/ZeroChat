@@ -26,6 +26,7 @@ internal fun buildIncrementalUpload(
     crypto: CryptoEngine,
     json: Json,
 ): BuiltIncrementalUpload {
+    val normalizedVault = normalizeSyncVaultForProtocol(vault)
     val reusableChunks = remoteManifest?.chunks.orEmpty().associateBy { it.fingerprint }
     val reusableSkillChunks = remoteManifest?.skillChunks.orEmpty().associateBy { it.fingerprint }
     val reusableAttachmentChunks = remoteManifest?.attachmentChunks.orEmpty().associateBy { it.fingerprint }
@@ -34,7 +35,7 @@ internal fun buildIncrementalUpload(
     val skillRefs = mutableListOf<IncrementalSkillRef>()
     val attachmentRefs = mutableListOf<IncrementalAttachmentRef>()
 
-    for (conversation in vault.data.conversations) {
+    for (conversation in normalizedVault.data.conversations) {
         val messages = conversation.messages.map { message ->
             message.copy(
                 attachments = message.attachments.map attachmentMap@{ attachment ->
@@ -139,7 +140,7 @@ internal fun buildIncrementalUpload(
         }
     }
 
-    for (skill in vault.data.skills) {
+    for (skill in normalizedVault.data.skills) {
         for (chunk in skill.chunks) {
             val content = chunk.content.trim()
             require(content.isNotEmpty()) { "Skill content is missing." }
@@ -181,12 +182,12 @@ internal fun buildIncrementalUpload(
     }
 
     val manifest = IncrementalManifest(
-        updatedAt = vault.data.updatedAt,
-        data = vault.data.copy(
-            conversations = vault.data.conversations.map { it.copy(messages = emptyList()) },
-            skills = vault.data.skills.map(::emptySkillContent),
+        updatedAt = normalizedVault.data.updatedAt,
+        data = normalizedVault.data.copy(
+            conversations = normalizedVault.data.conversations.map { it.copy(messages = emptyList()) },
+            skills = normalizedVault.data.skills.map(::emptySkillContent),
         ),
-        secrets = vault.secrets,
+        secrets = normalizedVault.secrets,
         chunks = chunkRefs,
         skillChunks = skillRefs,
         attachmentChunks = attachmentRefs,

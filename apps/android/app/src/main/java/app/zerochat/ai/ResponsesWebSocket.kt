@@ -79,7 +79,7 @@ internal suspend fun streamResponsesWebSocket(
     messages: List<app.zerochat.data.ChatMessage>,
     contextMessageLimit: Int,
     proxyToken: String,
-    onDelta: suspend (String) -> Unit,
+    onText: suspend (String) -> Unit,
 ): String {
     require(provider.kind == ProviderKind.OpenAIResponses) {
         "Responses WebSocket requires an OpenAI Responses provider."
@@ -90,7 +90,7 @@ internal suspend fun streamResponsesWebSocket(
     val createPayload = responseCreatePayload(json, body)
     val proxy = !provider.proxyUrl.isNullOrBlank()
     var receivedDelta = false
-    var received = ""
+    val received = StringBuilder()
 
     try {
         withTimeout(AI_STREAM_IDLE_TIMEOUT_MS) {
@@ -134,8 +134,9 @@ internal suspend fun streamResponsesWebSocket(
                             val delta = (event["delta"] as? JsonPrimitive)?.contentOrNull.orEmpty()
                             if (delta.isNotEmpty()) {
                                 receivedDelta = true
-                                received += delta
-                                onDelta(delta)
+                                if (mergeStreamingChatText(received, delta, cumulative = false)) {
+                                    onText(received.toString())
+                                }
                             }
                         }
                         "response.completed" -> return@webSocket
@@ -164,5 +165,5 @@ internal suspend fun streamResponsesWebSocket(
         throw ResponsesWebSocketException(true, "Responses WebSocket returned an empty response.")
     }
 
-    return received
+    return received.toString()
 }

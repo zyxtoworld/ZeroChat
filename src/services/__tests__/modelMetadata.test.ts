@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { ProviderConfig } from '../../types'
 import {
@@ -93,5 +93,34 @@ describe('models.dev metadata', () => {
 
     expect(effectiveInputTokenBudget(configured, 'gpt-5.6-luna')).toBe(84000)
     expect(effectiveInputTokenBudget(provider(), 'missing')).toBe(12000)
+  })
+  it('aborts a stalled catalog request instead of blocking model refresh forever', async () => {
+    clearModelsDevCatalogCache()
+    vi.useFakeTimers()
+    try {
+      const fetcher: typeof fetch = (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('Aborted', 'AbortError')),
+            { once: true },
+          )
+        })
+
+      const request = modelMetadataForProviderModels(
+        provider(),
+        ['gpt-5.6-luna'],
+        fetcher,
+      ).then(
+        () => null,
+        (error) => error,
+      )
+      await vi.advanceTimersByTimeAsync(5_000)
+
+      await expect(request).resolves.toMatchObject({ name: 'AbortError' })
+    } finally {
+      clearModelsDevCatalogCache()
+      vi.useRealTimers()
+    }
   })
 })

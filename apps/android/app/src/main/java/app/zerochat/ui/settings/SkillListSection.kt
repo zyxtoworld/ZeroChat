@@ -20,7 +20,7 @@ private const val SKILL_LIST_INITIAL_RENDER_LIMIT = 80
 private const val SKILL_LIST_RENDER_BATCH = 80
 
 @Composable
-fun SkillListSection(
+internal fun SkillListSection(
     skills: List<UserSkill>,
     i18n: NativeI18n,
     onChange: (UserSkill) -> Unit,
@@ -67,7 +67,7 @@ fun SkillListSection(
 }
 
 @Composable
-fun SkillListProgressControls(
+internal fun SkillListProgressControls(
     shown: Int,
     total: Int,
     i18n: NativeI18n,

@@ -268,7 +268,7 @@ fun providerSettingsEndpointLabels(provider: ProviderConfig): List<String> {
 fun providerSettingsEndpointSummary(provider: ProviderConfig): String =
     providerSettingsEndpointLabels(provider).joinToString(" / ")
 
-fun providerSettingsDeleteProvider(
+internal fun providerSettingsDeleteProvider(
     snapshot: AppSnapshot,
     deletedProviderId: String,
     fallbackModelForProvider: (ProviderConfig) -> String,

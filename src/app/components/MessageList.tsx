@@ -43,7 +43,7 @@ import {
   scrollMessagesElementToLatest,
   virtualizedLatestAssistantAnnouncement,
 } from '../../services/messageVirtualization'
-import { messageCopyText } from '../../services/messageRendering'
+import { messageCopyText, messageDisplayContent } from '../../services/messageRendering'
 import { prefersReducedMotion } from '../../services/prefersReducedMotion'
 import {
   createMarkdownLabels,
@@ -241,6 +241,7 @@ const MessageRow = memo(function MessageRow({
   registerRow,
 }: MessageRowProps) {
   const isUser = message.role === 'user'
+  const displayContent = messageDisplayContent(message)
   const status = message.status ?? 'done'
   const isEditing = editing?.id === message.id
   const sender = isUser ? t('message.you') : t('message.assistant')
@@ -307,9 +308,9 @@ const MessageRow = memo(function MessageRow({
               }}
             />
           ) : (
-            <Markdown content={message.content} labels={createMarkdownLabels(t)} />
+            <Markdown content={displayContent} labels={createMarkdownLabels(t)} />
           )}
-          {status === 'streaming' && !message.content && (
+          {status === 'streaming' && !displayContent && (
             <span>{t('message.streaming')}</span>
           )}
           {status === 'streaming' && (
@@ -346,8 +347,8 @@ const MessageRow = memo(function MessageRow({
             </>
           ) : (
             <>
-              {message.content && (
-                <CopyButton content={message.content} label={t} />
+              {displayContent && (
+                <CopyButton content={displayContent} label={t} />
               )}
               {isUser && (
                 <button

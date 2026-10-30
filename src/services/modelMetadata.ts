@@ -1,6 +1,8 @@
 import type { ModelMetadata, ProviderCapability, ProviderConfig } from '../types'
+import { providerTimeoutSignal } from './providerTimeoutSignal'
 
 const MODELS_DEV_API_URL = 'https://models.dev/api.json'
+const MODELS_DEV_REQUEST_TIMEOUT_MS = 5_000
 
 type ModelsDevModel = {
   id?: unknown
@@ -69,7 +71,7 @@ function modelCapabilities(model: ModelsDevModel): ProviderCapability[] {
   const modelId = `${stringValue(model.id) ?? ''} ${stringValue(model.canonical_model_id) ?? ''}`
     .toLowerCase()
 
-  if (Boolean(model.tool_call)) capabilities.add('tools')
+  if (model.tool_call) capabilities.add('tools')
   if (input.some((entry) => entry.includes('image'))) capabilities.add('vision')
   if (output.some((entry) => entry.includes('image'))) capabilities.add('image-generation')
   if (input.some((entry) => entry.includes('audio')) || output.some((entry) => entry.includes('audio'))) {
@@ -104,9 +106,14 @@ function toMetadata(modelId: string, model: ModelsDevModel): ModelMetadata {
 
 async function loadCatalog(fetcher: typeof fetch = fetch): Promise<ModelsDevCatalog> {
   if (!catalogPromise) {
-    catalogPromise = fetcher(MODELS_DEV_API_URL, {
-      headers: { accept: 'application/json' },
-    })
+    const timeout = providerTimeoutSignal(undefined, MODELS_DEV_REQUEST_TIMEOUT_MS)
+    catalogPromise = Promise.resolve()
+      .then(() =>
+        fetcher(MODELS_DEV_API_URL, {
+          headers: { accept: 'application/json' },
+          signal: timeout.signal,
+        }),
+      )
       .then((response) => {
         if (!response.ok) throw new Error(`models.dev returned HTTP ${response.status}`)
         return response.json() as Promise<ModelsDevCatalog>
@@ -120,6 +127,9 @@ async function loadCatalog(fetcher: typeof fetch = fetch): Promise<ModelsDevCata
       .catch((error) => {
         catalogPromise = null
         throw error
+      })
+      .finally(() => {
+        timeout.dispose()
       })
   }
 

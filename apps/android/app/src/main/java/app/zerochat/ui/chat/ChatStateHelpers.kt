@@ -49,6 +49,14 @@ internal fun canReuseUninteractedNewConversation(
         !hasSourceImage &&
         !hasMaskImage
 
+internal fun hasUnsavedComposerDraft(
+    input: String,
+    editing: Boolean,
+    hasSourceImage: Boolean,
+    hasMaskImage: Boolean,
+): Boolean =
+    input.isNotBlank() || editing || hasSourceImage || hasMaskImage
+
 fun activeConversation(snapshot: AppSnapshot): Conversation? {
     val activeId = snapshot.preferences.activeConversationId
     return snapshot.conversations.firstOrNull { it.id == activeId }
@@ -395,16 +403,39 @@ fun imageRetryPrompt(conversation: Conversation, message: ChatMessage): String? 
     return message.content.trim().takeIf { it.isNotEmpty() }
 }
 
+private val interruptedMarkdownListItem = Regex(
+    """^\s*(?:\d+[.)]|[-+*])(?:\s+[*_`~#]+)?\s*$""",
+)
+
+private fun trimInterruptedMarkdownListItem(content: String): String {
+    val finalContentIndex = content.indexOfLast { !it.isWhitespace() }
+    if (finalContentIndex < 0) {
+        return content
+    }
+
+    val finalContent = content.substring(0, finalContentIndex + 1)
+    val finalLineStart = finalContent.lastIndexOf('\n').let { index ->
+        if (index < 0) 0 else index + 1
+    }
+    return if (interruptedMarkdownListItem.matches(finalContent.substring(finalLineStart))) {
+        finalContent.substring(0, finalLineStart).trimEnd()
+    } else {
+        content
+    }
+}
+
 fun stoppedAssistantMessage(
     pendingMessage: ChatMessage,
     partialContent: String,
     stoppedCopy: String,
-): ChatMessage =
-    pendingMessage.copy(
-        content = partialContent.ifBlank { stoppedCopy },
+): ChatMessage {
+    val readablePartialContent = trimInterruptedMarkdownListItem(partialContent)
+    return pendingMessage.copy(
+        content = readablePartialContent.ifBlank { stoppedCopy },
         status = "done",
-        error = null,
+        error = stoppedCopy.takeIf { readablePartialContent.isNotBlank() },
     )
+}
 
 fun deleteConversation(
     snapshot: AppSnapshot,

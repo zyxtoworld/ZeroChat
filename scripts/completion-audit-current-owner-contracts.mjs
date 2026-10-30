@@ -89,8 +89,9 @@ export function markdownLabelProjectionContract({
   messageListSource = '',
 }) {
   return (
+    messageListSource.includes('const displayContent = messageDisplayContent(message)') &&
     messageListSource.includes(
-      '<Markdown content={message.content} labels={createMarkdownLabels(t)} />',
+      '<Markdown content={displayContent} labels={createMarkdownLabels(t)} />',
     ) &&
     markdownComponentSource.includes("const copyFailed = labels('copyFailed')") &&
     markdownLabelTestSource.includes(

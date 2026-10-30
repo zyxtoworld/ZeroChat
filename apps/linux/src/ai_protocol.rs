@@ -1272,6 +1272,29 @@ where
     true
 }
 
+fn append_stream_text(received: &mut String, candidate: &str, cumulative: bool) -> bool {
+    if candidate.is_empty() {
+        return false;
+    }
+
+    let next = if !cumulative {
+        candidate
+    } else {
+        if candidate == received || received.starts_with(candidate) {
+            return false;
+        }
+        candidate
+            .strip_prefix(received.as_str())
+            .unwrap_or(candidate)
+    };
+    if next.is_empty() {
+        return false;
+    }
+
+    received.push_str(next);
+    true
+}
+
 pub(crate) fn process_sse_event<F>(
     event_data: &mut Vec<String>,
     received: &mut String,
@@ -1290,10 +1313,9 @@ where
         return false;
     }
 
-    if let Some(delta) = chat_delta_from_sse(&data)
-        && !delta.is_empty()
+    if let Some(chunk) = chat_delta_from_sse(&data)
+        && append_stream_text(received, &chunk.text, chunk.cumulative)
     {
-        received.push_str(&delta);
         return on_partial(received.clone());
     }
 
@@ -1415,7 +1437,12 @@ fn read_model_id(value: &Value) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn chat_delta_from_sse(text: &str) -> Option<String> {
+struct ChatStreamText {
+    text: String,
+    cumulative: bool,
+}
+
+fn chat_delta_from_sse(text: &str) -> Option<ChatStreamText> {
     let value: Value = serde_json::from_str(text).ok()?;
 
     openai_choice_delta(&value)
@@ -1423,48 +1450,88 @@ fn chat_delta_from_sse(text: &str) -> Option<String> {
         .or_else(|| anthropic_delta(&value))
 }
 
-fn openai_choice_delta(value: &Value) -> Option<String> {
+fn openai_choice_delta(value: &Value) -> Option<ChatStreamText> {
     let choice = value
         .get("choices")
         .and_then(Value::as_array)
         .and_then(|items| items.first())?;
 
-    choice
-        .get("delta")
+    let delta = choice.get("delta");
+    let delta_text = delta
         .and_then(|delta| delta.get("content"))
         .map(openai_choice_content_text)
-        .filter(|text| !text.is_empty())
-        .or_else(|| {
-            choice
-                .get("message")
-                .and_then(|message| message.get("content"))
-                .map(openai_choice_content_text)
-                .filter(|text| !text.is_empty())
-        })
+        .unwrap_or_default();
+    if !delta_text.is_empty() {
+        return Some(ChatStreamText {
+            text: delta_text,
+            cumulative: false,
+        });
+    }
+
+    let delta_text = delta
+        .and_then(|delta| delta.get("text"))
+        .map(openai_choice_content_text)
+        .unwrap_or_default();
+    if !delta_text.is_empty() {
+        return Some(ChatStreamText {
+            text: delta_text,
+            cumulative: false,
+        });
+    }
+
+    let message_text = choice
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .map(openai_choice_content_text)
+        .unwrap_or_default();
+    if !message_text.is_empty() {
+        return Some(ChatStreamText {
+            text: message_text,
+            cumulative: true,
+        });
+    }
+
+    let text = choice
+        .get("text")
+        .map(openai_choice_content_text)
+        .unwrap_or_default();
+    (!text.is_empty()).then_some(ChatStreamText {
+        text,
+        cumulative: false,
+    })
 }
 
-fn responses_delta(value: &Value) -> Option<String> {
+fn responses_delta(value: &Value) -> Option<ChatStreamText> {
     let event_type = value
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if !event_type.is_empty() && !event_type.contains("delta") {
-        return None;
-    }
-
-    value
-        .get("delta")
-        .and_then(Value::as_str)
-        .or_else(|| {
+    if event_type.is_empty() || event_type.contains("delta") {
+        let text = value.get("delta").and_then(Value::as_str).or_else(|| {
             value
                 .get("response")
                 .and_then(|response| response.get("delta"))
                 .and_then(Value::as_str)
-        })
-        .map(ToOwned::to_owned)
+        })?;
+        return Some(ChatStreamText {
+            text: text.to_owned(),
+            cumulative: false,
+        });
+    }
+    if event_type.ends_with(".done") {
+        let text = value
+            .get("text")
+            .or_else(|| value.get("output_text"))
+            .and_then(Value::as_str)?;
+        return Some(ChatStreamText {
+            text: text.to_owned(),
+            cumulative: true,
+        });
+    }
+    None
 }
 
-fn anthropic_delta(value: &Value) -> Option<String> {
+fn anthropic_delta(value: &Value) -> Option<ChatStreamText> {
     let event_type = value
         .get("type")
         .and_then(Value::as_str)
@@ -1473,11 +1540,25 @@ fn anthropic_delta(value: &Value) -> Option<String> {
         return None;
     }
 
-    value
+    if let Some(text) = value
         .get("delta")
         .and_then(|delta| delta.get("text"))
         .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
+    {
+        return Some(ChatStreamText {
+            text: text.to_owned(),
+            cumulative: false,
+        });
+    }
+
+    let text = value
+        .get("content")
+        .map(openai_choice_content_text)
+        .unwrap_or_default();
+    (!text.is_empty()).then_some(ChatStreamText {
+        text,
+        cumulative: true,
+    })
 }
 
 fn is_legacy_ipv4_label(label: &str) -> bool {
@@ -1951,6 +2032,62 @@ mod tests {
         ));
         assert_eq!(received, "Hello world");
         assert_eq!(partials, vec!["Hello ", "Hello world"]);
+    }
+
+    #[test]
+    fn stream_deltas_append_delta_and_deduplicate_cumulative_text() {
+        let mut received = String::new();
+        let mut partials = Vec::new();
+        let mut on_partial = |partial: String| {
+            partials.push(partial);
+            true
+        };
+
+        for payload in [
+            r#"{"choices":[{"message":{"content":"Hel"}}]}"#,
+            r#"{"choices":[{"message":{"content":"Hello"}}]}"#,
+        ] {
+            let mut event = vec![payload.to_owned()];
+            assert!(process_sse_event(
+                &mut event,
+                &mut received,
+                &mut on_partial
+            ));
+        }
+        assert_eq!(received, "Hello");
+        assert_eq!(partials, vec!["Hel", "Hello"]);
+
+        received.clear();
+        partials.clear();
+        for payload in [
+            r#"{"content":[{"type":"text","text":"Hel"}]}"#,
+            r#"{"content":[{"type":"text","text":"Hello"}]}"#,
+        ] {
+            let mut event = vec![payload.to_owned()];
+            assert!(process_sse_event(
+                &mut event,
+                &mut received,
+                &mut on_partial
+            ));
+        }
+        assert_eq!(received, "Hello");
+        assert_eq!(partials, vec!["Hel", "Hello"]);
+
+        received.clear();
+        partials.clear();
+        for payload in [
+            r#"{"type":"response.output_text.delta","delta":"a"}"#,
+            r#"{"type":"response.output_text.delta","delta":"a"}"#,
+        ] {
+            let mut event = vec![payload.to_owned()];
+            assert!(process_sse_event(
+                &mut event,
+                &mut received,
+                &mut on_partial
+            ));
+        }
+        assert_eq!(received, "aa");
+        assert_eq!(partials, vec!["a", "aa"]);
     }
 
     #[test]

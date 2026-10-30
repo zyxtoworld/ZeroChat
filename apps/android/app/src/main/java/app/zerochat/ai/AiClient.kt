@@ -133,7 +133,7 @@ class AiClient(
         messages: List<ChatMessage>,
         contextMessageLimit: Int = DEFAULT_CHAT_CONTEXT_MESSAGE_LIMIT,
         proxyToken: String = "",
-        onDelta: suspend (String) -> Unit,
+        onText: suspend (String) -> Unit,
     ): String {
         require(!providerNeedsClientKey(provider) || apiKey.isNotBlank()) {
             "Provider API key is required"
@@ -154,7 +154,7 @@ class AiClient(
                     messages = messages,
                     contextMessageLimit = contextMessageLimit,
                     proxyToken = proxyToken,
-                    onDelta = onDelta,
+                    onText = onText,
                 )
             } catch (error: ResponsesWebSocketException) {
                 if (!error.fallbackAllowed) throw error
@@ -198,7 +198,7 @@ class AiClient(
                     val trimmedLine = line.trimEnd('\r')
 
                     if (trimmedLine.isBlank()) {
-                        val shouldContinue = processSseEvent(json, eventData, received, onDelta)
+                        val shouldContinue = processSseEvent(json, eventData, received, onText)
                         eventData.clear()
                         if (!shouldContinue) break
                         continue
@@ -217,7 +217,7 @@ class AiClient(
                 }
 
                 if (eventData.isNotEmpty()) {
-                    processSseEvent(json, eventData, received, onDelta)
+                    processSseEvent(json, eventData, received, onText)
                 }
             } finally {
                 lineReader.close()
@@ -308,9 +308,12 @@ class AiClient(
                             found[matched] = ModelMetadata(
                                 id = matched,
                                 displayName = modelObject["name"]?.jsonPrimitive?.contentOrNull,
-                                contextWindowTokens = limit?.get("context")?.jsonPrimitive?.longOrNull,
-                                maxInputTokens = limit?.get("input")?.jsonPrimitive?.longOrNull,
-                                maxOutputTokens = limit?.get("output")?.jsonPrimitive?.longOrNull,
+                                contextWindowTokens = limit?.get("context")?.jsonPrimitive?.longOrNull
+                                    ?.takeIf { it > 0 },
+                                maxInputTokens = limit?.get("input")?.jsonPrimitive?.longOrNull
+                                    ?.takeIf { it > 0 },
+                                maxOutputTokens = limit?.get("output")?.jsonPrimitive?.longOrNull
+                                    ?.takeIf { it > 0 },
                                 capabilities = capabilities,
                                 source = "models-dev",
                                 verifiedAt = System.currentTimeMillis(),

@@ -700,6 +700,7 @@ src/
 - **iOS/macOS**: `URLSession.bytes(for:)` async sequence，逐行解析 SSE
 - **Linux**: `reqwest::Response::bytes_stream()` + tokio 异步流
 - **Windows**: WebView2 内 Web 端已实现流式，无需额外处理
+- Web/PWA and native clients request an SSE response explicitly and normalize cumulative or replayed provider text before publishing it, so a provider snapshot cannot duplicate already visible output.
 
 流式输出 UI 要求：
 - 逐 token 更新消息内容，不能等完整响应
@@ -747,7 +748,7 @@ Linux:
 | 多会话管理 | 创建、切换、重命名、删除会话 |
 | 消息操作 | 用户消息可编辑重发，AI 消息可重新生成、删除 |
 | 上下文窗口 | 自动截取最近 N 条消息（可配置），system prompt 始终保留 |
-| Markdown 渲染 | AI 回复支持完整 Markdown：标题、列表、代码块、表格、链接 |
+| Markdown 渲染 | AI 回复支持完整 Markdown：标题、列表、代码块、表格、链接；常见 HTML/XML 包装在展示与复制前归一化为安全 Markdown/纯文本，脚本与工具调用包装不泄露 |
 | 代码高亮 | 代码块支持语法高亮（至少 20 种语言），带复制按钮和语言标签 |
 | 停止生成 | 流式输出中可随时停止，已输出内容保留 |
 | 错误恢复 | 网络错误/API 错误显示友好提示，可一键重试 |
@@ -1427,7 +1428,7 @@ libadwaita 语义色:
 - [x] Web Provider/Model 菜单提示键盘所有权（2026-07-25 Asia/Shanghai）：根因是首次提示的关闭按钮位于 `role="menu"` 内，却不是菜单项，箭头导航无法到达，Tab 又会关闭菜单。提示关闭按钮现在以 `menuitem` 参与统一菜单选择器，说明文本通过 `aria-describedby` 关联；菜单控制器在下一帧解析首项，关闭后焦点续接到仍存在的菜单项。组件单测与真实 Chromium smoke 证明键盘聚焦触发器后按 Enter 打开、提示取得首焦点、再按 Enter 关闭时菜单保持打开且焦点仍在菜单项。QA marker: Provider model menu hints stay keyboard-navigable.
 - [x] Apple Provider 删除事务一致性（2026-07-26 Asia/Shanghai）：删除不再由编辑器先清 Keychain、再异步提交快照。`SnapshotStore` 在 actor 内比较持久化观察值并保存候选；ViewModel 等待已有保存队列，捕获 revision，清除密钥后执行 CAS，只在 CAS 和 revision 复检都成功后发布 Provider/会话迁移并触发同步。CAS 拒绝、写入失败或并发 revision 漂移会恢复最新快照，并且只在密钥仍为空且当前快照仍拥有该 Provider 时恢复旧密钥，避免覆盖用户并发写入。该边界是进程内失败与竞争的补偿事务，不宣称跨 Keychain/文件系统的崩溃级 ACID。QA marker: Apple Provider deletion publishes only after snapshot CAS and conditionally compensates Keychain.
 - [x] 当前源码 Provider 浏览器链路 release-pass（2026-07-26 Asia/Shanghai）：使用 Wrangler temporary HTTPS Worker 承载一次性 Provider Key 与严格 origin/host allowlist，浏览器仅保存随机一次性数据口令派生的 Worker access key，Provider Key 注入为 false。真实 Chromium 完成首次配置、发送一条消息、收到唯一 marker 并生成脱敏截图；报告与 attempt 报告均为 `passed / safeToPublish / releaseEvidence`，且 source fingerprint 与当前 Web/Worker/演练源码一致。Wrangler 临时凭据清理失败会使演练失败。QA marker: Current-source live-provider browser UI passes through a temporary Worker without browser Provider keys.
-- [x] Android Provider 凭据事务与崩溃恢复（2026-07-26 Asia/Shanghai）：普通密钥输入只更新内存草稿，显式保存先通过 repository CAS 提交带单调时间戳的快照，再在 `NonCancellable + Dispatchers.IO` 中提交 `EncryptedSharedPreferences`；CAS 拒绝不写密钥，revision 漂移或密钥写失败会补偿快照，错误在设置页内本地化提示。Provider 删除先原子写入 pending credential intent，再通过 repository CAS 提交会话迁移快照，最后一次提交同时删除密钥和 intent；CAS 拒绝、可见 revision 漂移或密钥完成失败会补偿快照/intent。启动时按持久化快照是否仍包含 Provider 决定取消 intent 或完成密钥清理，因此进程可在任一步退出而不永久丢失仍在使用的密钥或遗留已删除 Provider 的密钥。QA marker: Android Provider credentials save explicitly and deletion recovers across snapshot/keystore crashes.
+- [x] Android Provider 凭据事务与崩溃恢复（2026-07-26 Asia/Shanghai）：普通密钥输入现在每次变化都进入应用根层的串行保存队列，并通过 repository CAS 提交带单调时间戳的快照，再在 `NonCancellable + Dispatchers.IO` 中提交 `EncryptedSharedPreferences`；CAS 拒绝不写密钥，revision 漂移或密钥写失败会补偿快照，错误在设置页内本地化提示。Provider 删除先原子写入 pending credential intent，再通过 repository CAS 提交会话迁移快照，最后一次提交同时删除密钥和 intent；CAS 拒绝、可见 revision 漂移或密钥完成失败会补偿快照/intent。启动时按持久化快照是否仍包含 Provider 决定取消 intent 或完成密钥清理，因此进程可在任一步退出而不永久丢失仍在使用的密钥或遗留已删除 Provider 的密钥。QA marker: Android Provider credentials auto-save on input and deletion recovers across snapshot/keystore crashes.
 - [x] Android 同步凭据显式保存与快照补偿（2026-07-26 Asia/Shanghai）：GitHub Token 输入现在只修改 Compose 内存草稿，用户点击保存后才由应用根层在串行队列的 `NonCancellable + Dispatchers.IO` 段提交加密存储，失败保留草稿并在设置页提示，彻底移除逐键主线程写盘。远端模式下同步口令保存先对带单调 `updatedAt` 的快照执行 repository CAS，复核可见 revision 后再写加密凭据；CAS 冲突不写口令，revision 漂移或凭据失败会补偿快照，成功发布后才排队自动同步。本地模式不制造无意义快照，只串行提交凭据。共享事务保留取消语义并由确定性测试覆盖。QA marker: Android sync credentials save explicitly off the main thread and compensate snapshot failures.
 - [x] Android 本地重置跨存储崩溃恢复（2026-07-26 Asia/Shanghai）：根因是旧实现先清空 `EncryptedSharedPreferences`、再保存默认快照，进程在两步之间退出会永久丢失仍由旧快照引用的 Provider 密钥、GitHub Token 与同步口令，而且加密偏好 I/O 仍可能阻塞 Compose 主线程。现在重置先在一次加密偏好提交中把所有凭据及 Provider 删除待办封装为恢复记录并清空活动凭据，再以 repository CAS 提交默认快照，最后清除恢复记录；启动按源/候选快照的确定性 SHA-256 指纹恢复旧凭据或完成清除，未知快照拒绝猜测。自动同步在事务期间排他排空，revision 漂移、CAS/磁盘失败与凭据完成失败均有补偿；损坏快照恢复模式在替换写入前失败时恢复凭据，替换写入后清理失败则保留待办供下次启动完成。UI 只等待根事务并在完成前禁用重复重置，所有加密存储操作都位于 `NonCancellable + Dispatchers.IO`。QA marker: Android local reset recovers credentials across snapshot/keystore crashes.
 - [x] Android 加密备份导入跨存储崩溃恢复（2026-07-26 Asia/Shanghai）：根因是旧导入控制器先逐把覆盖 `EncryptedSharedPreferences` 中的 Provider 密钥，再保存导入快照，只有当前进程内的 `catch` 能回滚；进程在两种存储之间退出会让旧快照永久配上新密钥，而且事务使用的是 Compose 捕获的旧 `snapshot`。现在文件选择器只负责解密并把 snapshot/key map 交给应用根层；根层排空自动同步、进入进程级快照队列，从最新源快照构造单调候选和完整 Provider ID 集合。SecretStore 用一次加密偏好提交同时写入规范化新密钥与包含旧/新密钥、源/候选指纹的 durable intent，随后 repository CAS 提交候选，最后清除 intent；CAS 拒绝、可见 revision 漂移、快照/密钥收尾失败均按当前持久化快照补偿。启动在任何 UI 或快照规范化前按 raw snapshot 指纹恢复旧密钥或保留新密钥，未知快照拒绝猜测；损坏快照无法加载时恢复旧密钥，显式恢复导入则把 intent 保留到替换快照真正落盘。QA marker: Android backup import recovers Provider keys across snapshot/keystore crashes.

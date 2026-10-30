@@ -48,7 +48,7 @@ const productionArtifactForbiddenCopy =
 const productionArtifactVersionToken = /(?<![\w:-])v\d+(?![\w-])/iu
 const productionArtifactProtocolVersionReference =
   /(?:\/v\d+\b|\bzerochat(?:[._:-][\w-]+)*[._:-]v\d+\b|\b(?:api|schema|vault|protocol|report(?:\s+kind)?|gist-operation|secretstore)[\s._:-]*v\d+\b)/giu
-const productionArtifactStringLiteral = /(["'`])(?:\\[\s\S]|(?!\1)[\s\S])*\1/gu
+const productionArtifactStringLiteral = /"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\])*`/gu
 
 function stripProtocolVersionReferences(source) {
   return source.replace(protocolVersionReference, (match, offset, fullSource) => {

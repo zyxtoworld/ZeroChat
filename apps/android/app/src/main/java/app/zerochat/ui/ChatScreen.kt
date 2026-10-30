@@ -14,7 +14,6 @@ import android.net.Uri
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Scaffold
@@ -61,6 +60,7 @@ import app.zerochat.ui.chat.InlineNoticeView
 import app.zerochat.ui.chat.ImageMessageRequestPlan
 import app.zerochat.ui.chat.NoticeKind
 import app.zerochat.ui.chat.ChatTopBar
+import app.zerochat.ui.chat.DiscardComposerDraftDialog
 import app.zerochat.ui.chat.activeConversation
 import app.zerochat.ui.chat.addConversation
 import app.zerochat.ui.chat.applyProviderModelSelection
@@ -85,9 +85,10 @@ import app.zerochat.ui.chat.executeImageRequest
 import app.zerochat.ui.chat.GenerationTaskOwner
 import app.zerochat.ui.chat.runIfCurrent
 import app.zerochat.ui.chat.hydrateChatSnapshot
-import app.zerochat.ui.chat.imageMessageBlockerFeedback
+import app.zerochat.ui.chat.hasUnsavedComposerDraft
 import app.zerochat.ui.chat.imageModelsForProvider
 import app.zerochat.ui.chat.imageRetryPrompt
+import app.zerochat.ui.chat.imageMessageBlockerFeedback
 import app.zerochat.ui.chat.initializeResourceOrRelease
 import app.zerochat.ui.chat.manualCloudSyncBlocker
 import app.zerochat.ui.chat.manualCloudSyncBlockerMessageKey
@@ -108,6 +109,7 @@ import app.zerochat.ui.chat.providerDisplayName
 import app.zerochat.ui.chat.providerNeedsClientKey
 import app.zerochat.ui.chat.providerProxyTokenForRequest
 import app.zerochat.ui.chat.providerRequest
+import app.zerochat.ui.chat.requestMessagesWithSkills
 import app.zerochat.ui.chat.readUpload
 import app.zerochat.ui.chat.replaceMessageReducer
 import app.zerochat.ui.chat.selectConversation as selectConversationSnapshot
@@ -116,6 +118,8 @@ import app.zerochat.ui.chat.shouldShowFeatureHint
 import app.zerochat.ui.chat.stoppedAssistantMessage
 import app.zerochat.ui.chat.stoppedImageMessage
 import app.zerochat.ui.chat.streamChatGenerationWithRetry
+import app.zerochat.ui.chat.StreamingMessageDisplay
+import app.zerochat.ui.chat.nextStreamingTextFrame
 import app.zerochat.ui.settings.ChatSettingsSheet
 import app.zerochat.ui.settings.BackupTaskViewModel
 import app.zerochat.ui.settings.SettingsNoticeKind
@@ -123,6 +127,7 @@ import app.zerochat.ui.settings.SettingsTab
 import app.zerochat.ui.settings.syncSettingsStatusPresentation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -195,6 +200,8 @@ internal fun ChatScreen(
     var conversationPickerOpen by rememberSaveable { mutableStateOf(false) }
     var conversationPendingDeleteId by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingNewConversationId by remember { mutableStateOf<String?>(null) }
+    var confirmDiscardDraftForNewConversation by rememberSaveable { mutableStateOf(false) }
+    var pendingConversationSelectionId by rememberSaveable { mutableStateOf<String?>(null) }
     var sourceImageUriString by rememberSaveable { mutableStateOf<String?>(null) }
     var maskImageUriString by rememberSaveable { mutableStateOf<String?>(null) }
     var sourceImage by remember { mutableStateOf<ImageUpload?>(null) }
@@ -205,6 +212,7 @@ internal fun ChatScreen(
     }
     var settingsNotice by remember { mutableStateOf<InlineNotice?>(null) }
     var chatStreamingJob by remember { mutableStateOf<Job?>(null) }
+    var streamingMessageDisplay by remember { mutableStateOf<StreamingMessageDisplay?>(null) }
     var imageGenerationJob by remember { mutableStateOf<Job?>(null) }
     var speechJob by remember { mutableStateOf<Job?>(null) }
     var speechPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
@@ -423,9 +431,38 @@ internal fun ChatScreen(
         )
     }
 
-    fun selectConversation(id: String) {
+    fun clearComposerDraft() {
+        input = ""
+        editingMessageId = null
+        sourceImageUriString = null
+        maskImageUriString = null
+        sourceImage = null
+        maskImage = null
+    }
+
+    fun hasCurrentComposerDraft(): Boolean = hasUnsavedComposerDraft(
+        input = input,
+        editing = editingMessageId != null,
+        hasSourceImage = sourceImage != null || sourceImageUriString != null,
+        hasMaskImage = maskImage != null || maskImageUriString != null,
+    )
+
+    fun activateConversation(id: String) {
+        clearComposerDraft()
         pendingNewConversationId = null
+        mainNotice = null
         commit(selectConversationSnapshot(data, id))
+    }
+
+    fun selectConversation(id: String) {
+        if (id == activeConversation?.id) {
+            return
+        }
+        if (hasCurrentComposerDraft()) {
+            pendingConversationSelectionId = id
+        } else {
+            activateConversation(id)
+        }
     }
 
     fun openSettings(
@@ -667,19 +704,27 @@ internal fun ChatScreen(
         return conversation
     }
 
+
+    fun requestNewConversation() {
+        conversationSearch = ""
+        mainNotice = null
+        if (hasCurrentComposerDraft()) {
+            confirmDiscardDraftForNewConversation = true
+        } else {
+            createChat()
+        }
+    }
+
+
     LaunchedEffect(quickAskDeliveryCount) {
         if (quickAskDeliveryCount <= 0L) {
             return@LaunchedEffect
         }
 
         conversationSearch = ""
-        input = ""
-        editingMessageId = null
+        clearComposerDraft()
         composerModeName = ComposerMode.Chat.name
-        sourceImageUriString = null
-        maskImageUriString = null
-        sourceImage = null
-        maskImage = null
+
         createChat()
         delay(120)
         runCatching { composerFocusRequester.requestFocus() }
@@ -720,12 +765,19 @@ internal fun ChatScreen(
         }
         val pendingSnapshot = pending.snapshot
         val baseMessages = pending.baseMessages
+        val requestMessages = requestMessagesWithSkills(
+            snapshot = pendingSnapshot,
+            latestInput = request.prompt,
+            messages = baseMessages,
+            createdAt = pending.pendingAssistantMessage.createdAt,
+        )
         val assistantMessage = pending.pendingAssistantMessage
         if (!lease.runIfCurrent {
             mainNotice = null
             commitWithSync(pendingSnapshot, autoSync = false)
             input = ""
             editingMessageId = null
+            streamingMessageDisplay = StreamingMessageDisplay(assistantMessage.id, "")
         }) {
             lease.release()
             return
@@ -733,7 +785,6 @@ internal fun ChatScreen(
 
         val receivedText = StringBuilder()
         var lastUiCommitAt = 0L
-
         fun commitAssistantMessage(message: ChatMessage, autoSync: Boolean = true) {
             onSnapshotReduce(
                 replaceMessageReducer(
@@ -745,9 +796,9 @@ internal fun ChatScreen(
             )
         }
 
-        fun commitStreamingContent(content: String, force: Boolean = false) {
+        fun commitStreamingContent(content: String) {
             val now = nowMillis()
-            if (!force && now - lastUiCommitAt < STREAMING_UI_FRAME_MS) {
+            if (now - lastUiCommitAt < STREAMING_UI_FRAME_MS) {
                 return
             }
             lastUiCommitAt = now
@@ -761,36 +812,74 @@ internal fun ChatScreen(
             )
         }
 
+        fun clearStreamingMessageDisplay() {
+            if (streamingMessageDisplay?.messageId == assistantMessage.id) {
+                streamingMessageDisplay = null
+            }
+        }
+
         val preparedGenerationJob = generationTasks.prepare(scope, lease) {
             val runningJob = currentCoroutineContext()[Job]
+            var visibleStreamingContent = ""
+            var streamingTargetContent = ""
+            var streamFinished = false
             try {
-                val completedText = streamChatGenerationWithRetry(
-                    aiClient = aiClient,
-                    request = request,
-                    apiKey = secretStore.providerKey(request.provider.id),
-                    proxyToken = providerProxyTokenForRequest(request.requestProvider) {
-                        secretStore.cloudflareAccessKey()
-                    },
-                    messages = baseMessages,
-                    contextMessageLimit = pendingSnapshot.preferences.chatContextMessageLimit,
-                    receivedText = receivedText,
-                    onRetry = { attempt, total ->
-                        lease.runIfCurrent {
-                            mainNotice = InlineNotice(
-                                i18n.networkRetryingNotice(attempt, total),
-                                NoticeKind.Warning,
+                val normalizedText = coroutineScope {
+                    val streamingDisplayJob = launch {
+                        while (true) {
+                            val nextContent = nextStreamingTextFrame(
+                                visible = visibleStreamingContent,
+                                target = streamingTargetContent,
                             )
+                            if (nextContent != visibleStreamingContent) {
+                                visibleStreamingContent = nextContent
+                                lease.runIfCurrent {
+                                    streamingMessageDisplay = StreamingMessageDisplay(
+                                        messageId = assistantMessage.id,
+                                        content = nextContent,
+                                    )
+                                    commitStreamingContent(nextContent)
+                                }
+                                delay(STREAMING_UI_FRAME_MS)
+                            } else if (streamFinished) {
+                                return@launch
+                            } else {
+                                delay(STREAMING_UI_FRAME_MS)
+                            }
                         }
-                    },
-                    onVisibleText = { visibleText ->
-                        lease.runIfCurrent {
-                            mainNotice = null
-                            commitStreamingContent(normalizeAssistantMessageContent(visibleText))
-                        }
-                    },
-                )
+                    }
+                    val completedText = streamChatGenerationWithRetry(
+                        aiClient = aiClient,
+                        request = request,
+                        apiKey = secretStore.providerKey(request.provider.id),
+                        proxyToken = providerProxyTokenForRequest(request.requestProvider) {
+                            secretStore.cloudflareAccessKey()
+                        },
+                        messages = requestMessages,
+                        contextMessageLimit = pendingSnapshot.preferences.chatContextMessageLimit,
+                        receivedText = receivedText,
+                        onRetry = { attempt, total ->
+                            lease.runIfCurrent {
+                                mainNotice = InlineNotice(
+                                    i18n.networkRetryingNotice(attempt, total),
+                                    NoticeKind.Warning,
+                                )
+                            }
+                        },
+                        onVisibleText = { visibleText ->
+                            streamingTargetContent = normalizeAssistantMessageContent(visibleText)
+                            lease.runIfCurrent { mainNotice = null }
+                        },
+                    )
+                    currentCoroutineContext().ensureActive()
+                    normalizeAssistantMessageContent(completedText).also { content ->
+                        streamingTargetContent = content
+                        streamFinished = true
+                    }
+                    streamingDisplayJob.join()
+                    streamingTargetContent
+                }
                 currentCoroutineContext().ensureActive()
-                val normalizedText = normalizeAssistantMessageContent(completedText)
                 lease.runIfCurrent {
                     mainNotice = null
                     commitAssistantMessage(
@@ -800,6 +889,7 @@ internal fun ChatScreen(
                             error = null,
                         ),
                     )
+                    clearStreamingMessageDisplay()
                 }
             } catch (error: CancellationException) {
                 lease.runIfCurrent {
@@ -807,10 +897,11 @@ internal fun ChatScreen(
                     commitAssistantMessage(
                         stoppedAssistantMessage(
                             pendingMessage = assistantMessage,
-                            partialContent = normalizeAssistantMessageContent(receivedText.toString()),
+                            partialContent = visibleStreamingContent,
                             stoppedCopy = i18n.t("message.generationStopped"),
                         ),
                     )
+                    clearStreamingMessageDisplay()
                 }
             } catch (error: Throwable) {
                 lease.runIfCurrent {
@@ -822,6 +913,7 @@ internal fun ChatScreen(
                             error = i18n.errorMessage(error.message ?: error::class.java.simpleName),
                         ),
                     )
+                    clearStreamingMessageDisplay()
                 }
             } finally {
                 if (chatStreamingJob === runningJob) {
@@ -839,6 +931,7 @@ internal fun ChatScreen(
 
     fun generateImageMessage(conversation: Conversation, prompt: String) {
         val lease = generationTasks.tryAcquire() ?: return
+        mainNotice = null
         val provider = data.providers.firstOrNull { it.id == conversation.providerId && it.enabled }
         val requestProvider = provider?.let { providerRequest(it, data) }
         val providerKeyMissing = provider?.let { currentProvider ->
@@ -875,6 +968,7 @@ internal fun ChatScreen(
         val pendingSnapshot = pending.snapshot
         val pendingMessage = pending.pendingMessage
         if (!lease.runIfCurrent {
+            mainNotice = null
             ownedStreamingImageMessageIds = ownedStreamingImageMessageIds + pendingMessage.id
             commit(pendingSnapshot)
             input = ""
@@ -969,9 +1063,9 @@ internal fun ChatScreen(
                         title = activeConversation?.title ?: "ZeroChat",
                         onNewConversation = {
                             dismissKeyboard()
-                            conversationSearch = ""
-                            createChat()
+                            requestNewConversation()
                         },
+
                         onOpenConversations = {
                             dismissKeyboard()
                             conversationPickerOpen = true
@@ -997,15 +1091,22 @@ internal fun ChatScreen(
                 filteredConversations = filteredConversations,
                 conversationSearchActive = conversationSearchActive,
                 activeConversation = activeConversation,
+                streamingMessageDisplay = streamingMessageDisplay,
                 enabledProviders = enabledProviders,
                 activeProvider = activeProvider,
                 activeModel = activeModel,
                 activeImageModel = activeImageModel,
                 activeProviderKeyMissing = activeProviderKeyMissing,
                 composerMode = composerMode,
-                onComposerModeChange = { composerModeName = it.name },
+                onComposerModeChange = {
+                    composerModeName = it.name
+                    mainNotice = null
+                },
                 imageTask = imageTask,
-                onImageTaskChange = { imageTaskName = it.name },
+                onImageTaskChange = {
+                    imageTaskName = it.name
+                    mainNotice = null
+                },
                 chatSetupHint = chatSetupHint,
                 emptyStateSettingsActionLabel = emptyStateSettingsActionLabel,
                 showProviderModelFeatureHint = shouldShowFeatureHint(
@@ -1157,8 +1258,7 @@ internal fun ChatScreen(
                 i18n = i18n,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding)
-                    .imePadding(),
+                    .padding(padding),
             )
         }
 
@@ -1220,16 +1320,46 @@ internal fun ChatScreen(
             )
         }
 
+        if (confirmDiscardDraftForNewConversation || pendingConversationSelectionId != null) {
+            val nextConversationId = pendingConversationSelectionId
+            DiscardComposerDraftDialog(
+                confirmLabel = i18n.t(
+                    if (nextConversationId == null) {
+                        "action.discardAndStartNewChat"
+                    } else {
+                        "action.discardDraft"
+                    },
+                ),
+                i18n = i18n,
+                onDismiss = {
+                    confirmDiscardDraftForNewConversation = false
+                    pendingConversationSelectionId = null
+                },
+                onConfirm = {
+                    confirmDiscardDraftForNewConversation = false
+                    pendingConversationSelectionId = null
+                    if (nextConversationId == null) {
+                        clearComposerDraft()
+                        createChat()
+                    } else {
+                        activateConversation(nextConversationId)
+                    }
+                }
+            )
+        }
+
         conversationPendingDelete?.let { target ->
             ConversationDeleteDialog(
                 conversation = target,
                 i18n = i18n,
                 onDismiss = { conversationPendingDeleteId = null },
                 onConfirm = {
-                    commit(deleteConversation(data, target.id))
+                    dismissKeyboard()
+                    conversationPickerOpen = false
                     conversationPendingDeleteId = null
                     mainNotice = InlineNotice(i18n.t("message.conversationDeleted"), NoticeKind.Warning)
-                },
+                    commit(deleteConversation(data, target.id))
+                }
             )
         }
     }

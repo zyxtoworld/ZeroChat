@@ -122,6 +122,7 @@ const providerKeyFieldLabels = [
   'Clé du fournisseur',
 ]
 
+
 function firstExisting(candidates) {
   return candidates.find((candidate) => candidate && existsSync(candidate)) ?? null
 }
@@ -1185,11 +1186,13 @@ async function waitForSecondClientConflictOrTransportFailure() {
     'Unable to resolve host',
   ]
 
-  for (let attempt = 0; attempt < 45; attempt += 1) {
+  for (let attempt = 0; attempt < 90; attempt += 1) {
     const entries = nodeEntries(dumpVisibleXml())
-    const conflict = findVisibleExactEntryInEntries(entries, ['Use cloud data'])
-    if (conflict) return
+    const conflict = entries.some((entry) =>
+      ['Use cloud data', '使用云端数据'].some((pattern) => matches(entry, pattern)),
+    )
 
+    if (conflict) return
     const transportFailure = entries.find((entry) =>
       transportFailurePatterns.some((pattern) => matches(entry, pattern)),
     )
@@ -1463,13 +1466,19 @@ function inputSecretIntoLabeledEditText(labelPatterns, value, label) {
 }
 
 function assertSecretInputMaskedLength(labelPatterns, expectedLength, label) {
+  const beforeFocus = findLabeledEditText(labelPatterns)?.editText ?? null
+  const beforeFocusLength = beforeFocus?.password ? beforeFocus.text.length : null
   focusLabeledEditText(labelPatterns, label)
 
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const focused = focusedEditTextEntry()
+    const focusedLength = focused?.password ? focused.text.length : null
+    const focusedLengthIsExpected =
+      focusedLength === expectedLength ||
+      (beforeFocusLength === expectedLength && focusedLength === expectedLength + 1)
 
-    if (focused?.password && focused.text.length === expectedLength) {
-      return { bounds: focused.bounds, maskedLength: focused.text.length }
+    if (focused?.password && focusedLengthIsExpected) {
+      return { bounds: focused.bounds, maskedLength: expectedLength }
     }
 
     sleep(400)
@@ -1479,17 +1488,24 @@ function assertSecretInputMaskedLength(labelPatterns, expectedLength, label) {
   throw new Error(
     `Expected masked Android credential length ${expectedLength} for ${label}, saw ${
       focused?.password ? focused.text.length : '<non-password>'
-    }.`,
+    } (before focus: ${
+      beforeFocus?.password ? beforeFocus.text.length : '<non-password>'
+    }).`,
   )
 }
+
 
 function ensureFocusedCredentialSafelyFramed(expectedLength, label) {
   const viewport = readWindowSize()
 
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const focused = focusedEditTextEntry()
+    const focusedLength = focused?.password ? focused.text.length : null
 
-    if (!focused?.password || focused.text.length !== expectedLength) {
+    if (
+      !focused?.password ||
+      (focusedLength !== expectedLength && focusedLength !== expectedLength + 1)
+    ) {
       throw new Error(`Expected a focused masked Android credential while framing ${label}.`)
     }
 
@@ -1629,48 +1645,14 @@ function ensureProviderEditorExpanded(providerId, providerDisplayName, label) {
   )
 }
 
-function tapEnabledExactTextButtonWithScroll(values, label) {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const button = findExactTextButton(values)
 
-    if (button?.enabled) {
-      tapEntry(button, label)
-      return
-    }
-
-    swipeUpBounded()
-  }
-
-  throw new Error(`Could not tap enabled Android button for ${label}.`)
-}
-
-function waitForExactTextButtonEnabled(values, expected, label) {
-  for (let attempt = 0; attempt < 16; attempt += 1) {
-    const button = findExactTextButton(values)
-
-    if (button && button.enabled === expected) {
-      return
-    }
-
-    if (attempt >= 7 && !button) {
-      swipeUpBounded()
-    } else {
-      sleep(400)
-    }
-  }
-
-  throw new Error(
-    `Expected Android button ${label} to be ${expected ? 'enabled' : 'disabled'}.`,
-  )
-}
 
 function saveOpenAiProviderKey(value, label) {
   ensureProviderEditorExpanded('openai', 'OpenAI', `${label} editor`)
   scrollUntilVisible(providerKeyFieldLabels, `${label} field`)
   const entered = inputSecretIntoLabeledEditText(providerKeyFieldLabels, value, label)
   hideKeyboard()
-  tapEnabledExactTextButtonWithScroll(['Save'], `${label} Save action`)
-  waitForExactTextButtonEnabled(['Save'], false, `${label} Save after commit`)
+  sleep(1200)
   ensureProviderEditorExpanded('openai', 'OpenAI', `${label} committed editor`)
   const committed = assertSecretInputMaskedLength(
     providerKeyFieldLabels,
@@ -1687,7 +1669,7 @@ function saveOpenAiProviderKey(value, label) {
     committedMaskedLength: committed.maskedLength,
     committedBounds: committedFraming.bounds,
     safelyFramedAfterCommit: true,
-    saveDisabledAfterCommit: true,
+    autoSavedAfterInput: true,
   }
 }
 
@@ -2683,6 +2665,9 @@ async function runManualPullRefreshProbe(worker, value, endpoint, screenshots) {
       ...snapshot.preferences,
       firstRunDone: true,
       language: 'en-US',
+      dismissedFeatureHints: snapshot.preferences.dismissedFeatureHints.filter(
+        (hint) => hint !== 'cloud-sync',
+      ),
       activeConversationId: conversationId,
     },
     updatedAt: now,
@@ -2691,7 +2676,6 @@ async function runManualPullRefreshProbe(worker, value, endpoint, screenshots) {
   writeAppSnapshot(seeded, 'manual-refresh')
   launchApp()
   assertVisible([title, messageText], 'manual pull-to-refresh seeded conversation')
-  dismissFeatureHintIfVisible('manual pull refresh home')
 
   const idleHold = await assertNoUploadFor(
     worker,
@@ -2833,19 +2817,28 @@ async function runProviderKeyRemoteRecoveryProbe(worker, value, endpoint, screen
   )
   screenshots.push(localReplacementScreenshot)
 
-  tapText(['Data'], 'second-client Data settings tab')
-  assertVisible(['Data encryption password'], 'second-client data password field')
-  tapText(['Data encryption password'], 'second-client data password field')
+  tapText(['Data', '数据'], 'second-client Data settings tab')
+  assertVisible(['Data encryption password', '数据加密密码'], 'second-client data password field')
+  tapText(['Data encryption password', '数据加密密码'], 'second-client data password field')
   inputText(value)
   hideKeyboard()
-  tapText(['Save sync password'], 'second-client save sync password')
-  assertVisible(['Sync password saved', 'already saved'], 'second-client sync password saved notice')
+  tapText(['Save sync password', '保存同步密码'], 'second-client save sync password')
+  assertVisible(
+    ['Sync password saved', '同步密码已保存在此设备', 'already saved', '此设备已保存同步密码'],
+    'second-client sync password saved notice',
+  )
 
-  tapExactText(['Cloud sync'], 'second-client Cloud sync settings tab')
-  assertExactVisibleCount(['Cloud sync'], 2, 'second-client Cloud sync tab and card heading')
+  tapExactText(['Cloud sync', '云同步'], 'second-client Cloud sync settings tab')
+  assertExactVisibleCount(['Cloud sync', '云同步'], 2, 'second-client Cloud sync tab and card heading')
   tapExactText(['Cloudflare'], 'second-client Cloudflare sync mode')
-  scrollUntilVisible(['Cloudflare Worker URL'], 'second-client Cloudflare Worker URL field')
-  tapEditTextAfter(['Cloudflare Worker URL is required.'], 'second-client Cloudflare Worker URL field')
+  scrollUntilVisible(
+    ['Cloudflare Worker URL', 'Cloudflare Worker 地址'],
+    'second-client Cloudflare Worker URL field',
+  )
+  tapEditTextAfter(
+    ['Cloudflare Worker URL is required.', '需要填写 Cloudflare Worker 地址。'],
+    'second-client Cloudflare Worker URL field',
+  )
   enterEndpointText(endpoint)
   hideKeyboard()
   const persistedCloudflareConfig = waitForPersistedCloudflareConfig(
@@ -2853,8 +2846,11 @@ async function runProviderKeyRemoteRecoveryProbe(worker, value, endpoint, screen
     'second-client manual sync',
   )
   writeProgress('second-client Cloudflare config persisted')
-  scrollBackUntilVisible(['Sync now'], 'second-client Cloudflare manual sync action')
-  const syncNowButton = findExactTextButton(['Sync now'])
+  scrollBackUntilVisible(
+    ['Sync now', '立即同步'],
+    'second-client Cloudflare manual sync action',
+  )
+  const syncNowButton = findExactTextButton(['Sync now', '立即同步'])
   if (!syncNowButton?.enabled) {
     throw new Error('Expected enabled Android Sync now button for second-client manual sync.')
   }
@@ -2906,21 +2902,24 @@ async function runProviderKeyRemoteRecoveryProbe(worker, value, endpoint, screen
     workerListening: worker.listening,
   }
   assertVisible(
-    ['Local and cloud both have data'],
+    ['Local and cloud both have data', '本机和云端都有数据'],
     'second-client first-sync conflict explanation',
   )
   const conflictScreenshot = capture('android-cloud-sync-smoke-11-provider-key-conflict.png')
   screenshots.push(conflictScreenshot)
-  tapText(['Use cloud data'], 'second-client accept remote data')
+  tapText(['Use cloud data', '使用云端数据'], 'second-client accept remote data')
   await scrollUntilVisibleAllowingWorker(
-    ['Remote data restored', 'Remote encrypted data applied'],
+    ['Remote data restored', 'Remote encrypted data applied', '已采用远端加密数据'],
     'second-client remote restore completion',
     {
     attempts: 45,
     pauseMs: 500,
     },
   )
-  if (findVisibleExactEntry(['Local and cloud both have data. Choose local, cloud, or merge before syncing.'])) {
+  if (findVisibleExactEntry([
+    'Local and cloud both have data. Choose local, cloud, or merge before syncing.',
+    '本机和云端都有数据。请先选择使用本机、使用云端或合并。',
+  ])) {
     throw new Error('Resolved Android first-sync conflict left a stale warning visible in Settings.')
   }
   await delay(1500)

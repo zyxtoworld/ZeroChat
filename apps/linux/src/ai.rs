@@ -53,17 +53,20 @@ pub(crate) struct ModelCatalogResult {
     pub(crate) model_metadata: BTreeMap<String, ModelMetadata>,
 }
 
-
 fn normalized_url(value: &str) -> String {
     value.trim().trim_end_matches('/').to_ascii_lowercase()
 }
 
 fn model_entry_matches(model_id: &str, key: &str, model: &Value) -> bool {
     let target = model_id.trim();
-    [Some(key), model.get("id").and_then(Value::as_str), model.get("canonical_model_id").and_then(Value::as_str)]
-        .into_iter()
-        .flatten()
-        .any(|candidate| candidate.eq_ignore_ascii_case(target))
+    [
+        Some(key),
+        model.get("id").and_then(Value::as_str),
+        model.get("canonical_model_id").and_then(Value::as_str),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|candidate| candidate.eq_ignore_ascii_case(target))
 }
 
 fn find_models_dev_model<'a>(
@@ -94,9 +97,7 @@ fn find_models_dev_model<'a>(
 }
 
 fn positive_i64(value: Option<&Value>) -> Option<i64> {
-    value
-        .and_then(Value::as_i64)
-        .filter(|value| *value > 0)
+    value.and_then(Value::as_i64).filter(|value| *value > 0)
 }
 
 fn models_dev_metadata(
@@ -133,7 +134,11 @@ fn models_dev_metadata(
                 .map(str::to_ascii_lowercase)
                 .collect::<Vec<_>>();
             let mut capabilities = vec!["chat".to_owned()];
-            if model.get("tool_call").and_then(Value::as_bool).unwrap_or(false) {
+            if model
+                .get("tool_call")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
                 capabilities.push("tools".to_owned());
             }
             if input.iter().any(|value| value.contains("image")) {
@@ -142,10 +147,18 @@ fn models_dev_metadata(
             if output.iter().any(|value| value.contains("image")) {
                 capabilities.push("image-generation".to_owned());
             }
-            if input.iter().chain(output.iter()).any(|value| value.contains("audio")) {
+            if input
+                .iter()
+                .chain(output.iter())
+                .any(|value| value.contains("audio"))
+            {
                 capabilities.push("audio".to_owned());
             }
-            if input.iter().chain(output.iter()).any(|value| value.contains("video")) {
+            if input
+                .iter()
+                .chain(output.iter())
+                .any(|value| value.contains("video"))
+            {
                 capabilities.push("video".to_owned());
             }
             let metadata = ModelMetadata {
@@ -697,7 +710,8 @@ impl AiClient {
             },
         )
         .await?;
-        let catalog: Value = serde_json::from_str(&text).context("models.dev response is not valid JSON")?;
+        let catalog: Value =
+            serde_json::from_str(&text).context("models.dev response is not valid JSON")?;
         Ok(models_dev_metadata(&catalog, provider, models))
     }
 

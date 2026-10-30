@@ -23,6 +23,7 @@ import app.zerochat.data.customProvider
 import app.zerochat.security.SecretStore
 import app.zerochat.ui.NativeI18n
 import app.zerochat.ui.chat.providerProxyTokenForRequest
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 private const val PROVIDER_LIST_INITIAL_RENDER_LIMIT = 4
@@ -48,10 +49,11 @@ fun ProviderSettings(
     i18n: NativeI18n,
     providerDisplayName: (ProviderConfig) -> String,
     providerRequest: (ProviderConfig, AppSnapshot) -> ProviderConfig,
+    providerKeySaveScope: CoroutineScope,
 ) {
     val scope = rememberCoroutineScope()
     var checkingProviderId by remember { mutableStateOf("") }
-    var savingProviderKeyId by remember { mutableStateOf("") }
+    var savingProviderKeyCounts by remember { mutableStateOf(emptyMap<String, Int>()) }
     var deletingProviderId by remember { mutableStateOf("") }
     var expandedProviderId by rememberSaveable { mutableStateOf("") }
     var providerIdToBringIntoView by remember { mutableStateOf("") }
@@ -140,29 +142,31 @@ fun ProviderSettings(
                         )
                     }
                 },
-                onApiKeyChange = {
-                    if (savingProviderKeyId.isEmpty()) {
-                        savingProviderKeyId = provider.id
-                        val value = it
-                        scope.launch {
-                            try {
-                                onSaveProviderKey(provider.id, value).onFailure { error ->
-                                    onNotice(
-                                        "${i18n.t("message.localDataSaveFailedPrefix")}: " +
-                                            i18n.errorMessage(error.message),
-                                        SettingsNoticeKind.Error,
-                                    )
-                                }
-                            } finally {
-                                savingProviderKeyId = ""
+                onApiKeyChange = { value ->
+                    val pendingSaves = (savingProviderKeyCounts[provider.id] ?: 0) + 1
+                    savingProviderKeyCounts = savingProviderKeyCounts + (provider.id to pendingSaves)
+                    providerKeySaveScope.launch {
+                        try {
+                            onSaveProviderKey(provider.id, value).onFailure { error ->
+                                onNotice(
+                                    "${i18n.t("message.localDataSaveFailedPrefix")}: " +
+                                        i18n.errorMessage(error.message),
+                                    SettingsNoticeKind.Error,
+                                )
+                            }
+                        } finally {
+                            val remainingSaves = (savingProviderKeyCounts[provider.id] ?: 1) - 1
+                            savingProviderKeyCounts = if (remainingSaves > 0) {
+                                savingProviderKeyCounts + (provider.id to remainingSaves)
+                            } else {
+                                savingProviderKeyCounts - provider.id
                             }
                         }
                     }
-                    Unit
                 },
                 checking = checkingProviderId == provider.id,
-                savingKey = savingProviderKeyId == provider.id,
-                deleting = deletingProviderId == provider.id || savingProviderKeyId == provider.id,
+                deleting = deletingProviderId == provider.id ||
+                    (savingProviderKeyCounts[provider.id] ?: 0) > 0,
                 i18n = i18n,
                 onCheckConnectivity = check@{
                     val providerKey = secretStore.providerKey(provider.id)

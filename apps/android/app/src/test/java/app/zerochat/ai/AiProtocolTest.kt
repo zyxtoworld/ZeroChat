@@ -195,35 +195,108 @@ class AiProtocolTest {
     }
 
     @Test
-    fun processSseEventReadsOpenAiResponsesAndAnthropicDeltas() = runBlocking {
+    fun processSseEventPublishesCompleteTextForOpenAiResponsesAndAnthropicDeltas() = runBlocking {
         val received = StringBuilder()
-        val deltas = mutableListOf<String>()
+        val contents = mutableListOf<String>()
 
         assertTrue(
             processSseEvent(
                 json,
                 listOf("""{"choices":[{"delta":{"content":"Hello"}}]}"""),
                 received,
-            ) { deltas += it },
+            ) { contents += it },
         )
         assertTrue(
             processSseEvent(
                 json,
                 listOf("""{"type":"response.output_text.delta","delta":" there"}"""),
                 received,
-            ) { deltas += it },
+            ) { contents += it },
         )
         assertTrue(
             processSseEvent(
                 json,
                 listOf("""{"type":"content_block_delta","delta":{"text":"!"}}"""),
                 received,
-            ) { deltas += it },
+            ) { contents += it },
         )
-        assertFalse(processSseEvent(json, listOf("[DONE]"), received) { deltas += it })
+        assertFalse(processSseEvent(json, listOf("[DONE]"), received) { contents += it })
 
-        assertEquals(listOf("Hello", " there", "!"), deltas)
+        assertEquals(listOf("Hello", "Hello there", "Hello there!"), contents)
         assertEquals("Hello there!", received.toString())
+    }
+
+    @Test
+    fun processSseEventPublishesCumulativeSnapshots() = runBlocking {
+        val openAiReceived = StringBuilder()
+        val openAiContents = mutableListOf<String>()
+        processSseEvent(
+            json,
+            listOf("""{"choices":[{"message":{"content":"Hel"}}]}"""),
+            openAiReceived,
+        ) { openAiContents += it }
+        processSseEvent(
+            json,
+            listOf("""{"choices":[{"message":{"content":"Hello"}}]}"""),
+            openAiReceived,
+        ) { openAiContents += it }
+        assertEquals(listOf("Hel", "Hello"), openAiContents)
+        assertEquals("Hello", openAiReceived.toString())
+
+        val anthropicReceived = StringBuilder()
+        val anthropicContents = mutableListOf<String>()
+        processSseEvent(
+            json,
+            listOf("""{"content":[{"type":"text","text":"Hel"}]}"""),
+            anthropicReceived,
+        ) { anthropicContents += it }
+        processSseEvent(
+            json,
+            listOf("""{"content":[{"type":"text","text":"Hello"}]}"""),
+            anthropicReceived,
+        ) { anthropicContents += it }
+        assertEquals(listOf("Hel", "Hello"), anthropicContents)
+        assertEquals("Hello", anthropicReceived.toString())
+
+        val responsesReceived = StringBuilder()
+        val responsesContents = mutableListOf<String>()
+        listOf("a", "a").forEach { value ->
+            processSseEvent(
+                json,
+                listOf("""{"type":"response.output_text.delta","delta":"$value"}"""),
+                responsesReceived,
+            ) { responsesContents += it }
+        }
+        assertEquals(listOf("a", "aa"), responsesContents)
+        assertEquals("aa", responsesReceived.toString())
+    }
+
+    @Test
+    fun processSseEventReconcilesWholeSnapshotsMislabelledAsDeltas() = runBlocking {
+        val received = StringBuilder()
+        val contents = mutableListOf<String>()
+        val prefix = "The relay returned this whole response instead of a token delta."
+        val canonical = "$prefix The final answer stays readable once."
+
+        processSseEvent(
+            json,
+            listOf("""{"choices":[{"delta":{"content":"$prefix"}}]}"""),
+            received,
+        ) { contents += it }
+        processSseEvent(
+            json,
+            listOf("""{"choices":[{"delta":{"content":"<$prefix"}}]}"""),
+            received,
+        ) { contents += it }
+        processSseEvent(
+            json,
+            listOf("""{"choices":[{"delta":{"content":"$canonical"}}]}"""),
+            received,
+        ) { contents += it }
+
+        assertEquals(canonical, received.toString())
+        assertEquals(canonical, contents.last())
+        assertEquals(3, contents.size)
     }
 
     @Test

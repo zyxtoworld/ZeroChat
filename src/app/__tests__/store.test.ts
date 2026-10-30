@@ -474,6 +474,7 @@ beforeEach(() => {
   i18nMocks.loadLocale.mockReset()
   i18nMocks.loadLocale.mockImplementation(i18nMocks.actualLoadLocale!)
   vi.stubGlobal('navigator', { language: 'en-US', onLine: true })
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({})))
   vi.stubGlobal('confirm', vi.fn(() => true))
 
   dbMocks.loadAppData.mockResolvedValue(null)
@@ -935,6 +936,18 @@ describe('app store helpers', () => {
 
     expect(useAppStore.getState().data?.preferences.firstRunDone).toBe(true)
     expect(useAppStore.getState().data?.conversations).toHaveLength(0)
+  })
+  it('completes onboarding when creating a chat reuses the seeded empty conversation', async () => {
+    const data = freshData()
+    data.preferences.firstRunDone = false
+    resetStore(data)
+
+    await expect(useAppStore.getState().createNewConversation()).resolves.toBe(true)
+
+    expect(useAppStore.getState().data?.preferences.firstRunDone).toBe(true)
+    expect(useAppStore.getState().data?.preferences.activeConversationId).toBe(
+      data.conversations[0]?.id,
+    )
   })
 
   it('publishes skipped onboarding only after its snapshot is durable', async () => {
@@ -10265,7 +10278,9 @@ describe('app store helpers', () => {
   })
 
   it('publishes a new conversation only after its snapshot is durable', async () => {
-    const data = resetStore()
+    const data = freshData()
+    data.conversations[0].messages = [message('existing-turn', 'user', 'already used')]
+    resetStore(data)
     await useAppStore.getState().flushLocalSaves()
     dbMocks.saveAppData.mockClear()
 
@@ -10348,7 +10363,9 @@ describe('app store helpers', () => {
   it.each(['create', 'activate'] as const)(
     'keeps conversation state when a durable %s action fails',
     async (action) => {
-      const data = resetStore()
+      const data = freshData()
+      data.conversations[0].messages = [message('existing-turn', 'user', 'already used')]
+      resetStore(data)
       const first = data.conversations[0]
       const second = { ...structuredClone(first), id: 'failed-active-second' }
       data.conversations.push(second)
@@ -15551,7 +15568,9 @@ describe('app store helpers', () => {
   })
 
   it('does not cancel audio transcription when a rejected conversation switch is not admitted', async () => {
-    const data = resetStore()
+    const data = freshData()
+    data.conversations[0].messages = [message('existing-turn', 'user', 'already used')]
+    resetStore(data)
     const first = data.conversations[0]
     const second: Conversation = {
       ...structuredClone(first),

@@ -89,16 +89,17 @@ class CryptoEngine {
     fun encryptVault(vault: SyncVault, passphrase: String): EncryptedSnapshotEnvelope {
         require(passphrase.isNotEmpty()) { "Data encryption password is required." }
 
+        val normalizedVault = normalizeSyncVaultForProtocol(vault)
         val salt = randomBytes(SALT_BYTES)
         val iv = randomBytes(IV_BYTES)
-        val updatedAt = vault.data.updatedAt
+        val updatedAt = normalizedVault.data.updatedAt
         val aad = aadFor(updatedAt)
         val key = deriveKey(passphrase, salt, VAULT_KDF_ITERATIONS)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
         cipher.updateAAD(aad)
 
-        val payload = json.encodeToString(SyncVault.serializer(), vault)
+        val payload = json.encodeToString(SyncVault.serializer(), normalizedVault)
             .toByteArray(Charsets.UTF_8)
         val encrypted = cipher.doFinal(payload)
 

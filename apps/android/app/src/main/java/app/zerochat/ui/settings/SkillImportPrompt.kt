@@ -9,7 +9,7 @@ import androidx.compose.ui.Modifier
 import app.zerochat.ui.NativeI18n
 
 @Composable
-fun SkillEmptyImportPrompt(
+internal fun SkillEmptyImportPrompt(
     onImportSkill: () -> Unit,
     i18n: NativeI18n,
 ) {

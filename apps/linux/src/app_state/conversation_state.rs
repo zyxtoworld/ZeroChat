@@ -1,4 +1,4 @@
-use super::{now_millis, LinuxAppState};
+use super::{LinuxAppState, now_millis};
 use crate::{
     conversations::{active_conversation_is_untouched, default_conversation_provider},
     models::Conversation,

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
@@ -37,6 +38,7 @@ internal fun ChatConversationPane(
     filteredConversations: List<Conversation>,
     conversationSearchActive: Boolean,
     activeConversation: Conversation?,
+    streamingMessageDisplay: StreamingMessageDisplay?,
     enabledProviders: List<ProviderConfig>,
     activeProvider: ProviderConfig?,
     activeModel: String,
@@ -103,7 +105,11 @@ internal fun ChatConversationPane(
 
         when (layoutMode) {
             AndroidChatLayoutMode.Compact -> {
-                Column(modifier = Modifier.fillMaxSize()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .imePadding(),
+                ) {
                     CompactConversationBar(
                         conversationSearch = conversationSearch,
                         onConversationSearchChange = onConversationSearchChange,
@@ -122,6 +128,7 @@ internal fun ChatConversationPane(
                     ChatMainColumn(
                         snapshot = snapshot,
                         activeConversation = activeConversation,
+                        streamingMessageDisplay = streamingMessageDisplay,
                         enabledProviders = enabledProviders,
                         activeProvider = activeProvider,
                         activeModel = activeModel,
@@ -182,7 +189,11 @@ internal fun ChatConversationPane(
             }
 
             AndroidChatLayoutMode.AdaptiveTwoPane -> {
-                Row(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .imePadding(),
+                ) {
                     if (!keyboardVisible) {
                         ConversationSidebar(
                             conversationSearch = conversationSearch,
@@ -206,6 +217,7 @@ internal fun ChatConversationPane(
                     ChatMainColumn(
                         snapshot = snapshot,
                         activeConversation = activeConversation,
+                        streamingMessageDisplay = streamingMessageDisplay,
                         enabledProviders = enabledProviders,
                         activeProvider = activeProvider,
                         activeModel = activeModel,
@@ -272,6 +284,7 @@ internal fun ChatConversationPane(
 private fun ChatMainColumn(
     snapshot: AppSnapshot,
     activeConversation: Conversation?,
+    streamingMessageDisplay: StreamingMessageDisplay?,
     enabledProviders: List<ProviderConfig>,
     activeProvider: ProviderConfig?,
     activeModel: String,
@@ -378,7 +391,9 @@ private fun ChatMainColumn(
         MessageList(
             conversationId = activeConversation?.id,
             messages = activeConversation?.messages.orEmpty(),
+            streamingMessageDisplay = streamingMessageDisplay,
             hasActiveChat = hasMessages,
+            compactDisplay = snapshot.preferences.compactMode,
             keyboardVisible = keyboardVisible,
             manualSyncRefreshing = manualSyncRefreshing,
             onRefresh = onManualSync,

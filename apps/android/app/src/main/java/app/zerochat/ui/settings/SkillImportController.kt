@@ -20,12 +20,10 @@ class SkillImportController constructor(
     val importSkill: () -> Unit,
 )
 
-internal fun skillImportFailureNotice(
-    i18n: NativeI18n,
-    @Suppress("UNUSED_PARAMETER") error: Throwable,
-): String =
-    i18n.t("notice.skillImportFailed")
-        .replace("{message}", i18n.t("error.apiRequestFailed"))
+internal fun skillImportFailureNotice(i18n: NativeI18n, error: Throwable): String =
+    (error as? SkillImportUserError)?.message
+        ?: i18n.t("notice.skillImportFailed")
+            .replace("{message}", i18n.t("error.apiRequestFailed"))
 
 internal fun launchSkillImport(
     scope: CoroutineScope,

@@ -119,4 +119,29 @@ class ChatManualSyncFeedbackTest {
             ),
         )
     }
+
+    @Test
+    fun cloudSyncStatusDoesNotRepeatItsCurrentBlocker() {
+        assertEquals(
+            false,
+            shouldShowCloudSyncBlockedReason(
+                syncStatus = "Data encryption password is required.",
+                blockedReason = "Data encryption password is required.",
+            ),
+        )
+        assertEquals(
+            true,
+            shouldShowCloudSyncBlockedReason(
+                syncStatus = "Sync complete",
+                blockedReason = "Data encryption password is required.",
+            ),
+        )
+        assertEquals(
+            false,
+            shouldShowCloudSyncBlockedReason(
+                syncStatus = "Sync complete",
+                blockedReason = null,
+            ),
+        )
+    }
 }

@@ -1,13 +1,19 @@
 package app.zerochat.ui.settings
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.ui.unit.dp
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
 import app.zerochat.ai.AiClient
 import app.zerochat.data.AppSnapshot
 import app.zerochat.data.ProviderConfig
@@ -16,7 +22,29 @@ import app.zerochat.sync.FirstSyncStrategy
 import app.zerochat.sync.SyncClient
 import app.zerochat.ui.NativeI18n
 import app.zerochat.ui.chat.GenerationTaskOwner
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
+
+@Composable
+private fun SettingsSheetSystemBars(snapshot: AppSnapshot) {
+    val dark = when (snapshot.preferences.theme) {
+        "light" -> false
+        "dark" -> true
+        else -> isSystemInDarkTheme()
+    }
+    val view = LocalView.current
+    val window = (view.parent as? DialogWindowProvider)?.window
+
+    DisposableEffect(window, dark) {
+        window?.let {
+            WindowCompat.getInsetsController(it, view).apply {
+                isAppearanceLightStatusBars = !dark
+                isAppearanceLightNavigationBars = !dark
+            }
+        }
+        onDispose { }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,6 +78,7 @@ internal fun ChatSettingsSheet(
     generationTasks: GenerationTaskOwner,
 ) {
     val settingsSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val providerKeySaveScope = rememberCoroutineScope()
     LaunchedEffect(settingsSheetState) {
         settingsSheetState.show()
         settingsSheetState.expand()
@@ -63,6 +92,7 @@ internal fun ChatSettingsSheet(
         onDismissRequest = onDismiss,
         sheetState = settingsSheetState,
     ) {
+        SettingsSheetSystemBars(snapshot)
         SettingsScreen(
             initialTab = SettingsTab.entries.firstOrNull { it.name == initialTabName }
                 ?: SettingsTab.Appearance,
@@ -85,6 +115,7 @@ internal fun ChatSettingsSheet(
                     i18n,
                     providerDisplayName,
                     providerRequest,
+                    providerKeySaveScope,
                 )
                 SettingsTab.Models -> ModelSettings(
                     snapshot,

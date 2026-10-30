@@ -362,11 +362,16 @@ private fun realtimeAudioFormat(value: String?): RealtimeAudioFormat? {
     }
 }
 
+private data class ChatTextChunk(
+    val text: String,
+    val cumulative: Boolean,
+)
+
 internal suspend fun processSseEvent(
     json: Json,
     eventData: List<String>,
     received: StringBuilder,
-    onDelta: suspend (String) -> Unit,
+    onText: suspend (String) -> Unit,
 ): Boolean {
     val data = eventData.joinToString("\n").trim()
 
@@ -377,23 +382,71 @@ internal suspend fun processSseEvent(
         return false
     }
 
-    val delta = readChatDelta(json, data)
-    if (delta.isNotEmpty()) {
-        received.append(delta)
-        onDelta(delta)
+    val chunk = readChatDelta(json, data)
+    if (chunk != null && chunk.text.isNotEmpty() && mergeStreamingChatText(received, chunk.text, chunk.cumulative)) {
+        onText(received.toString())
     }
 
     return true
 }
 
-internal fun readChatDelta(json: Json, text: String): String =
+private fun readChatDelta(json: Json, text: String): ChatTextChunk? =
     runCatching {
-        val root = json.parseToJsonElement(text) as? JsonObject ?: return@runCatching ""
+        val root = json.parseToJsonElement(text) as? JsonObject ?: return@runCatching null
 
         readOpenAiChoiceDelta(root)
-            .ifEmpty { readResponsesDelta(root) }
-            .ifEmpty { readAnthropicDelta(root) }
-    }.getOrDefault("")
+            ?: readResponsesDelta(root)
+            ?: readAnthropicDelta(root)
+    }.getOrNull()
+
+private const val CUMULATIVE_DELTA_SHARED_PREFIX_MINIMUM_LENGTH = 24
+
+internal fun mergeStreamingChatText(
+    received: StringBuilder,
+    incoming: String,
+    cumulative: Boolean,
+): Boolean {
+    val current = received.toString()
+    val next = if (cumulative) {
+        mergeCumulativeChatText(current, incoming)
+    } else {
+        mergeDeltaChatText(current, incoming)
+    }
+    if (next == current) return false
+
+    received.clear()
+    received.append(next)
+    return true
+}
+
+private fun mergeCumulativeChatText(current: String, incoming: String): String = when {
+    incoming == current || current.startsWith(incoming) -> current
+    incoming.startsWith(current) -> incoming
+    else -> incoming
+}
+
+private fun mergeDeltaChatText(current: String, incoming: String): String {
+    if (current.isEmpty() || incoming.isEmpty()) return current + incoming
+
+    val sharedPrefixLength = sharedPrefixLength(current, incoming)
+    return when {
+        // Some compatible relays label whole snapshots as OpenAI delta content.
+        incoming.length > current.length && incoming.startsWith(current) -> incoming
+        current.startsWith(incoming) && incoming.length >= CUMULATIVE_DELTA_SHARED_PREFIX_MINIMUM_LENGTH -> current
+        incoming.length >= CUMULATIVE_DELTA_SHARED_PREFIX_MINIMUM_LENGTH &&
+            sharedPrefixLength >= CUMULATIVE_DELTA_SHARED_PREFIX_MINIMUM_LENGTH -> incoming
+        else -> current + incoming
+    }
+}
+
+private fun sharedPrefixLength(first: String, second: String): Int {
+    val limit = minOf(first.length, second.length)
+    var index = 0
+    while (index < limit && first[index] == second[index]) {
+        index += 1
+    }
+    return index
+}
 
 private fun roleName(message: ChatMessage): String = when (message.role) {
     MessageRole.System -> "system"
@@ -1097,35 +1150,60 @@ private fun embeddedIpv4FromIpv6(value: String): List<Int>? {
     return null
 }
 
-private fun readOpenAiChoiceDelta(root: JsonObject): String {
+private fun readOpenAiChoiceDelta(root: JsonObject): ChatTextChunk? {
     val choice = (root["choices"] as? JsonArray)
         ?.firstOrNull() as? JsonObject
-        ?: return ""
+        ?: return null
     val delta = choice["delta"] as? JsonObject
     val message = choice["message"] as? JsonObject
 
-    return openAiContentText(delta?.get("content"))
-        .ifEmpty { openAiContentText(message?.get("content")) }
-}
-
-private fun readResponsesDelta(root: JsonObject): String {
-    val type = primitiveText(root["type"])
-    if (type.isNotEmpty() && !type.contains("delta")) {
-        return ""
+    val deltaText = openAiContentText(delta?.get("content"))
+        .ifEmpty { openAiContentText(delta?.get("text")) }
+    if (deltaText.isNotEmpty()) {
+        return ChatTextChunk(deltaText, cumulative = false)
     }
 
-    return primitiveText(root["delta"])
-        .ifEmpty { primitiveText((root["response"] as? JsonObject)?.get("delta")) }
+    val messageText = openAiContentText(message?.get("content"))
+    if (messageText.isNotEmpty()) {
+        return ChatTextChunk(messageText, cumulative = true)
+    }
+
+    return primitiveText(choice["text"])
+        .takeIf { it.isNotEmpty() }
+        ?.let { ChatTextChunk(it, cumulative = false) }
 }
 
-private fun readAnthropicDelta(root: JsonObject): String {
+private fun readResponsesDelta(root: JsonObject): ChatTextChunk? {
+    val type = primitiveText(root["type"])
+    if (type.isEmpty() || type.contains("delta")) {
+        return primitiveText(root["delta"])
+            .ifEmpty { primitiveText((root["response"] as? JsonObject)?.get("delta")) }
+            .takeIf { it.isNotEmpty() }
+            ?.let { ChatTextChunk(it, cumulative = false) }
+    }
+    if (type.endsWith(".done")) {
+        return primitiveText(root["text"])
+            .ifEmpty { primitiveText(root["output_text"]) }
+            .takeIf { it.isNotEmpty() }
+            ?.let { ChatTextChunk(it, cumulative = true) }
+    }
+    return null
+}
+
+private fun readAnthropicDelta(root: JsonObject): ChatTextChunk? {
     val type = primitiveText(root["type"])
     if (type.isNotEmpty() && type != "content_block_delta") {
-        return ""
+        return null
     }
 
-    val delta = root["delta"] as? JsonObject
-    return primitiveText(delta?.get("text"))
+    val deltaText = primitiveText((root["delta"] as? JsonObject)?.get("text"))
+    if (deltaText.isNotEmpty()) {
+        return ChatTextChunk(deltaText, cumulative = false)
+    }
+
+    return openAiContentText(root["content"])
+        .takeIf { it.isNotEmpty() }
+        ?.let { ChatTextChunk(it, cumulative = true) }
 }
 
 private fun primitiveText(element: JsonElement?): String =

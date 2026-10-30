@@ -95,6 +95,10 @@ internal fun DataSettings(
     }
 
     fun requestPassphraseSave() {
+        if (passphrase.isBlank()) {
+            onNotice(i18n.t("message.dataPasswordRequired"), SettingsNoticeKind.Warning)
+            return
+        }
         if (passphrase == committedPassphrase) {
             onNotice(i18n.t("message.syncPasswordAlreadySaved"), SettingsNoticeKind.Success)
             return

@@ -4,9 +4,8 @@ use std::collections::BTreeSet;
 
 use crate::models::{
     AppSnapshot, ChatMessage, Conversation, MessageAttachment, ModelMetadata, OfflineReplayClaim,
-    Preferences,
-    ProviderConfig, QueuedTextRequest, SkillSettings, SyncConfig, SyncVault, UserSkill,
-    UserSkillChunk,
+    Preferences, ProviderConfig, QueuedTextRequest, SkillSettings, SyncConfig, SyncVault,
+    UserSkill, UserSkillChunk,
 };
 
 pub(crate) fn decode_validated_sync_vault(bytes: &[u8]) -> Result<SyncVault> {
@@ -60,36 +59,30 @@ fn is_canonical_sync_vault_json(value: &Value) -> bool {
         return false;
     };
     if !providers.iter().all(|provider| {
-        provider
-            .get("modelMetadata")
-            .is_none_or(|metadata| {
-                metadata.as_object().is_some_and(|entries| {
-                    entries.values().all(|value| {
-                        let Some(object) = value.as_object() else {
-                            return false;
-                        };
-                        object_with_shape(
-                            value,
-                            MODEL_METADATA_KEYS,
-                            MODEL_METADATA_REQUIRED_KEYS,
-                        )
+        provider.get("modelMetadata").is_none_or(|metadata| {
+            metadata.as_object().is_some_and(|entries| {
+                entries.values().all(|value| {
+                    let Some(object) = value.as_object() else {
+                        return false;
+                    };
+                    object_with_shape(value, MODEL_METADATA_KEYS, MODEL_METADATA_REQUIRED_KEYS)
                         .is_some()
-                            && object
-                                .get("source")
-                                .and_then(Value::as_str)
-                                .is_some_and(|source| {
-                                    matches!(
-                                        source,
-                                        "models-dev"
-                                            | "provider-api"
-                                            | "provider-docs"
-                                            | "manual"
-                                            | "heuristic"
-                                    )
-                                })
-                    })
+                        && object
+                            .get("source")
+                            .and_then(Value::as_str)
+                            .is_some_and(|source| {
+                                matches!(
+                                    source,
+                                    "models-dev"
+                                        | "provider-api"
+                                        | "provider-docs"
+                                        | "manual"
+                                        | "heuristic"
+                                )
+                            })
                 })
             })
+        })
     }) {
         return false;
     }
@@ -252,9 +245,7 @@ fn is_canonical_model_metadata(metadata: &ModelMetadata) -> bool {
             metadata.source.as_str(),
             "models-dev" | "provider-api" | "provider-docs" | "manual" | "heuristic"
         )
-        && metadata
-            .context_window_tokens
-            .is_none_or(|value| value > 0)
+        && metadata.context_window_tokens.is_none_or(|value| value > 0)
         && metadata.max_input_tokens.is_none_or(|value| value > 0)
         && metadata.max_output_tokens.is_none_or(|value| value > 0)
         && metadata
@@ -272,10 +263,9 @@ fn is_canonical_provider(provider: &ProviderConfig) -> bool {
         && !provider.base_url.is_empty()
         && provider.models.iter().all(|model| !model.is_empty())
         && provider.models.iter().collect::<BTreeSet<_>>().len() == provider.models.len()
-        && provider
-            .model_metadata
-            .iter()
-            .all(|(model_id, metadata)| !model_id.is_empty() && is_canonical_model_metadata(metadata))
+        && provider.model_metadata.iter().all(|(model_id, metadata)| {
+            !model_id.is_empty() && is_canonical_model_metadata(metadata)
+        })
         && provider
             .capabilities
             .iter()

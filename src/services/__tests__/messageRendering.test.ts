@@ -6,9 +6,10 @@ import {
   downloadableMessageAttachment,
   messageActionAccessibleName,
   messageCanSpeak,
-  messageAccessibleName,
   messageCopyText,
+  messageDisplayContent,
   messageStatusText,
+  messageAccessibleName,
   shouldRenderMarkdown,
 } from '../messageRendering'
 
@@ -105,6 +106,57 @@ describe('message rendering helpers', () => {
     expect(shouldRenderMarkdown('[ZeroChat](https://example.test)')).toBe(true)
   })
 
+  it('normalizes assistant HTML for display and copy without changing user text', () => {
+    const rawHtml = [
+      '<h2>Release notes</h2>',
+      '<p>Hello <strong>world</strong><br>next &amp; ready.</p>',
+      '<script>alert(1)</script>',
+    ].join('\n')
+    const expected = '## Release notes\n\nHello **world**\nnext & ready.'
+
+    expect(messageDisplayContent(message({ content: rawHtml }))).toBe(expected)
+    expect(messageCopyText(message({ content: rawHtml }), 'Image generated')).toBe(
+      expected,
+    )
+    expect(messageDisplayContent(message({ role: 'user', content: rawHtml }))).toBe(
+      rawHtml,
+    )
+    expect(messageDisplayContent(message({ content: '<script>alert(1)' }))).toBe('')
+  })
+
+  it('preserves HTML-looking fenced code while normalizing surrounding prose', () => {
+    const content = [
+      '<p>Before</p>',
+      '```html',
+      '<div>Keep this code</div>',
+      '```',
+      '<p>After</p>',
+    ].join('\n')
+
+    expect(messageDisplayContent(message({ content }))).toBe(
+      'Before\n```html\n<div>Keep this code</div>\n```\nAfter',
+    )
+  })
+
+  it('normalizes ordered lists, tables, and safe links', () => {
+    expect(
+      messageDisplayContent(
+        message({
+          content:
+            '<ol><li>one</li><li>two</li></ol><table><tr><th>Status</th><th>Value</th></tr><tr><td>ok</td><td>1</td></tr></table>',
+        }),
+      ),
+    ).toBe('1. one\n2. two\n\n| Status | Value |\n\n| ok | 1 |')
+    expect(
+      messageDisplayContent(
+        message({
+          content:
+            '<a href="javascript:alert(1)">bad</a> <a href="https://example.com/docs">safe</a>',
+        }),
+      ),
+    ).toBe('bad [safe](https://example.com/docs)')
+  })
+
   it('uses trimmed message text before image fallback copy', () => {
     expect(messageCopyText(message({ content: '  hello  ' }), 'Image generated')).toBe(
       'hello',
@@ -129,6 +181,8 @@ describe('message rendering helpers', () => {
 
   it('allows read-aloud only for completed assistant text', () => {
     expect(messageCanSpeak(message({ content: ' hello ' }))).toBe(true)
+    expect(messageCanSpeak(message({ content: '<p>hello</p>' }))).toBe(true)
+    expect(messageCanSpeak(message({ content: '<script>alert(1)</script>' }))).toBe(false)
     expect(messageCanSpeak(message({ role: 'user', content: 'hello' }))).toBe(
       false,
     )

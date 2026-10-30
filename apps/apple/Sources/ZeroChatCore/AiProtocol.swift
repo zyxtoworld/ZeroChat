@@ -606,19 +606,26 @@ func audioTranscriptionMultipartBody(
     )
 }
 
-func sseEventDelta(from eventData: [String]) -> (shouldContinue: Bool, delta: String?) {
+func sseEventDelta(from eventData: [String]) -> (
+    shouldContinue: Bool,
+    delta: String?,
+    cumulative: Bool
+) {
     let data = eventData
         .joined(separator: "\n")
         .trimmingCharacters(in: .whitespacesAndNewlines)
 
     if data.isEmpty {
-        return (true, nil)
+        return (true, nil, false)
     }
     if data == "[DONE]" {
-        return (false, nil)
+        return (false, nil, false)
     }
 
-    return (true, chatDelta(from: data))
+    guard let event = chatDelta(from: data) else {
+        return (true, nil, false)
+    }
+    return (true, event.text, event.cumulative)
 }
 
 func parseModelIds(_ data: Data) throws -> [String] {
@@ -1389,7 +1396,7 @@ private func multipartBody(
     return data
 }
 
-private func chatDelta(from text: String) -> String? {
+private func chatDelta(from text: String) -> (text: String, cumulative: Bool)? {
     guard
         let data = text.data(using: .utf8),
         let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -1402,7 +1409,7 @@ private func chatDelta(from text: String) -> String? {
         anthropicDelta(from: root)
 }
 
-private func openAIChoiceDelta(from root: [String: Any]) -> String? {
+private func openAIChoiceDelta(from root: [String: Any]) -> (text: String, cumulative: Bool)? {
     guard
         let choices = root["choices"] as? [[String: Any]],
         let first = choices.first
@@ -1410,51 +1417,64 @@ private func openAIChoiceDelta(from root: [String: Any]) -> String? {
         return nil
     }
 
-    if let delta = first["delta"] as? [String: Any],
-       !openAIContentText(delta["content"]).isEmpty {
-        return openAIContentText(delta["content"])
+    if let delta = first["delta"] as? [String: Any] {
+        let content = openAIContentText(delta["content"])
+        if !content.isEmpty { return (content, false) }
+        let text = openAIContentText(delta["text"])
+        if !text.isEmpty { return (text, false) }
     }
 
-    if let message = first["message"] as? [String: Any],
-       !openAIContentText(message["content"]).isEmpty {
-        return openAIContentText(message["content"])
+    if let message = first["message"] as? [String: Any] {
+        let content = openAIContentText(message["content"])
+        if !content.isEmpty { return (content, true) }
     }
 
+    if let text = first["text"] as? String, !text.isEmpty {
+        return (text, false)
+    }
     return nil
 }
 
-private func responsesDelta(from root: [String: Any]) -> String? {
+private func responsesDelta(from root: [String: Any]) -> (text: String, cumulative: Bool)? {
     let type = root["type"] as? String ?? ""
-    if !type.isEmpty, !type.contains("delta") {
+    if type.isEmpty || type.contains("delta") {
+        if let delta = root["delta"] as? String {
+            return (delta, false)
+        }
+
+        if let response = root["response"] as? [String: Any],
+           let delta = response["delta"] as? String {
+            return (delta, false)
+        }
         return nil
     }
 
-    if let delta = root["delta"] as? String {
-        return delta
+    guard type.hasSuffix(".done") else { return nil }
+    if let text = root["text"] as? String {
+        return (text, true)
     }
-
-    if let response = root["response"] as? [String: Any],
-       let delta = response["delta"] as? String {
-        return delta
+    if let text = root["output_text"] as? String {
+        return (text, true)
     }
-
     return nil
 }
 
-private func anthropicDelta(from root: [String: Any]) -> String? {
+private func anthropicDelta(from root: [String: Any]) -> (text: String, cumulative: Bool)? {
     let type = root["type"] as? String ?? ""
     if !type.isEmpty, type != "content_block_delta" {
         return nil
     }
 
-    guard
-        let delta = root["delta"] as? [String: Any],
-        let text = delta["text"] as? String
-    else {
-        return nil
+    if let delta = root["delta"] as? [String: Any],
+       let text = delta["text"] as? String {
+        return (text, false)
     }
 
-    return text
+    let content = openAIContentText(root["content"])
+    if content.isEmpty {
+        return nil
+    }
+    return (content, true)
 }
 
 private struct OpenAIChatRequest: Encodable {

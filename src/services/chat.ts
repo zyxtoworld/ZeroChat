@@ -681,6 +681,44 @@ async function editImageViaResponsesTool({
   throw lastError
 }
 
+interface ProviderStreamTextAccumulator {
+  delta(value: unknown): void
+  cumulative(value: unknown): void
+}
+
+function createProviderStreamTextAccumulator(
+  signal: AbortSignal,
+  onToken: (token: string) => void,
+): ProviderStreamTextAccumulator {
+  let received = ''
+
+  const publishDelta = (value: unknown): void => {
+    const next = readTextContent(value)
+    if (!next) return
+
+    received += next
+    publishProviderToken(signal, onToken, next)
+  }
+
+  const publishCumulative = (value: unknown): void => {
+    const text = readTextContent(value)
+    if (!text || text === received || received.startsWith(text)) return
+
+    const next = text.startsWith(received)
+      ? text.slice(received.length)
+      : text
+    if (!next) return
+
+    received += next
+    publishProviderToken(signal, onToken, next)
+  }
+
+  return {
+    delta: publishDelta,
+    cumulative: publishCumulative,
+  }
+}
+
 async function readOpenAIStream(
   response: Response,
   signal: AbortSignal,
@@ -708,6 +746,7 @@ async function readOpenAIStream(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   const byteBudget = { totalBytes: 0 }
+  const text = createProviderStreamTextAccumulator(signal, onToken)
   let buffer = ''
   const consumeEvent = (part: string): boolean => {
     for (const line of part.split(/\r?\n/)) {
@@ -725,7 +764,11 @@ async function readOpenAIStream(
       }
 
       let json: {
-        choices?: Array<{ delta?: { content?: unknown } }>
+        choices?: Array<{
+          delta?: { content?: unknown; text?: unknown }
+          message?: { content?: unknown }
+          text?: unknown
+        }>
       }
 
       try {
@@ -735,7 +778,14 @@ async function readOpenAIStream(
         continue
       }
 
-      publishProviderText(signal, onToken, json?.choices?.[0]?.delta?.content)
+      const choice = json.choices?.[0]
+      if (choice?.delta) {
+        text.delta(choice.delta.content ?? choice.delta.text)
+      } else if (choice?.message) {
+        text.cumulative(choice.message.content)
+      } else {
+        text.delta(choice?.text)
+      }
     }
 
     return false
@@ -825,6 +875,7 @@ async function readAnthropicStream(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   const byteBudget = { totalBytes: 0 }
+  const text = createProviderStreamTextAccumulator(signal, onToken)
   let buffer = ''
   const consumeEvent = (part: string): boolean => {
     const dataLine = part
@@ -835,7 +886,10 @@ async function readAnthropicStream(
       return false
     }
 
-    let json: { delta?: { text?: unknown } }
+    let json: {
+      delta?: { text?: unknown }
+      content?: unknown
+    }
 
     try {
       json = JSON.parse(dataLine.trim().slice(5).trim()) as typeof json
@@ -844,10 +898,10 @@ async function readAnthropicStream(
       return false
     }
 
-    const token = json?.delta?.text
-
-    if (typeof token === 'string') {
-      publishProviderToken(signal, onToken, token)
+    if (typeof json.delta?.text === 'string') {
+      text.delta(json.delta.text)
+    } else if (json.content !== undefined) {
+      text.cumulative(json.content)
     }
 
     return false
@@ -938,6 +992,7 @@ async function readResponsesStream(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   const byteBudget = { totalBytes: 0 }
+  const text = createProviderStreamTextAccumulator(signal, onToken)
   let buffer = ''
   const consumeEvent = (part: string): boolean => {
     for (const line of part.split(/\r?\n/)) {
@@ -957,6 +1012,8 @@ async function readResponsesStream(
       let json: {
         type?: unknown
         delta?: unknown
+        text?: unknown
+        output_text?: unknown
         error?: { message?: unknown }
       }
 
@@ -974,7 +1031,9 @@ async function readResponsesStream(
         json.type === 'response.output_text.delta' &&
         typeof json.delta === 'string'
       ) {
-        publishProviderToken(signal, onToken, json.delta)
+        text.delta(json.delta)
+      } else if (json.type === 'response.output_text.done') {
+        text.cumulative(json.text ?? json.output_text)
       }
     }
 
@@ -1277,7 +1336,10 @@ export async function streamChat(options: StreamOptions): Promise<void> {
         {
           method: 'POST',
           signal,
-          headers: buildProviderChatHeaders({ provider, apiKey, proxyToken }),
+          headers: {
+            ...buildProviderChatHeaders({ provider, apiKey, proxyToken }),
+            accept: 'text/event-stream',
+          },
           body: JSON.stringify(responsesBody),
         },
       )
@@ -1292,7 +1354,10 @@ export async function streamChat(options: StreamOptions): Promise<void> {
       {
         method: 'POST',
         signal,
-        headers: buildProviderChatHeaders({ provider, apiKey, proxyToken }),
+        headers: {
+          ...buildProviderChatHeaders({ provider, apiKey, proxyToken }),
+          accept: 'text/event-stream',
+        },
         body: JSON.stringify(
           buildProviderAnthropicChatBody({
             model,
@@ -1311,7 +1376,10 @@ export async function streamChat(options: StreamOptions): Promise<void> {
       {
         method: 'POST',
         signal,
-        headers: buildProviderChatHeaders({ provider, apiKey, proxyToken }),
+        headers: {
+          ...buildProviderChatHeaders({ provider, apiKey, proxyToken }),
+          accept: 'text/event-stream',
+        },
         body: JSON.stringify(
           buildProviderOpenAIChatBody({
             model,

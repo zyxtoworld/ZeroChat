@@ -1508,7 +1508,7 @@ export const currentWebAppShellContractMarkers = Object.freeze({
     'Ctrl+N creates exactly one current conversation',
     'Ctrl+N activates the new conversation',
     'Ctrl+N must focus the ready-to-type conversation',
-    'Sidebar button creates exactly one current conversation',
+    'Sidebar button reuses the current untouched conversation',
     'Sidebar new-conversation action must focus the ready-to-type Composer',
     'Cancelled current local-data reset must keep focus on its trigger',
     'Current backup import must start from its stable button focus owner',

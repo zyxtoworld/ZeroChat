@@ -134,6 +134,108 @@ function localeChunkRequests(events, locale) {
     .filter((url) => pattern.test(url))
 }
 
+const runtimeLocaleCases = [
+  { locale: 'en-US', dir: 'ltr' },
+  { locale: 'es-ES', dir: 'ltr' },
+  { locale: 'hi-IN', dir: 'ltr' },
+  { locale: 'ar-SA', dir: 'rtl' },
+  { locale: 'pt-BR', dir: 'ltr' },
+  { locale: 'ru-RU', dir: 'ltr' },
+  { locale: 'ja-JP', dir: 'ltr' },
+  { locale: 'ko-KR', dir: 'ltr' },
+  { locale: 'fr-FR', dir: 'ltr' },
+  { locale: 'zh-CN', dir: 'ltr' },
+]
+
+async function switchRuntimeLocale(cdp, locale, expectedDir) {
+  const beforeRequests = localeChunkRequests(cdp.events, locale).length
+  const selected = await evaluate(
+    cdp,
+    `(() => {
+      const option = document.querySelector(
+        '.zc-settings-overlay select option[value=${JSON.stringify(locale)}]',
+      )
+      const select = option?.parentElement
+      if (!(select instanceof HTMLSelectElement)) return false
+      select.value = ${JSON.stringify(locale)}
+      select.dispatchEvent(new Event('input', { bubbles: true }))
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      return true
+    })()`,
+  )
+
+  assert.equal(selected, true, `${locale} runtime smoke must select its language option.`)
+
+  const wait = await waitForBrowserState(
+    cdp,
+    `(() => {
+      const visible = (element) => {
+        if (!element) return false
+        const rect = element.getBoundingClientRect()
+        const style = getComputedStyle(element)
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'
+      }
+      const body = document.body.innerText.replace(/\\s+/g, ' ').trim()
+      const select = document.querySelector(
+        '.zc-settings-overlay select option[value=${JSON.stringify(locale)}]',
+      )?.parentElement
+      const visibleFullScreenLoading = Array.from(document.querySelectorAll('.empty-state p, [data-initial-loading]'))
+        .some((element) => visible(element) && /Loading|Chargement|جار التحميل|正在载入/.test(element.textContent || ''))
+
+      return {
+        ready:
+          document.documentElement.lang === ${JSON.stringify(locale)} &&
+          (document.documentElement.dir || 'ltr') === ${JSON.stringify(expectedDir)} &&
+          select instanceof HTMLSelectElement &&
+          select.value === ${JSON.stringify(locale)} &&
+          Boolean(document.querySelector('.zc-settings-overlay')) &&
+          body.length > 0 &&
+          !visibleFullScreenLoading,
+        lang: document.documentElement.lang,
+        dir: document.documentElement.dir || 'ltr',
+        selectValue: select instanceof HTMLSelectElement ? select.value : '',
+        visibleFullScreenLoading,
+        body: body.slice(0, 500),
+      }
+    })()`,
+    `${locale} runtime switch`,
+  )
+  const requests = localeChunkRequests(cdp.events, locale)
+
+  assert.equal(
+    wait.state.lang,
+    locale,
+    `${locale} runtime switch must settle on its document language: ${JSON.stringify(wait.state)}`,
+  )
+  assert.equal(
+    wait.state.dir,
+    expectedDir,
+    `${locale} runtime switch must settle on its document direction: ${JSON.stringify(wait.state)}`,
+  )
+  assert.equal(
+    wait.state.selectValue,
+    locale,
+    `${locale} runtime switch must keep the selected language: ${JSON.stringify(wait.state)}`,
+  )
+  assert.ok(
+    requests.length >= 1,
+    `${locale} runtime switch must have a production locale chunk request: ${JSON.stringify({
+      beforeRequests,
+      requests,
+      state: wait.state,
+    })}`,
+  )
+
+  return {
+    locale,
+    lang: wait.state.lang,
+    dir: wait.state.dir,
+    chunkRequests: requests.length,
+    loadedDuringSwitch: requests.length > beforeRequests,
+    everFullScreenLoading: wait.samples.some((sample) => Boolean(sample?.visibleFullScreenLoading)),
+  }
+}
+
 const chromePath = await resolveChromePath()
 const cdpPort = await resolveFetchSafeLoopbackPort(
   process.env.ZEROCHAT_LOCALE_SMOKE_CDP_PORT,
@@ -472,13 +574,22 @@ async function main() {
       })}`,
     )
 
+    const allLocaleSwitches = []
+    for (const localeCase of runtimeLocaleCases) {
+      allLocaleSwitches.push(
+        await switchRuntimeLocale(cdp, localeCase.locale, localeCase.dir),
+      )
+    }
+
     const loadingDuringSwitches = [
-      ...arabicWait.samples,
-      ...chineseWait.samples,
-    ].map((sample) => Boolean(sample?.visibleFullScreenLoading))
+      ...arabicWait.samples.map((sample) => Boolean(sample?.visibleFullScreenLoading)),
+      ...chineseWait.samples.map((sample) => Boolean(sample?.visibleFullScreenLoading)),
+      ...allLocaleSwitches.map((result) => result.everFullScreenLoading),
+    ]
     const switchState = {
       arabic: arabicWait.state,
       chinese: chineseWait.state,
+      allLocales: allLocaleSwitches,
       loadingDuringSwitches,
       everFullScreenLoadingDuringSwitch: loadingDuringSwitches.some(Boolean),
       languageSelectValue: await evaluate(
@@ -598,8 +709,11 @@ async function main() {
     }
 
     assert.deepEqual(browserErrors, [], 'locale runtime smoke should not report browser runtime errors')
+    const testedLocales = allLocaleSwitches
+      .map((result) => `${result.locale}/${result.dir}`)
+      .join(', ')
     console.log(
-      `Locale runtime smoke passed: system fr-FR loaded ${startupLocaleRequests[0]}, runtime ar-SA flipped document lang/dir, zh-CN re-rendered the Chinese UI, no full-screen loading flash during switches`,
+      `Locale runtime smoke passed: all locales [${testedLocales}], system fr-FR loaded ${startupLocaleRequests[0]}, runtime ar-SA flipped document lang/dir, zh-CN re-rendered the Chinese UI, no full-screen loading flash during switches`,
     )
   } finally {
     cdp.close()

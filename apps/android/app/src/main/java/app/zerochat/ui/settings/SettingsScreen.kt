@@ -38,13 +38,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import app.zerochat.client.R
 import app.zerochat.ui.NativeI18n
 import kotlinx.coroutines.launch
+
+private val narrowSettingsGridLocales = setOf("ru-RU", "ja-JP", "fr-FR")
 
 enum class SettingsTab {
     Appearance,
@@ -65,6 +71,13 @@ fun SettingsScreen(
     content: @Composable (SettingsTab, () -> Unit) -> Unit,
 ) {
     var tab by remember(initialTab) { mutableStateOf(initialTab) }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val dismissKeyboard = {
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+        onDismissKeyboard()
+    }
     val settingsContentScrollState = rememberScrollState()
     val settingsContentScrollScope = rememberCoroutineScope()
     val requestContentScrollTop: () -> Unit = {
@@ -83,6 +96,11 @@ fun SettingsScreen(
             .fillMaxWidth()
             .navigationBarsPadding()
             .padding(horizontal = 16.dp)
+            .pointerInput(focusManager, keyboardController, onDismissKeyboard) {
+                detectTapGestures(
+                    onTap = { dismissKeyboard() },
+                )
+            }
     ) {
         Text(
             i18n.t("title.settings"),
@@ -143,7 +161,7 @@ private fun SettingsTabGrid(
 ) {
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val tabGap = 8.dp
-        val tabColumns = if (maxWidth < 360.dp) 2 else 3
+        val tabColumns = if (maxWidth < 420.dp && i18n.locale in narrowSettingsGridLocales) 2 else 3
         val chipWidth = (maxWidth - tabGap * (tabColumns - 1)) / tabColumns
         FlowRow(
             modifier = Modifier.fillMaxWidth(),

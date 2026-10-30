@@ -97,7 +97,10 @@ fun ChatTopBar(
                 TextButton(onClick = onNewConversation) {
                     Text(i18n.t("action.new"))
                 }
-                TextButton(onClick = onOpenSettings) {
+                TextButton(
+                    onClick = onOpenSettings,
+                    modifier = Modifier.testTag("zerochat-topbar-settings"),
+                ) {
                     Text(i18n.t("title.settings"))
                 }
             }

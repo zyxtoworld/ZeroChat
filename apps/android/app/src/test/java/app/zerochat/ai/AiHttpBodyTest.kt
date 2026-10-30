@@ -216,7 +216,7 @@ class AiHttpBodyTest {
                         apiKey = "provider-key",
                         model = provider.model,
                         messages = emptyList(),
-                        onDelta = {},
+                        onText = {},
                     )
                 }
             }
@@ -298,7 +298,7 @@ class AiHttpBodyTest {
                         apiKey = "provider-key",
                         model = provider.model,
                         messages = emptyList(),
-                        onDelta = {},
+                        onText = {},
                     )
                 }
             }

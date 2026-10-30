@@ -84,7 +84,6 @@ export function loadSyncService(): Promise<SyncService> {
     () => import('./sync'),
   )
 }
-
 export async function editImage(
   ...args: Parameters<ChatService['editImage']>
 ): ReturnType<ChatService['editImage']> {

@@ -4,6 +4,7 @@ import app.zerochat.data.AppSnapshot
 import app.zerochat.data.ChatMessage
 import app.zerochat.data.Conversation
 import app.zerochat.data.MessageRole
+import app.zerochat.data.ModelMetadata
 import app.zerochat.data.OfflineReplayClaim
 import app.zerochat.data.ProviderConfig
 import app.zerochat.data.ProviderKind
@@ -231,6 +232,33 @@ class SyncVaultValidationTest {
         assertEquals("embedding-model", decoded.embeddingModel)
         assertEquals("moderation-model", decoded.moderationModel)
         assertEquals("realtime-model", decoded.realtimeModel)
+    }
+
+    @Test
+    fun acceptsLegacyZeroProviderModelLimitsByClearingThem() {
+        val vault = canonicalVault()
+        val legacyMetadata = ModelMetadata(
+            id = "chat-model",
+            contextWindowTokens = 0,
+            maxInputTokens = 0,
+            maxOutputTokens = 0,
+        )
+        val legacyVault = vault.copy(
+            data = vault.data.copy(
+                providers = listOf(
+                    vault.data.providers.single().copy(
+                        modelMetadata = mapOf("chat-model" to legacyMetadata),
+                    ),
+                ),
+            ),
+        )
+
+        val decoded = decodeValidatedSyncVault(json, encode(legacyVault))
+
+        assertEquals(
+            ModelMetadata(id = "chat-model"),
+            decoded.data.providers.single().modelMetadata.getValue("chat-model"),
+        )
     }
 
     @Test

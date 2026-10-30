@@ -46,7 +46,11 @@ import {
   MAX_IMAGE_FILE_BYTES,
   readLocalFileText,
 } from '../services/localFileLimits'
-import { messageCanSpeak, shouldRenderMarkdown } from '../services/messageRendering'
+import {
+  messageCanSpeak,
+  messageDisplayContent,
+  shouldRenderMarkdown,
+} from '../services/messageRendering'
 import {
   appendOfflineQueuedTextTurn,
   enabledProviderForQueuedText,
@@ -67,11 +71,6 @@ import {
   modelForProviderAudioTranscription,
 } from '../services/providerModelCore'
 import { streamAssistantText } from '../services/chatGenerationTextStream'
-import {
-  effectiveInputTokenBudget,
-  modelMetadataForProviderModels,
-} from '../services/modelMetadata'
-import { prepareConversationContext } from '../services/contextCompaction'
 import { downloadJsonFile } from '../services/downloadJsonFile'
 import {
   AUTO_CONVERSATION_TITLE_MAX_LENGTH,
@@ -2782,7 +2781,7 @@ export const useAppStore = create<AppState>()((set, get) => {
     }
   }
 
-  /** Batch token deltas into a single store write every ~40ms. */
+  /** Batch token deltas into a single store write at the 60fps UI cadence. */
   const createTokenBuffer = (
     conversationId: string,
     messageId: string,
@@ -2810,7 +2809,7 @@ export const useAppStore = create<AppState>()((set, get) => {
         if (closed || (canWrite && !canWrite())) return
         pending += token
         if (timer === null) {
-          timer = setTimeout(flush, 40)
+          timer = setTimeout(flush, 16)
         }
       },
       flushNow() {
@@ -2996,16 +2995,17 @@ export const useAppStore = create<AppState>()((set, get) => {
         messages: baseMessages,
         latestInput,
       })
+      const { prepareConversationContext } = await import('../services/contextCompaction')
       const preparedContext = await prepareConversationContext({
         apiKey,
         existingCompaction: conversation.contextCompaction,
-        maxInputTokens: effectiveInputTokenBudget(requestProvider, model),
         messages: requestMessagesWithSkillsResult,
         model,
         provider: requestProvider,
         proxyToken,
         signal: abort.signal,
       })
+      const maxInputTokens = preparedContext.maxInputTokens
       const requestMessages = preparedContext.messages
       if (preparedContext.compaction) {
         await commitSkillDataMutation((current) => {
@@ -3070,7 +3070,7 @@ export const useAppStore = create<AppState>()((set, get) => {
               contextMessageLimit: normalizeChatContextMessageLimit(
                 get().data?.preferences.chatContextMessageLimit,
               ),
-              maxInputTokens: effectiveInputTokenBudget(requestProvider, model),
+              maxInputTokens,
               signal: abort.signal,
               onToken: (token) => {
                 if (!abort.signal.aborted) buffer.push(token)
@@ -4514,7 +4514,7 @@ export const useAppStore = create<AppState>()((set, get) => {
             conversation.id === data.preferences.activeConversationId,
         ) ?? data.conversations[0]
       if (canReuseUninteractedNewConversation(activeConversation)) {
-        return Promise.resolve(true)
+        return get().skipOnboarding()
       }
 
       return runConversationMutation(async () => {
@@ -5176,6 +5176,7 @@ export const useAppStore = create<AppState>()((set, get) => {
           apiKey,
           proxyToken,
         })
+        const { modelMetadataForProviderModels } = await import('../services/modelMetadata')
         const modelsDevMetadata = await modelMetadataForProviderModels(
           currentProvider,
           models,
@@ -5867,7 +5868,7 @@ export const useAppStore = create<AppState>()((set, get) => {
               provider: requestProvider,
               proxyToken,
               signal: controller.signal,
-              text: message.content.trim(),
+              text: messageDisplayContent(message).trim(),
             }),
           {
             anchorId: message.id,

@@ -3502,8 +3502,7 @@ async function checkAndroidArtifact(spec) {
       provider.providerId === 'openai' &&
       Number.isInteger(provider.maskedLength) &&
       provider.maskedLength > 0 &&
-      provider.saveActionDisabled === true &&
-      String(provider.saveActionBounds ?? '').startsWith('[')
+      provider.autoSaved === true
 
     if (
       !isObject(activityRecreation) ||
@@ -3533,7 +3532,7 @@ async function checkAndroidArtifact(spec) {
         'android-ui-smoke-04d-activity-recreation-restored.png'
     ) {
       failures.push(
-        `${spec.metadata} must prove two configuration-change Activity recreations in one process, preserve only masked OpenAI credential state with Save disabled, and restore the exact device rotation settings.`,
+        `${spec.metadata} must prove two configuration-change Activity recreations in one process, preserve only masked OpenAI credential state with automatic saving, and restore the exact device rotation settings.`,
       )
     }
 
@@ -3697,6 +3696,7 @@ async function checkAndroidArtifact(spec) {
       !Number.isInteger(exportedProviderEnteredLength) ||
       exportedProviderEnteredLength <= 0 ||
       exportedProviderCommittedLength !== exportedProviderEnteredLength ||
+      backupExport?.providerKey?.autoSavedAfterInput !== true ||
       normalizedArtifactBasename(backupExport?.providerKey?.screenshot) !==
         'android-ui-smoke-04b-provider-key-saved.png' ||
       !Number.isInteger(exportedPassphraseLength) ||
@@ -3704,7 +3704,7 @@ async function checkAndroidArtifact(spec) {
       persistedExportPassphraseLength !== exportedPassphraseLength
     ) {
       failures.push(
-        `${spec.metadata} must prove encrypted backup export finishes after saving masked Provider and passphrase credentials.`,
+        `${spec.metadata} must prove encrypted backup export finishes after input-time auto-saving of the masked Provider credential and passphrase credentials.`,
       )
     }
 
@@ -3713,6 +3713,7 @@ async function checkAndroidArtifact(spec) {
       !Number.isInteger(overwrittenProviderEnteredLength) ||
       overwrittenProviderEnteredLength <= 0 ||
       overwrittenProviderCommittedLength !== overwrittenProviderEnteredLength ||
+      backupOverwrite?.autoSavedAfterInput !== true ||
       overwrittenProviderCommittedLength === exportedProviderCommittedLength ||
       Number(backupOverwrite?.passphrasePersistedMaskedLength) !==
         exportedPassphraseLength ||
@@ -4033,13 +4034,13 @@ async function checkAndroidArtifact(spec) {
         sourceEnteredLength < 16 ||
         sourceCommittedLength !== sourceEnteredLength ||
         sourceUploadedLength !== sourceCommittedLength ||
-        source?.saveDisabledAfterCommit !== true ||
+        source?.autoSavedAfterInput !== true ||
         source?.uploadMatched !== true ||
         recovery.sourceUploadMatched !== true ||
         !Number.isInteger(localEnteredLength) ||
         localEnteredLength < 16 ||
         localCommittedLength !== localEnteredLength ||
-        localReplacement?.saveDisabledAfterCommit !== true ||
+        localReplacement?.autoSavedAfterInput !== true ||
         localCommittedLength === sourceUploadedLength ||
         restoredLength !== sourceUploadedLength ||
         relaunchedLength !== sourceUploadedLength ||

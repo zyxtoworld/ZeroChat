@@ -74,4 +74,30 @@ final class AiResponseBodyLimitTests: XCTestCase {
             )
         )
     }
+    func testSseEventDeltaMarksDeltaAndCumulativeShapes() {
+        let openAiDelta = sseEventDelta(
+            from: [#"{"choices":[{"delta":{"content":"Hello"}}]}"#]
+        )
+        XCTAssertEqual(openAiDelta.delta, "Hello")
+        XCTAssertFalse(openAiDelta.cumulative)
+
+        let openAiCumulative = sseEventDelta(
+            from: [#"{"choices":[{"message":{"content":"Hello"}}]}"#]
+        )
+        XCTAssertEqual(openAiCumulative.delta, "Hello")
+        XCTAssertTrue(openAiCumulative.cumulative)
+
+        let anthropicCumulative = sseEventDelta(
+            from: [#"{"content":[{"type":"text","text":"Hello"}]}"#]
+        )
+        XCTAssertEqual(anthropicCumulative.delta, "Hello")
+        XCTAssertTrue(anthropicCumulative.cumulative)
+
+        let responsesCumulative = sseEventDelta(
+            from: [#"{"type":"response.output_text.done","text":"Hello"}"#]
+        )
+        XCTAssertEqual(responsesCumulative.delta, "Hello")
+        XCTAssertTrue(responsesCumulative.cumulative)
+    }
+
 }

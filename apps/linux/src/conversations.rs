@@ -1,8 +1,8 @@
-use uuid::Uuid;
 use crate::{
     models::{AppSnapshot, Conversation, ProviderConfig},
     skills::normalize_whitespace,
 };
+use uuid::Uuid;
 
 pub(crate) fn linux_conversation_search_text(title: &str, conversation: &Conversation) -> String {
     let mut values = vec![title.to_owned(), conversation.model.clone()];

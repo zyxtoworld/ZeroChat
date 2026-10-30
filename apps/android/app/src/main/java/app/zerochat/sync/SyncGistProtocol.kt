@@ -109,7 +109,9 @@ internal fun createGistStateOperation(
     vault: SyncVault,
     tombstones: Collection<GistTombstone>,
 ): GistStateOperation {
-    val vaultJson = normalizeGistVaultJson(vaultJsonFromModel(json, vault))
+    val vaultJson = normalizeGistVaultJson(
+        vaultJsonFromModel(json, normalizeSyncVaultForProtocol(vault)),
+    )
     return createGistStateOperation(json, parents, vaultJson, tombstones)
 }
 
@@ -674,7 +676,9 @@ private fun normalizeGistVaultJson(vault: JsonObject): JsonObject {
         data["preferences"] = stripPreferenceDefaults(preferences)
     }
 
-    return JsonObject(vault.toMutableMap().apply { put("data", JsonObject(data)) })
+    return normalizeLegacySyncVaultJson(
+        JsonObject(vault.toMutableMap().apply { put("data", JsonObject(data)) }),
+    ) as JsonObject
 }
 
 private fun decodeGistVault(json: Json, vault: JsonObject): SyncVault =
